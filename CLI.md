@@ -1,0 +1,86 @@
+# Rimotion CLI
+
+Rimotion serves source-authored video projects, renders a timestamp to PNG, and exports an entire composition to H.264 MP4. There is no remote service or LLM integration. Rendering remains native browser WebGPU; video encoding and MP4 muxing use the same engine as the web interface.
+
+## Run from source
+
+Requires Node.js 22.12+ (or 20.19+) and an installed Chrome. Run `npm install`, then:
+
+```sh
+# Serve the current project, with live source reload
+node bin/rimotion.mjs preview --open
+
+# PNG at an absolute timeline timestamp
+node bin/rimotion.mjs frame --time 5.2 -o artifacts/frame.png
+
+# Equivalent preview-to-image command
+node bin/rimotion.mjs preview --time 5.2 -o artifacts/frame.png
+
+# Zero-based frame 156 at 30 FPS = 5.2 seconds
+node bin/rimotion.mjs frame --frame 156 --fps 30 -o artifacts/frame.png --force
+
+# MP4 of the complete project
+node bin/rimotion.mjs export -o artifacts/video.mp4 --resolution 1080p --fps 60
+```
+
+`npm run cli -- <arguments>` is equivalent. `npm link` installs the `rimotion` executable in your npm bin directory. `npm install -g /path/to/rimotion` also installs the package and its runtime dependencies; use `rimotion` in place of `node bin/rimotion.mjs` afterward. `npm pack --pack-destination release` produces an installable package tarball. No command automatically installs a browser.
+
+## Standalone executable
+
+Build on the target machine with dependencies installed and Bun available:
+
+```sh
+npm run build:binary
+./release/rimotion-darwin-arm64 --help
+./release/rimotion-darwin-arm64 preview --demo --open
+./release/rimotion-darwin-arm64 frame --demo --time 5.2 -o frame.png
+./release/rimotion-darwin-arm64 export --demo -o video.mp4
+```
+
+The output name includes the build host OS/architecture, with `.exe` on Windows. `BINARY_OUT=/path/to/rimotion npm run build:binary` overrides the destination. Only the host target is built: runtime dependencies include native host-specific Vite/Tailwind/esbuild libraries, so changing a Bun cross-compilation flag alone would not create a usable cross-platform build. The shipped artifact was built and tested on macOS Apple Silicon.
+
+The binary embeds Bun, CLI code, engine, preview sources, the demo and installed dependencies. It needs neither Node.js nor a separate Bun/npm install on the destination machine. Chrome/Chromium and a working GPU driver are external requirements. It is an unsigned development executable.
+
+On first run it extracts the embedded payload to a content-addressed local cache, then starts its embedded runtime against those files. Later runs reuse that cache. macOS defaults to `~/Library/Caches/rimotion`; other systems use `$XDG_CACHE_HOME/rimotion` or `~/.cache/rimotion`. Set `RIMOTION_CACHE_DIR` to relocate it. Removing the cache causes extraction on next run. The cache contains executable code and should be kept in a user-owned directory. Packaging and extraction are implemented without external archiving utilities.
+
+## Render another codebase
+
+```sh
+rimotion preview /path/to/video-project --open
+rimotion frame --project /path/to/video-project --time 1.25 -o still.png --json
+rimotion export --project /path/to/video-project -o final.mp4 --resolution 720p --fps 30 --json
+rimotion export --project /path/to/manifest.ts -o final.mp4
+```
+
+A project is either a manifest module, or a directory containing `src/project/manifest.ts`, `.tsx` or `.js`, `project/manifest.ts` or `.js`, or `manifest.ts`, `.tsx`, `.js` or `.mjs`. It exports a named `project` or a default Project object implementing the existing scene interface. Use `--demo` to render the bundled example from any directory. The CLI does not silently substitute the demo when a project is absent.
+
+External scenes can import the public engine API and types from `rimotion`; the CLI resolves that name to its own engine during browser compilation. Relative scene imports and Vite resource imports such as `./effect.wgsl?raw` work. Project `public/` assets are served when selecting a project directory. Package imports used by a project's scenes must be installed in that project; the binary does not install arbitrary dependencies. Source code is executed as trusted application code. The CLI supplies its own Vite configuration and does not load a project's Vite plugins/configuration.
+
+```ts
+import type { Project, Scene } from "rimotion";
+// Create your scene factories and export a Project; see AI_AUTHORING.md.
+```
+
+Web preview binds only to `127.0.0.1`, defaults to port 5173, and reports the actual URL if that port is busy. `--port 0` chooses an available port. Source changes trigger HMR or reload. Ctrl+C closes the server. Frame and export commands start a temporary private server and headless browser, save the result and close both automatically.
+
+## Output and automation
+
+- `frame`: native WebGPU OffscreenCanvas → PNG via `convertToBlob`, at the project base resolution unless overridden with `--resolution WIDTHxHEIGHT` or 360p/720p/1080p. This is a single-image operation, not a screenshot-based video export.
+- `export`: the existing OffscreenCanvas → VideoFrame → H.264 VideoEncoder → custom MP4 pipeline. Defaults to 720p30. Presets: 360p, 720p, 1080p at 24/30/60 FPS. All frames are evaluated deterministically at frameIndex/FPS. Audio is not supported.
+- Output defaults to `frame.png` or `video.mp4` in the invoking directory. Parents are created automatically. PNG and MP4 extensions are enforced. An existing output fails unless `--force` is provided. Rendering happens before committing the completed output; a failed render does not replace an existing file.
+- `--time` is in seconds, between zero and composition duration inclusive. `--frame` is a nonnegative, zero-based index divided by `--fps`; it cannot be combined with `--time`.
+- `--json` emits one successful result object on stdout. Export progress is JSON Lines on stderr, followed by a result including output path, dimensions, FPS, frames, duration, bytes and elapsed seconds. Errors emit an `event: "error"` object on stderr and exit nonzero. Web preview emits its URL and remains running.
+- Exit codes: 0 success, 1 error/timeout, 130 cancelled frame/export. Ctrl+C on an idle web preview exits 0. `--timeout 120` bounds headless startup/render/export; browser resources are closed on timeout or interruption. Elapsed CLI time includes server/browser startup, rendering and file saving, unlike the earlier export-only benchmark.
+- `--channel chrome` is the default. Use `--channel msedge`, `--channel chromium` with an installed Playwright Chromium, or `--browser /absolute/path/to/chrome`. Native WebGPU and H.264 capability errors are surfaced; no alternative multimedia renderer is substituted.
+
+## Validation
+
+```sh
+npm test
+npm run build
+npm run test:cli
+npm run build:binary
+CLI_BINARY="$PWD/release/rimotion-darwin-arm64" npm run test:cli
+```
+
+The CLI integration suite invokes commands from outside the repository, checks PNG dimensions and deterministic frame equivalence, renders an independent external TSX manifest with a JS scene, checks invalid timestamps and overwrite protection, tests timeout cleanup and web preview shutdown, and exports an eight-second 240-frame MP4 that is opened and sought using native Chrome playback. It writes artifacts under `artifacts/cli/`. The browser engine validation (`npm run test:browser` with Vite running) additionally decodes all 240 frames.

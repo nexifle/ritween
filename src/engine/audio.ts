@@ -1,3 +1,4 @@
+import { LiveMix } from "./live-mix";
 import { frameCount, validateProject } from "./timeline";
 import type { Project } from "./types";
 
@@ -5,8 +6,6 @@ import type { Project } from "./types";
 export const SAMPLE_RATE = 48_000;
 export const PREVIEW_VOLUME_DB = -18;
 const CLIP_RAMP_SECONDS = 0.005;
-const STOP_RAMP_SECONDS = 0.01;
-const START_LEAD_SECONDS = 0.02;
 
 export const dbToGain = (db: number) => 10 ** (db / 20);
 export const gainToDb = (gain: number) =>
@@ -29,8 +28,9 @@ export function windowClip(param: AudioParam, start: number, duration: number) {
 }
 
 /**
- * One mix for preview and export. Muted tracks are left out of the buffer.
+ * Full offline mix used by export. Muted tracks are left out of the buffer.
  * Returns null when the composition has nothing audible.
+ * Preview does not call this. It keeps a lookahead of live nodes instead.
  */
 export async function renderAudio(
   project: Project,
@@ -77,22 +77,19 @@ export async function renderAudio(
 }
 
 /**
- * Plays a rendered buffer. The graph is never built here.
+ * Lookahead preview. The picture waits while the score is recorded, then
+ * follows the audio clock. Export does not use this class.
  * `unlock` must run inside the user gesture, before any await.
  */
 export class PreviewAudio {
   private ctx: AudioContext | null = null;
   private monitor: GainNode | null = null;
-  private source: AudioBufferSourceNode | null = null;
-  private fade: GainNode | null = null;
-  private buffer: AudioBuffer | null = null;
-  private bufferKey = "";
+  private mix: LiveMix | null = null;
   private volumeDb = PREVIEW_VOLUME_DB;
   private masterMuted = false;
   private playing = false;
   private armed = false;
-  private origin = 0;
-  private hold = 0;
+  private blocking = false;
   private pendingOffset = 0;
   private generation = 0;
 
@@ -112,6 +109,7 @@ export class PreviewAudio {
       });
       this.monitor = new GainNode(this.ctx, { gain: 0 });
       this.monitor.connect(this.ctx.destination);
+      this.mix = new LiveMix(this.ctx, this.monitor);
       this.applyMonitor(true);
     }
     if (this.ctx.state !== "running") void this.ctx.resume();
@@ -123,52 +121,54 @@ export class PreviewAudio {
     this.applyMonitor(false);
   }
 
-  /** Composition seconds currently heard, or null while the picture clock should coast. */
-  heardTime() {
-    if (!this.armed || !this.playing || !this.ctx) return null;
-    const delay = (this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0);
-    return Math.max(this.hold, this.ctx.currentTime - this.origin - delay);
+  /** True while the score is still being recorded. The picture should hold. */
+  isBlocking() {
+    return this.blocking;
   }
 
-  async play(
-    from: number,
-    project: Project,
-    mutedTrackIds: readonly string[],
-    fps = 30,
-  ) {
+  /** Composition seconds currently heard, or null when the picture clock should coast. */
+  heardTime() {
+    if (!this.armed || !this.playing || !this.ctx || !this.mix) return null;
+    const delay = (this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0);
+    return this.mix.heard(delay);
+  }
+
+  async play(from: number, project: Project, mutedTrackIds: readonly string[]) {
     this.unlock();
     const generation = ++this.generation;
     this.playing = true;
     this.pendingOffset = from;
-    await this.ensureBuffer(project, mutedTrackIds, fps, generation);
+    this.blocking = true;
+    this.armed = false;
+    const audible = await this.mix!.prepare(project, mutedTrackIds);
     if (!this.playing || generation !== this.generation) return;
-    if (!this.buffer) {
-      this.halt();
-      this.armed = false;
-      return;
-    }
-    this.startSource(this.pendingOffset);
+    this.blocking = false;
+    if (!audible) return;
+    this.mix!.start(this.pendingOffset);
+    this.armed = true;
   }
 
   seek(time: number) {
     if (!this.playing) return;
     this.pendingOffset = time;
-    if (this.buffer) this.startSource(time);
+    if (this.armed) this.mix?.seek(time);
   }
 
   stop() {
     this.generation++;
     this.playing = false;
     this.armed = false;
-    this.halt();
+    this.blocking = false;
+    this.mix?.stop();
   }
 
   dispose() {
     this.stop();
+    this.mix?.dispose();
+    this.mix = null;
     void this.ctx?.close();
     this.ctx = null;
     this.monitor = null;
-    this.buffer = null;
   }
 
   private applyMonitor(immediate: boolean) {
@@ -176,61 +176,5 @@ export class PreviewAudio {
     const gain = this.masterMuted ? 0 : dbToGain(this.volumeDb);
     if (immediate) this.monitor.gain.value = gain;
     else this.monitor.gain.setTargetAtTime(gain, this.ctx.currentTime, 0.01);
-  }
-
-  private async ensureBuffer(
-    project: Project,
-    mutedTrackIds: readonly string[],
-    fps: number,
-    generation: number,
-  ) {
-    const key = `${fps}:${[...mutedTrackIds].sort().join("\0")}`;
-    if (this.buffer && this.bufferKey === key) return;
-    this.buffer = null;
-    this.bufferKey = key;
-    const buffer = await renderAudio(project, mutedTrackIds, fps);
-    if (generation !== this.generation || this.bufferKey !== key) return;
-    this.buffer = buffer;
-  }
-
-  private startSource(offset: number) {
-    if (!this.ctx || !this.monitor || !this.buffer) return;
-    this.halt();
-    const offsetClamped = Math.min(
-      Math.max(0, offset),
-      Math.max(0, this.buffer.duration - 1 / SAMPLE_RATE),
-    );
-    const fade = new GainNode(this.ctx, { gain: 1 });
-    const source = new AudioBufferSourceNode(this.ctx, { buffer: this.buffer });
-    source.connect(fade).connect(this.monitor);
-    const when = this.ctx.currentTime + START_LEAD_SECONDS;
-    source.start(when, offsetClamped);
-    source.onended = () => {
-      source.disconnect();
-      fade.disconnect();
-    };
-    this.source = source;
-    this.fade = fade;
-    this.origin = when - offsetClamped;
-    this.hold = offsetClamped;
-    this.armed = true;
-  }
-
-  private halt() {
-    const source = this.source;
-    const fade = this.fade;
-    this.source = null;
-    this.fade = null;
-    if (!source || !this.ctx || !fade) return;
-    const now = this.ctx.currentTime;
-    try {
-      fade.gain.cancelScheduledValues(now);
-      fade.gain.setValueAtTime(fade.gain.value, now);
-      fade.gain.linearRampToValueAtTime(0, now + STOP_RAMP_SECONDS);
-      source.stop(now + STOP_RAMP_SECONDS + 0.002);
-    } catch {
-      source.disconnect();
-      fade.disconnect();
-    }
   }
 }

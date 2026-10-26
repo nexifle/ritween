@@ -35,13 +35,13 @@ Play/pause with Space. Seek using the scrubber; step with the transport buttons 
 - `src/engine/types.ts`: reusable Scene, Project, RenderContext and future Compositor contracts.
 - `src/engine/timeline.ts`: stateless absolute-time evaluation, frame schedules and manifest validation.
 - `src/engine/renderer.ts`: GPU lifecycle and renderer shared by preview and export. Each renderer owns independent scene instances and device resources.
-- `src/engine/audio.ts`: one Web Audio mix. Preview and export both call `renderAudio`. Track mutes are arguments, not a second graph.
+- `src/engine/audio.ts`: export renders one offline mix with `renderAudio`. Preview records that same clip schedule, then keeps only the notes inside a short lookahead as live nodes. Track mutes are arguments, not a second graph.
 - `src/engine/export.ts`: WebGPU → OffscreenCanvas → VideoFrame → native H.264 VideoEncoder, plus AAC from that mix, → MP4.
 - `src/engine/mp4.ts`: custom ISO BMFF muxer. AVC configuration is preserved in `avcC`. An optional AAC track stores `esds`, sample sizes, chunk offsets and durations. Video samples stay all-keyframe.
 - `src/project/manifest.ts`: the entire composition, independent of the engine.
 - `src/project/scenes/`: separate TS, TSX and JS example modules. Fullscreen WGSL shaders render procedural orbital geometry and GPU bitmap lettering.
 
-Export evaluates frame `i` at `i / FPS`. VideoFrame timestamps are rounded microseconds with adjacent durations computed from the next timestamp. MP4 uses FPS as its timescale and one tick per video sample, giving exact duration. Every video sample is a keyframe; there are no reordered/B frames. Audio is a separate timeline: clips live on audio tracks, not inside scenes. The mix is rendered once with `OfflineAudioContext` at 48 kHz and encoded as AAC. Preview plays that same mix from a user gesture. Track mute is part of the exported mix. The preview volume is not. This deliberately favors muxer simplicity and seeking over compression. The browser may copy GPU data internally; this implementation makes no zero-copy claim and performs no manual GPU readback for encoding.
+Export evaluates frame `i` at `i / FPS`. VideoFrame timestamps are rounded microseconds with adjacent durations computed from the next timestamp. MP4 uses FPS as its timescale and one tick per video sample, giving exact duration. Every video sample is a keyframe; there are no reordered/B frames. Audio is a separate timeline: clips live on audio tracks, not inside scenes. Export renders the mix once with `OfflineAudioContext` at 48 kHz and encodes it as AAC. Preview plays the same clips through a lookahead of live nodes, from a user gesture, and does not wait for that offline render. Track mute is part of the exported mix. The preview volume is not. This deliberately favors muxer simplicity and seeking over compression. The browser may copy GPU data internally; this implementation makes no zero-copy claim and performs no manual GPU readback for encoding.
 
 See [AI Authoring Guide](AI_AUTHORING.md) to create a different video entirely through source files.
 

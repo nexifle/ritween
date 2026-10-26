@@ -106,6 +106,11 @@ export function App() {
     let id = 0;
     let last = performance.now();
     const tick = (now: number) => {
+      if (player.isBlocking()) {
+        last = now;
+        id = requestAnimationFrame(tick);
+        return;
+      }
       const heard = player.heardTime();
       if (heard == null) dispatch({ type: "tick", delta: (now - last) / 1000 });
       else dispatch({ type: "sync", time: heard });

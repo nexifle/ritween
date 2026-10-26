@@ -64,7 +64,7 @@ import createPulse from './scenes/pulse';
 // Set project.duration = 10.
 ```
 
-`source` is a display label, while `create` is the real registration. `name`, `resolution`, `aspectRatio`, duration, imports, sequence order, start times and transition metadata all belong to the manifest. Entries must be ordered, unique, finite, positive in duration, contiguous from time zero, and end exactly at the project duration. Overlaps and gaps fail validation. At a cut timestamp the next scene is selected. At composition end the last scene evaluates at progress 1.
+`source` is a display label, while `create` is the real registration. `name`, `resolution`, `aspectRatio`, duration, imports, sequence order, start times and transition metadata all belong to the manifest. Entries must be ordered, unique, finite, positive in duration, contiguous from time zero, and end exactly at the project duration. Overlaps and gaps fail validation. At a cut timestamp the next scene is selected. At composition end the last scene evaluates at progress 1. Export keeps `resolution`'s aspect. The steps use a short side of 360, 720 or 1080 when the frame fits H.264 Level 4.2. A size with a different aspect is rejected.
 
 ## Audio tracks
 

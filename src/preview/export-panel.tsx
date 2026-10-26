@@ -1,3 +1,4 @@
+import type { ExportSize } from "../engine/export-size";
 import { frameCount } from "../engine/timeline";
 import { Icon } from "./icon";
 
@@ -5,6 +6,8 @@ export function ExportPanel({
   ready,
   exporting,
   resolution,
+  sizes,
+  aspectRatio,
   fps,
   duration,
   hasAudio,
@@ -20,6 +23,8 @@ export function ExportPanel({
   ready: boolean;
   exporting: boolean;
   resolution: string;
+  sizes: readonly ExportSize[];
+  aspectRatio: readonly [number, number];
   fps: number;
   duration: number;
   hasAudio: boolean;
@@ -43,17 +48,29 @@ export function ExportPanel({
       <label className="mb-1 block text-[11px] text-label" htmlFor="resolution">
         Resolution
       </label>
-      <select
-        id="resolution"
-        disabled={exporting}
-        value={resolution}
-        onChange={(e) => onResolution(e.target.value)}
-        className="mb-2 h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-xs/normal"
-      >
-        <option value="640x360">640 × 360 · 360p</option>
-        <option value="1280x720">1280 × 720 · 720p</option>
-        <option value="1920x1080">1920 × 1080 · 1080p</option>
-      </select>
+      {sizes.length ? (
+        <select
+          id="resolution"
+          disabled={exporting}
+          value={resolution}
+          onChange={(e) => onResolution(e.target.value)}
+          className="mb-2 h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-xs/normal"
+        >
+          {sizes.map((size) => (
+            <option
+              key={`${size.width}x${size.height}`}
+              value={`${size.width}x${size.height}`}
+            >
+              {size.width} × {size.height}
+              {size.name ? ` · ${size.name}` : ""}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <p id="resolution" className="mb-2 text-[11px] text-destructive-foreground">
+          No export size keeps this aspect within H.264 Level 4.2.
+        </p>
+      )}
       <label className="mb-1 block text-[11px] text-label" htmlFor="fps">
         Frame rate
       </label>
@@ -72,6 +89,10 @@ export function ExportPanel({
       </select>
       <div className="my-2.5 space-y-1 border-y border-border py-2 text-[11px]">
         <div className="flex justify-between">
+          <span className="text-muted-foreground">Aspect</span>
+          <span>{aspectRatio.join(":")}</span>
+        </div>
+        <div className="flex justify-between">
           <span className="text-muted-foreground">Format</span>
           <span>{hasAudio ? "MP4 / H.264 / AAC" : "MP4 / H.264"}</span>
         </div>
@@ -86,7 +107,7 @@ export function ExportPanel({
       </div>
       <button
         onClick={onExport}
-        disabled={!ready || exporting}
+        disabled={!ready || exporting || !resolution}
         className="flex h-8 w-full items-center justify-center gap-1.5 rounded-sm bg-primary text-xs/normal font-semibold text-primary-foreground hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45"
       >
         <Icon name="export" size={16} />

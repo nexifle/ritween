@@ -1,4 +1,5 @@
 import { PREVIEW_VOLUME_DB } from "../engine/audio";
+import { defaultExportSize } from "../engine/export-size";
 import { frameCount } from "../engine/timeline";
 import { project } from "virtual:rimotion-project";
 import { clamp, COMP_ZOOM_MAX, COMP_ZOOM_MIN, TL_ZOOM_MAX } from "./view";
@@ -32,7 +33,10 @@ export const initial: State = {
   exporting: false,
   done: 0,
   total: frameCount(project.duration, 30),
-  resolution: "1280x720",
+  resolution: (() => {
+    const size = defaultExportSize(project.resolution);
+    return size ? `${size.width}x${size.height}` : "";
+  })(),
   fps: 30,
   result: "",
   download: "",

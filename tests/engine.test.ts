@@ -7,9 +7,71 @@ import {
   validateProject,
 } from "../src/engine/timeline";
 import { audioSampleCount } from "../src/engine/audio";
+import {
+  assertExportSize,
+  defaultExportSize,
+  exportSizes,
+} from "../src/engine/export-size";
 import { MP4Muxer } from "../src/engine/mp4";
 import { project } from "../src/project/manifest";
 
+test("export sizes keep any project aspect inside H.264 Level 4.2", () => {
+  const pixels = (resolution: readonly [number, number]) =>
+    exportSizes(resolution).map((size) => [size.width, size.height]);
+  assert.deepEqual(pixels([1280, 720]), [
+    [640, 360],
+    [1280, 720],
+    [1920, 1080],
+  ]);
+  assert.deepEqual(
+    exportSizes([1280, 720]).map((size) => size.name),
+    ["360p", "720p", "1080p"],
+  );
+  assert.deepEqual(pixels([1080, 1920]), [
+    [360, 640],
+    [720, 1280],
+    [1080, 1920],
+  ]);
+  assert.deepEqual(pixels([1080, 1080]), [
+    [360, 360],
+    [720, 720],
+    [1080, 1080],
+  ]);
+  assert.deepEqual(pixels([1080, 1350]), [
+    [360, 450],
+    [720, 900],
+    [1080, 1350],
+  ]);
+  assert.deepEqual(pixels([1440, 1080]), [
+    [480, 360],
+    [960, 720],
+    [1440, 1080],
+  ]);
+  assert.deepEqual(pixels([2520, 1080]), [
+    [840, 360],
+    [1680, 720],
+  ]);
+  assert.deepEqual(pixels([8000, 100]), []);
+  assert.equal(defaultExportSize([1080, 1920])?.width, 720);
+  assert.equal(defaultExportSize([1280, 720])?.name, "720p");
+  assert.equal(defaultExportSize([8000, 100]), undefined);
+  const landscape = { resolution: [1280, 720] as const, aspectRatio: [16, 9] as const };
+  const portrait = { resolution: [1080, 1920] as const, aspectRatio: [9, 16] as const };
+  assert.doesNotThrow(() => assertExportSize(landscape, 1920, 1080));
+  assert.throws(() => assertExportSize(landscape, 1080, 1920), /16:9/);
+  assert.throws(() => assertExportSize(landscape, 800, 600), /16:9/);
+  assert.doesNotThrow(() => assertExportSize(portrait, 720, 1280));
+  assert.throws(() => assertExportSize(portrait, 1920, 1080), /9:16/);
+  assert.doesNotThrow(() =>
+    assertExportSize(
+      { resolution: [1080, 1350], aspectRatio: [4, 5] },
+      1080,
+      1350,
+    ),
+  );
+  assert.throws(() => assertExportSize(landscape, 721, 405), /even/);
+  assert.throws(() => assertExportSize(landscape, 4096, 2304), /Level 4\.2/);
+});
 test("manifest spans eight seconds with exact hard cuts and seekable local time", () => {
   validateProject(project);
   for (const [time, id, local] of [

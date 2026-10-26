@@ -19,7 +19,9 @@ Options:
   --time SECONDS           Frame timestamp (default: 0)
   --frame INDEX            Zero-based frame index, divided by --fps
   --resolution PRESET      360p, 720p, 1080p or WIDTHxHEIGHT
-                           Frame defaults to project base; export to 720p
+                           Frame defaults to the project resolution.
+                           Export defaults to that aspect at short side 720.
+                           360p, 720p and 1080p stay 16:9.
   --fps N                  24, 30 or 60 (default: 30)
   --port N                 Preview port (default: 5173; next free if busy)
   --open                   Open the web preview in your default browser
@@ -104,8 +106,7 @@ export function parseOptions(argv) {
   const timeout = Number(values.timeout ?? 120) * 1000;
   if (!Number.isFinite(timeout) || timeout <= 0)
     throw Error("--timeout must be positive seconds.");
-  const resolution =
-    values.resolution ?? (command === "export" ? "720p" : undefined);
+  const resolution = values.resolution;
   let width, height;
   if (resolution) {
     const presets = {
@@ -123,11 +124,8 @@ export function parseOptions(argv) {
       ![width, height].every((n) => Number.isInteger(n) && n > 0 && n <= 8192)
     )
       throw Error("Frame dimensions must be between 1 and 8192.");
-    if (
-      command === "export" &&
-      !["640x360", "1280x720", "1920x1080"].includes(`${width}x${height}`)
-    )
-      throw Error("MP4 export supports 360p, 720p or 1080p.");
+    if (command === "export" && (width % 2 !== 0 || height % 2 !== 0))
+      throw Error("Export dimensions must be even.");
   }
   const output =
     values.output ?? (command === "frame" ? "frame.png" : "video.mp4");

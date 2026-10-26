@@ -2,6 +2,7 @@
 import { project } from "virtual:rimotion-project";
 import { Renderer } from "./engine/renderer";
 import { exportVideo, type ExportOptions } from "./engine/export";
+import { defaultExportSize } from "./engine/export-size";
 import { validateProject } from "./engine/timeline";
 validateProject(project);
 function download(blob: Blob, name: string) {
@@ -63,9 +64,28 @@ const api = {
       renderer.dispose();
     }
   },
-  async export(options: ExportOptions) {
+  async export(
+    options: Omit<ExportOptions, "width" | "height"> & {
+      width?: number;
+      height?: number;
+    },
+  ) {
+    let { width, height } = options;
+    if (width === undefined && height === undefined) {
+      const size = defaultExportSize(project.resolution);
+      if (!size)
+        throw Error(
+          "No export size keeps this project aspect within H.264 Level 4.2.",
+        );
+      width = size.width;
+      height = size.height;
+    }
+    if (width === undefined || height === undefined)
+      throw Error("Export width and height must be passed together.");
     const result = await exportVideo(project, {
       ...options,
+      width,
+      height,
       onProgress: (done, total) => {
         void window.rimotionProgress?.({ done, total });
       },
@@ -75,8 +95,8 @@ const api = {
       frames: result.frames,
       duration: result.duration,
       bytes: result.blob.size,
-      width: options.width,
-      height: options.height,
+      width,
+      height,
       fps: options.fps,
     };
   },

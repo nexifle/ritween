@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef } from "react";
 import { PreviewAudio } from "../engine/audio";
 import { exportVideo } from "../engine/export";
+import { exportSizes } from "../engine/export-size";
 import { Renderer } from "../engine/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
 import { project } from "virtual:rimotion-project";
@@ -268,6 +269,8 @@ export function App() {
                   ready={state.ready}
                   exporting={state.exporting}
                   resolution={state.resolution}
+                  sizes={exportSizes(project.resolution)}
+                  aspectRatio={project.aspectRatio}
                   fps={state.fps}
                   duration={project.duration}
                   hasAudio={(project.audioTracks ?? []).length > 0}

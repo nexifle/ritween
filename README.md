@@ -28,7 +28,7 @@ From this checkout, `npm install -g .` installs the same command. `npm run cli -
 
 ## Use
 
-Play/pause with Space. Seek using the scrubber; step with the transport buttons or arrow keys. The scene timeline is read-only. Choose 360p, 720p or 1080p and 24, 30 or 60 FPS, then Export Video. Default: 720p30. Export progress reports submitted frames; download follows encoder flush and muxing. Cancel discards the partial export. A completed download stays available until the next successful export or page unload.
+Play/pause with Space. Seek using the scrubber; step with the transport buttons or arrow keys. The scene timeline is read-only. Choose an export size that keeps the project aspect, and 24, 30 or 60 FPS, then Export Video. The steps use a short side of 360, 720 or 1080 when that frame fits H.264 Level 4.2. On a 16:9 project those sizes are still named 360p, 720p and 1080p. Default: the 720 step at 30 FPS. Export progress reports submitted frames; download follows encoder flush and muxing. Cancel discards the partial export. A completed download stays available until the next successful export or page unload.
 
 ## Architecture
 
@@ -60,7 +60,7 @@ Unit tests cover cut boundaries, scene timing, invalid manifests, frame timing a
 
 ## MVP limits
 
-Sequential, gapless, hard-cut scenes only. A Compositor interface reserves a path to rendering active scenes to intermediate textures and blending transitions; overlapping transitions are not implemented. Base preview resolution is specified by the manifest. Export presets are 16:9 and do not implement automatic letterboxing for other project ratios. Projects keep compressed samples in memory; files of 4 GiB or more are rejected. Encoding is asynchronous on the UI thread with bounded queues and cooperative yields, not a worker. Long or GPU-intensive compositions may reduce preview responsiveness during export.
+Sequential, gapless, hard-cut scenes only. A Compositor interface reserves a path to rendering active scenes to intermediate textures and blending transitions; overlapping transitions are not implemented. Base preview resolution is specified by the manifest. Export sizes keep that aspect: even scales with a short side of 360, 720 or 1080, within H.264 Level 4.2. A size with a different aspect is rejected. There is no letterboxing. Projects keep compressed samples in memory; files of 4 GiB or more are rejected. Encoding is asynchronous on the UI thread with bounded queues and cooperative yields, not a worker. Long or GPU-intensive compositions may reduce preview responsiveness during export.
 
 No microphone input, DOM/HTML rasterization, clip dragging, or automatic TSX-to-GPU conversion. Setup may fetch resources, but rendering must be synchronous and seekable. Use trusted scene code only: scene modules execute as part of the application. GPU/codec availability varies by platform; unsupported configurations display errors rather than substitute a different rendering or recording pipeline.
 

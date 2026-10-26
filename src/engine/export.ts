@@ -1,4 +1,5 @@
 import { renderAudio, SAMPLE_RATE } from "./audio";
+import { assertExportSize } from "./export-size";
 import { Renderer } from "./renderer";
 import { MP4Muxer } from "./mp4";
 import { frameCount, frameTiming } from "./timeline";
@@ -97,15 +98,9 @@ export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
 }
 export async function exportVideo(project: Project, options: ExportOptions) {
   const { width, height, fps, signal, onProgress } = options;
-  if (
-    ![24, 30, 60].includes(fps) ||
-    ![
-      [640, 360],
-      [1280, 720],
-      [1920, 1080],
-    ].some(([w, h]) => w === width && h === height)
-  )
-    throw Error("Unsupported export preset.");
+  if (![24, 30, 60].includes(fps))
+    throw Error("Unsupported export frame rate.");
+  assertExportSize(project, width, height);
   if (
     typeof VideoEncoder === "undefined" ||
     typeof OffscreenCanvas === "undefined"

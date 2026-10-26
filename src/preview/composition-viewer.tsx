@@ -295,7 +295,9 @@ export function CompositionViewer({
           )}
         </div>
       </div>
-      <div className="px-2 pt-1.5 pb-2">{children}</div>
+      <div className="border-t border-separator bg-card/25 px-2.5 py-1">
+        {children}
+      </div>
     </section>
   );
 }

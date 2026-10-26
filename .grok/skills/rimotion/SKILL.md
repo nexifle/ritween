@@ -4,7 +4,8 @@ description: >
   Author a Rimotion video by writing seekable WebGPU scene modules and a
   project manifest, then preview, render a PNG frame, and export MP4 with the
   rimotion CLI. Use when the user wants a Rimotion video, a new scene, a
-  shader scene, a still frame, an MP4 export, or runs /rimotion.
+  shader scene, a chart in a video, a still frame, an MP4 export, or runs
+  /rimotion.
 ---
 
 # Rimotion
@@ -21,6 +22,10 @@ Read the one that matches the task and follow it. Use a second reference when th
 - The command failed, the manifest was rejected, or the frame looks wrong: [references/failures.md](references/failures.md)
 - Move vertices, build them from indices, morph shapes, draw edge ribbons, or vary instances: [references/vertex.md](references/vertex.md)
 - Toon bands, warm and cool light, strokes, paper grain, a shell outline, or a screen-space edge: [references/npr.md](references/npr.md)
+- Place data on a scale and draw ticks, labels, and a quiet grid: [references/chart-scales.md](references/chart-scales.md)
+- Choose a mark and draw bars, lines, areas, points, bins, or slices: [references/chart-marks.md](references/chart-marks.md)
+- Stroke a thick series, reduce a long series, or show density: [references/chart-series.md](references/chart-series.md)
+- Move a chart across the shot: [references/chart-motion.md](references/chart-motion.md)
 
 Types are `src/engine/types.ts`. Timeline checks are `src/engine/timeline.ts`. Flags are `rimotion --help` and `CLI.md`.
 

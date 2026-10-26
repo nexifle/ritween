@@ -22,7 +22,7 @@ export function LaneBlock({
         left: `${(start / total) * 100}%`,
         width: `${(duration / total) * 100}%`,
         borderColor: active ? color : "var(--clip)",
-        backgroundColor: `color-mix(in srgb, ${color} 7.0588%, transparent)`,
+        backgroundColor: `color-mix(in srgb, ${color} var(--clip-fill), transparent)`,
       }}
     >
       <div className="truncate text-[11px] font-medium leading-3" style={{ color }}>

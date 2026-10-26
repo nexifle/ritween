@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseOptions } from "../cli/options.mjs";
-import { resolveProject } from "../cli/project.mjs";
+import { resolveProject, resolveSceneSource, sceneSources } from "../cli/project.mjs";
 import { fileURLToPath } from "node:url";
 test("CLI resolves web preview, PNG preview alias, frame indices and export presets", () => {
   assert.equal(parseOptions(["preview"]).command, "preview");
@@ -61,4 +61,17 @@ test("CLI discovers a project and reports absent manifests", async () => {
   await assert.rejects(
     resolveProject("/nonexistent/rimotion-project", false, root),
   );
+});
+test("scene source reads files next to the manifest and rejects paths that leave it", () => {
+  const manifest = fileURLToPath(
+    new URL("../src/project/manifest.ts", import.meta.url),
+  );
+  const { sources } = sceneSources(manifest);
+  assert.match(sources["scenes/intro.ts"], /createIntro/);
+  assert.match(sources["scenes/main.tsx"], /createMain/);
+  assert.match(sources["scenes/outro.js"], /createOutro/);
+  assert.equal(resolveSceneSource(manifest, "../engine/types.ts"), null);
+  assert.equal(resolveSceneSource(manifest, "/etc/passwd"), null);
+  assert.equal(resolveSceneSource(manifest, "scenes/missing.ts"), null);
+  assert.equal(resolveSceneSource(manifest, "scenes/intro.ts?raw"), null);
 });

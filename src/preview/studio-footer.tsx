@@ -8,9 +8,10 @@ export function StudioFooter() {
         every frame
       </span>
       <span>
-        Space plays · ← → step · scroll picture to zoom, drag to pan · timeline
-        scroll pans, ⌘/Ctrl-scroll zooms · drag dividers to resize, double-click
-        a divider to reset
+        Space plays · ← → step · scroll picture to zoom, drag to pan · Code
+        shows the scene file · timeline scroll pans, ⌘/Ctrl-scroll zooms ·
+        click a scene path to pin its source · drag dividers to resize,
+        double-click a divider to reset
       </span>
     </footer>
   );

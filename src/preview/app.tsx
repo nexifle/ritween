@@ -5,11 +5,12 @@ import { exportSizes } from "../engine/export-size";
 import { Renderer } from "../engine/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
 import { project } from "virtual:rimotion-project";
+import { sources } from "virtual:rimotion-sources";
 import { CompositionViewer } from "./composition-viewer";
 import { ErrorBanner } from "./error-banner";
 import { ExportPanel } from "./export-panel";
 import { ProjectHeading } from "./project-heading";
-import { SourceNote } from "./source-note";
+import { SceneSource } from "./scene-source";
 import { initial, reducer } from "./state";
 import { StudioDock } from "./studio-dock";
 import { StudioFooter } from "./studio-footer";
@@ -144,7 +145,8 @@ export function App() {
       const target = e.target as HTMLElement;
       if (
         ["INPUT", "SELECT", "BUTTON", "A"].includes(target.tagName) ||
-        target.closest("[data-slot=resizable-handle]")
+        target.closest("[data-slot=resizable-handle]") ||
+        target.closest("[data-scene-source]")
       )
         return;
       if (e.code === "Space") {
@@ -215,6 +217,23 @@ export function App() {
     }
   }
   const active = evaluate(project, state.time).entry;
+  const pinSource = (id: string) => dispatch({ type: "pinSource", id });
+  const sceneSource = (
+    <SceneSource
+      scenes={project.scenes}
+      sources={sources}
+      activeId={active.id}
+      pinnedId={state.pinnedSourceId}
+      expanded={state.sourceOpen}
+      onPin={pinSource}
+      onFollow={() => dispatch({ type: "followSource" })}
+      onExpand={
+        state.sourceOpen
+          ? undefined
+          : () => dispatch({ type: "setSourceOpen", open: true })
+      }
+    />
+  );
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <StudioHeader />
@@ -240,6 +259,11 @@ export function App() {
                 onView={(zoom, panX, panY) =>
                   dispatch({ type: "compView", zoom, panX, panY })
                 }
+                sourceOpen={state.sourceOpen}
+                onToggleSource={() =>
+                  dispatch({ type: "setSourceOpen", open: !state.sourceOpen })
+                }
+                source={state.sourceOpen ? sceneSource : null}
               >
                 <Transport
                   ready={state.ready}
@@ -263,8 +287,8 @@ export function App() {
             </>
           }
           inspector={
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <div className="flex min-h-full flex-col">
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="max-h-[48%] min-h-0 shrink overflow-y-auto">
                 <ExportPanel
                   ready={state.ready}
                   exporting={state.exporting}
@@ -283,10 +307,15 @@ export function App() {
                   onExport={() => void startExport()}
                   onCancel={() => abort.current?.abort()}
                 />
-                <div className="mt-auto">
-                  <SourceNote source="src/project/manifest.ts" />
-                </div>
               </div>
+              {state.sourceOpen ? (
+                <p className="border-t border-separator px-3 py-2.5 text-[11px] leading-[1.4] text-hint-foreground">
+                  Scene source is open on the composition. Choose Picture to
+                  read it here again.
+                </p>
+              ) : (
+                sceneSource
+              )}
             </div>
           }
           timeline={
@@ -304,6 +333,7 @@ export function App() {
               onZoom={(zoom) => dispatch({ type: "tlZoom", zoom })}
               onSeek={seekTo}
               onToggleMute={(id) => dispatch({ type: "toggleTrackMute", id })}
+              onOpenSource={pinSource}
             />
           }
         />

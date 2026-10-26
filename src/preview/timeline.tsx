@@ -35,6 +35,7 @@ export function Timeline({
   onZoom,
   onSeek,
   onToggleMute,
+  onOpenSource,
 }: {
   ref?: Ref<TimelineHandle>;
   duration: number;
@@ -49,6 +50,7 @@ export function Timeline({
   onZoom: (zoom: number) => void;
   onSeek: (time: number) => void;
   onToggleMute: (id: string) => void;
+  onOpenSource: (id: string) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -274,6 +276,7 @@ export function Timeline({
             className="relative select-none"
             style={{ width: contentWidth > 0 ? contentWidth : "100%" }}
             onPointerDown={(event) => {
+              if ((event.target as HTMLElement).closest("button")) return;
               if (event.button === 1 || event.altKey) {
                 event.preventDefault();
                 const scroller = scrollerRef.current;
@@ -365,6 +368,7 @@ export function Timeline({
                   title={scene.name}
                   detail={scene.source}
                   active={activeSceneId === scene.id}
+                  onInspect={() => onOpenSource(scene.id)}
                 />
               ))}
             </div>

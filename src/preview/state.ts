@@ -23,6 +23,8 @@ export type State = {
   compPanX: number;
   compPanY: number;
   tlZoom: number;
+  pinnedSourceId: string | null;
+  sourceOpen: boolean;
 };
 
 export const initial: State = {
@@ -47,6 +49,8 @@ export const initial: State = {
   compPanX: 0,
   compPanY: 0,
   tlZoom: 1,
+  pinnedSourceId: null,
+  sourceOpen: false,
 };
 
 export type Action =
@@ -60,7 +64,10 @@ export type Action =
   | { type: "toggleMasterMute" }
   | { type: "setVolume"; volumeDb: number }
   | { type: "compView"; zoom: number; panX: number; panY: number }
-  | { type: "tlZoom"; zoom: number };
+  | { type: "tlZoom"; zoom: number }
+  | { type: "pinSource"; id: string }
+  | { type: "followSource" }
+  | { type: "setSourceOpen"; open: boolean };
 
 export function reducer(s: State, a: Action): State {
   if (a.type === "patch") return { ...s, ...a.value };
@@ -84,6 +91,9 @@ export function reducer(s: State, a: Action): State {
     };
   if (a.type === "tlZoom")
     return { ...s, tlZoom: clamp(a.zoom, 1, TL_ZOOM_MAX) };
+  if (a.type === "pinSource") return { ...s, pinnedSourceId: a.id };
+  if (a.type === "followSource") return { ...s, pinnedSourceId: null };
+  if (a.type === "setSourceOpen") return { ...s, sourceOpen: a.open };
   if (a.type === "toggleTrackMute")
     return {
       ...s,

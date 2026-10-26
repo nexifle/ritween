@@ -20,6 +20,9 @@ export function CompositionViewer({
   error,
   canvasRef,
   onView,
+  sourceOpen,
+  onToggleSource,
+  source,
   children,
 }: {
   resolution: readonly [number, number];
@@ -31,6 +34,9 @@ export function CompositionViewer({
   error: string;
   canvasRef: RefObject<HTMLCanvasElement | null>;
   onView: (zoom: number, panX: number, panY: number) => void;
+  sourceOpen: boolean;
+  onToggleSource: () => void;
+  source: ReactNode;
   children: ReactNode;
 }) {
   const wellRef = useRef<HTMLDivElement>(null);
@@ -137,15 +143,37 @@ export function CompositionViewer({
       {gesture.hint}
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-separator px-2 py-1 text-[11px]">
         <span className="flex items-center gap-1.5 text-emphasis">
-          <Icon name="film" size={14} />
-          Composition
+          <Icon name={sourceOpen ? "code" : "film"} size={14} />
+          {sourceOpen ? "Source" : "Composition"}
         </span>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            className={`${miniButton} ${sourceOpen ? "" : "bg-accent text-accent-foreground"}`}
+            aria-pressed={!sourceOpen}
+            onClick={() => {
+              if (sourceOpen) onToggleSource();
+            }}
+          >
+            Picture
+          </button>
+          <button
+            type="button"
+            className={`${miniButton} ${sourceOpen ? "bg-accent text-accent-foreground" : ""}`}
+            aria-pressed={sourceOpen}
+            onClick={() => {
+              if (!sourceOpen) onToggleSource();
+            }}
+          >
+            Code
+          </button>
+        </div>
         <span className="text-meta">
           {resolution[0]}×{resolution[1]}
           <span className="mx-1.5 text-dot">·</span>
           {aspectRatio.join(":")}
         </span>
-        <div className="flex items-center gap-0.5">
+        <div className={`items-center gap-0.5 ${sourceOpen ? "hidden" : "flex"}`}>
           <button
             type="button"
             className={miniButton}
@@ -183,9 +211,12 @@ export function CompositionViewer({
           </button>
         </div>
       </div>
+      {sourceOpen && (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{source}</div>
+      )}
       <div
         ref={wellRef}
-        className={`relative min-h-0 flex-1 touch-none overflow-hidden bg-canvas ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+        className={`${sourceOpen ? "hidden" : "relative min-h-0 flex-1 touch-none overflow-hidden bg-canvas"} ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
         style={{ containerType: "size" }}
         onPointerEnter={gesture.onPointerEnter}
         onPointerLeave={gesture.onPointerLeave}

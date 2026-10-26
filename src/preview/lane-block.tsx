@@ -6,6 +6,7 @@ export function LaneBlock({
   title,
   detail,
   active,
+  onInspect,
 }: {
   start: number;
   duration: number;
@@ -14,6 +15,7 @@ export function LaneBlock({
   title: string;
   detail: string;
   active?: boolean;
+  onInspect?: () => void;
 }) {
   return (
     <div
@@ -28,7 +30,24 @@ export function LaneBlock({
       <div className="truncate text-[11px] font-medium leading-3" style={{ color }}>
         {title}
       </div>
-      <p className="truncate font-mono text-[11px] leading-3 text-detail">{detail}</p>
+      {onInspect ? (
+        <button
+          type="button"
+          className="block max-w-full truncate text-left font-mono text-[11px] leading-3 text-detail hover:text-foreground hover:underline"
+          aria-label={`View source ${detail}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onInspect();
+          }}
+        >
+          {detail}
+        </button>
+      ) : (
+        <p className="truncate font-mono text-[11px] leading-3 text-detail">
+          {detail}
+        </p>
+      )}
     </div>
   );
 }

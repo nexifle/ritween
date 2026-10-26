@@ -85,6 +85,28 @@
   --color-chart-3: var(--chart-3);
 }
 
+.hl-keyword {
+  color: var(--hl-keyword);
+}
+.hl-string {
+  color: var(--hl-string);
+}
+.hl-comment {
+  color: var(--hl-comment);
+}
+.hl-number {
+  color: var(--hl-number);
+}
+.hl-function {
+  color: var(--hl-function);
+}
+.hl-type {
+  color: var(--hl-type);
+}
+.hl-punctuation {
+  color: var(--hl-punctuation);
+}
+
 :root {
   color-scheme: light;
   --background: #c8c9d0;
@@ -160,6 +182,13 @@
   --chart-1: #6450a4;
   --chart-2: #2a7484;
   --chart-3: #8a5672;
+  --hl-keyword: #4e34ad;
+  --hl-string: #1f6d78;
+  --hl-comment: #6a6f7c;
+  --hl-number: #8a3d62;
+  --hl-function: #2a4f86;
+  --hl-type: #6450a4;
+  --hl-punctuation: #454a58;
   --clip-fill: 16%;
   font-family: var(--font-sans);
   font-synthesis: none;
@@ -244,6 +273,13 @@
   --chart-1: #b8a1f5;
   --chart-2: #78cfde;
   --chart-3: #d1a6ca;
+  --hl-keyword: #cbb6ff;
+  --hl-string: #8ad7e2;
+  --hl-comment: #8b90a3;
+  --hl-number: #e2b4d4;
+  --hl-function: #9ec5ff;
+  --hl-type: #d7c8ff;
+  --hl-punctuation: #a8abb9;
   --clip-fill: 8%;
 }
 

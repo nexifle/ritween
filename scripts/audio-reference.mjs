@@ -1,6 +1,16 @@
+/** Opens and closes a clip bus without overlapping ramps on short clips. */
+function windowClip(param, start, duration) {
+  const ramp = Math.min(0.005, duration / 2);
+  const end = start + duration;
+  param.setValueAtTime(0, start);
+  param.linearRampToValueAtTime(1, start + ramp);
+  if (end - ramp > start + ramp) param.setValueAtTime(1, end - ramp);
+  param.linearRampToValueAtTime(0, end);
+}
+
 /** Test-only eager native renderer: deliberately bypasses managed graph compilation. */
 export async function renderEagerAudio(project, mutedIds, fps) {
-  const { audioSampleCount, SAMPLE_RATE, windowClip } =
+  const { audioSampleCount, SAMPLE_RATE } =
     await import("../src/engine/audio.ts");
   const muted = new Set(mutedIds);
   const tracks = (project.audioTracks ?? []).filter(

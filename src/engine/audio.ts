@@ -5,7 +5,6 @@ import type { Project } from "./types";
 /** 24, 30, and 60 all divide this, so audio length matches an exact frame count. */
 export const SAMPLE_RATE = 48_000;
 export const PREVIEW_VOLUME_DB = -18;
-const CLIP_RAMP_SECONDS = 0.005;
 // Retain at most one successful mix per project. Weak ownership lets HMR and
 // closed projects release PCM; switching mute settings replaces the old mix.
 const exportMixes = new WeakMap<
@@ -21,16 +20,6 @@ export function audioSampleCount(duration: number, fps: number) {
   if (!Number.isInteger(fps) || fps <= 0 || SAMPLE_RATE % fps !== 0)
     throw Error("Audio sample rate must divide evenly by FPS.");
   return frameCount(duration, fps) * (SAMPLE_RATE / fps);
-}
-
-/** Opens and closes a clip bus. Short clips split the ramp instead of overlapping it. */
-export function windowClip(param: AudioParam, start: number, duration: number) {
-  const ramp = Math.min(CLIP_RAMP_SECONDS, duration / 2);
-  const end = start + duration;
-  param.setValueAtTime(0, start);
-  param.linearRampToValueAtTime(1, start + ramp);
-  if (end - ramp > start + ramp) param.setValueAtTime(1, end - ramp);
-  param.linearRampToValueAtTime(0, end);
 }
 
 /**

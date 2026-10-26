@@ -241,13 +241,6 @@ export function valueAt(
   return value;
 }
 
-export type MixEdge = {
-  from: number;
-  to: number | null;
-  output: number;
-  input: number;
-};
-
 export type MixNode = {
   id: number;
   kind: string;

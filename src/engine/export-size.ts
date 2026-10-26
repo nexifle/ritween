@@ -30,10 +30,6 @@ function nearestEven(value: number) {
   return 2 * Math.round(value / 2);
 }
 
-function macroblocks(width: number, height: number) {
-  return Math.ceil(width / 16) * Math.ceil(height / 16);
-}
-
 /** Even dimensions that a Level 4.2 H.264 encoder is allowed to store. */
 export function fitsH264Level42(width: number, height: number) {
   if (!Number.isInteger(width) || !Number.isInteger(height)) return false;

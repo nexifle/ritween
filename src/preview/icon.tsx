@@ -21,6 +21,9 @@ import {
   FitToScreenIcon,
   Image01Icon,
   AspectRatioIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
 } from "@hugeicons/core-free-icons";
 
 export const icons: Record<string, IconSvgElement> = {
@@ -45,6 +48,9 @@ export const icons: Record<string, IconSvgElement> = {
   fit: FitToScreenIcon,
   image: Image01Icon,
   "aspect-ratio": AspectRatioIcon,
+  "chevron-down": ChevronDownIcon,
+  "chevron-right": ChevronRightIcon,
+  "chevron-up": ChevronUpIcon,
 };
 
 export function Icon({

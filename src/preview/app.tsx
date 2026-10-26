@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { PreviewAudio } from "../engine/audio";
 import { exportSizes } from "../engine/export-size";
@@ -17,6 +24,7 @@ import {
   ResizablePanelGroup,
 } from "./resizable";
 import { SceneSource } from "./scene-source";
+import { SidebarPanel } from "./sidebar-panel";
 import { initial, reducer } from "./state";
 import { StudioDock } from "./studio-dock";
 import { StudioFooter } from "./studio-footer";
@@ -290,6 +298,9 @@ export function App() {
     () => dispatch({ type: "setSourceOpen", open: true }),
     [],
   );
+  const [exportCollapsed, setExportCollapsed] = useState(false);
+  const [sourceCollapsed, setSourceCollapsed] = useState(false);
+
   const sceneSource = (
     <SceneSource
       scenes={project.scenes}
@@ -297,11 +308,121 @@ export function App() {
       activeId={active.id}
       pinnedId={state.pinnedSourceId}
       expanded={state.sourceOpen}
+      collapsed={sourceCollapsed}
+      onToggleCollapse={(next) => setSourceCollapsed(next)}
       onPin={pinSource}
       onFollow={followSource}
       onExpand={state.sourceOpen ? undefined : expandSource}
     />
   );
+
+  const renderExport = (collapsed: boolean) => (
+    <ExportPanel
+      ready={state.ready}
+      exporting={state.exporting}
+      stage={state.exportStage}
+      resolution={state.resolution}
+      sizes={exportSizes(project.resolution)}
+      aspectRatio={project.aspectRatio}
+      fps={state.fps}
+      duration={project.duration}
+      hasAudio={(project.audioTracks ?? []).length > 0}
+      done={state.done}
+      total={state.total}
+      result={state.result}
+      download={state.download}
+      collapsed={collapsed}
+      onToggleCollapse={(next) => setExportCollapsed(next)}
+      onResolution={(resolution) => patch({ resolution })}
+      onFps={(fps) => patch({ fps })}
+      onExport={() => void startExport()}
+      onCancel={() => abort.current?.abort()}
+    />
+  );
+
+  const renderSource = (collapsed: boolean) =>
+    state.sourceOpen ? (
+      <SidebarPanel
+        icon="code"
+        title="Scene source"
+        collapsed={collapsed}
+        onToggleCollapse={(next) => setSourceCollapsed(next)}
+        contentClassName="p-3"
+      >
+        <p className="text-[11px] leading-[1.4] text-hint-foreground">
+          Scene source is open on the composition. Choose Picture to read it here again.
+        </p>
+      </SidebarPanel>
+    ) : (
+      <SceneSource
+        scenes={project.scenes}
+        sources={sources}
+        activeId={active.id}
+        pinnedId={state.pinnedSourceId}
+        expanded={state.sourceOpen}
+        collapsed={collapsed}
+        onToggleCollapse={(next) => setSourceCollapsed(next)}
+        onPin={pinSource}
+        onFollow={followSource}
+        onExpand={state.sourceOpen ? undefined : expandSource}
+      />
+    );
+
+  let inspectorContent: ReactNode;
+  if (exportCollapsed && sourceCollapsed) {
+    inspectorContent = (
+      <div className="flex h-full w-full flex-col overflow-hidden bg-card">
+        <div className="h-8 shrink-0">{renderExport(true)}</div>
+        <div className="h-8 shrink-0">{renderSource(true)}</div>
+        <div className="flex-1 min-h-0 bg-canvas/30" />
+      </div>
+    );
+  } else if (exportCollapsed) {
+    inspectorContent = (
+      <div className="flex h-full w-full flex-col overflow-hidden bg-card">
+        <div className="h-8 shrink-0">{renderExport(true)}</div>
+        <div className="flex flex-1 min-h-0 flex-col">{renderSource(false)}</div>
+      </div>
+    );
+  } else if (sourceCollapsed) {
+    inspectorContent = (
+      <div className="flex h-full w-full flex-col overflow-hidden bg-card">
+        <div className="flex flex-1 min-h-0 flex-col">{renderExport(false)}</div>
+        <div className="h-8 shrink-0">{renderSource(true)}</div>
+      </div>
+    );
+  } else {
+    inspectorContent = (
+      <ResizablePanelGroup
+        id="rimotion-inspector"
+        orientation="vertical"
+        defaultLayout={inspectorLayout.defaultLayout}
+        onLayoutChanged={inspectorLayout.onLayoutChanged}
+      >
+        <ResizablePanel
+          id="export"
+          defaultSize="48%"
+          minSize="20%"
+          style={dockPaneStyle}
+        >
+          <div className="absolute inset-0 flex min-h-0 flex-col">
+            {renderExport(false)}
+          </div>
+        </ResizablePanel>
+        <ResizableHandle withHandle />
+        <ResizablePanel
+          id="source"
+          defaultSize="52%"
+          minSize="20%"
+          style={dockPaneStyle}
+        >
+          <div className="absolute inset-0 flex min-h-0 flex-col">
+            {renderSource(false)}
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    );
+  }
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <StudioHeader />
@@ -353,63 +474,7 @@ export function App() {
               </CompositionViewer>
             </>
           }
-          inspector={
-            <ResizablePanelGroup
-              id="rimotion-inspector"
-              orientation="vertical"
-              defaultLayout={inspectorLayout.defaultLayout}
-              onLayoutChanged={inspectorLayout.onLayoutChanged}
-            >
-              <ResizablePanel
-                id="export"
-                defaultSize="48%"
-                minSize="20%"
-                style={dockPaneStyle}
-              >
-                <div className="absolute inset-0 min-h-0 overflow-y-auto">
-                  <ExportPanel
-                    ready={state.ready}
-                    exporting={state.exporting}
-                    stage={state.exportStage}
-                    resolution={state.resolution}
-                    sizes={exportSizes(project.resolution)}
-                    aspectRatio={project.aspectRatio}
-                    fps={state.fps}
-                    duration={project.duration}
-                    hasAudio={(project.audioTracks ?? []).length > 0}
-                    done={state.done}
-                    total={state.total}
-                    result={state.result}
-                    download={state.download}
-                    onResolution={(resolution) => patch({ resolution })}
-                    onFps={(fps) => patch({ fps })}
-                    onExport={() => void startExport()}
-                    onCancel={() => abort.current?.abort()}
-                  />
-                </div>
-              </ResizablePanel>
-              <ResizableHandle withHandle />
-              <ResizablePanel
-                id="source"
-                defaultSize="52%"
-                minSize="20%"
-                style={dockPaneStyle}
-              >
-                <div className="absolute inset-0 flex min-h-0 flex-col">
-                  {state.sourceOpen ? (
-                    <div className="flex h-full min-h-0 flex-col bg-card p-3">
-                      <p className="text-[11px] leading-[1.4] text-hint-foreground">
-                        Scene source is open on the composition. Choose Picture to
-                        read it here again.
-                      </p>
-                    </div>
-                  ) : (
-                    sceneSource
-                  )}
-                </div>
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          }
+          inspector={inspectorContent}
           timeline={
             <Timeline
               ref={timelineRef}

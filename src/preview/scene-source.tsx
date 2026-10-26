@@ -2,7 +2,7 @@ import { memo, useMemo, useState } from "react";
 import type { SceneEntry } from "../engine/types";
 import { miniButton } from "./controls";
 import { highlightLines, type HighlightKind } from "./highlight";
-import { Icon } from "./icon";
+import { SidebarPanel } from "./sidebar-panel";
 
 const tokenClass: Partial<Record<HighlightKind, string>> = {
   comment: "hl-comment",
@@ -23,6 +23,8 @@ export const SceneSource = memo(function SceneSource({
   onFollow,
   onExpand,
   expanded = false,
+  collapsed,
+  onToggleCollapse,
 }: {
   scenes: readonly SceneEntry[];
   sources: Record<string, string | null>;
@@ -32,6 +34,8 @@ export const SceneSource = memo(function SceneSource({
   onFollow: () => void;
   onExpand?: () => void;
   expanded?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: (collapsed: boolean) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const shownId =
@@ -59,18 +63,16 @@ export const SceneSource = memo(function SceneSource({
   };
   if (!scene) return null;
   return (
-    <section
+    <SidebarPanel
       data-scene-source
       aria-label={`Source of ${scene.source}`}
-      className="flex min-h-0 flex-1 flex-col bg-card"
-    >
-      <div className="flex shrink-0 items-center gap-1.5 px-3 pt-2 pb-1">
-        <Icon name="code" size={16} />
-        <h2 className="text-[11px] font-medium">Scene source</h2>
-        <span className="min-w-0 truncate font-mono text-[11px] text-code-foreground">
-          {scene.name}
-        </span>
-        <div className="ml-auto flex shrink-0 items-center gap-1">
+      icon="code"
+      title="Scene source"
+      subtitle={scene.name}
+      collapsed={collapsed}
+      onToggleCollapse={onToggleCollapse}
+      actions={
+        <>
           {pinnedId && (
             <button type="button" className={miniButton} onClick={onFollow}>
               Follow
@@ -89,9 +91,11 @@ export const SceneSource = memo(function SceneSource({
           >
             {copied ? "Copied" : "Copy"}
           </button>
-        </div>
-      </div>
-      <div className="flex shrink-0 gap-1 overflow-x-auto px-3 pb-2">
+        </>
+      }
+      contentClassName="flex min-h-0 flex-1 flex-col"
+    >
+      <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-separator/40 px-2.5 py-1.5">
         {scenes.map((item) => {
           const selected = item.id === scene.id;
           const playing = item.id === activeId;
@@ -145,6 +149,6 @@ export const SceneSource = memo(function SceneSource({
           </pre>
         </div>
       )}
-    </section>
+    </SidebarPanel>
   );
 });

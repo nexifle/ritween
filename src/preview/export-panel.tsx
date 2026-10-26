@@ -1,6 +1,7 @@
 import type { ExportSize } from "../engine/export-size";
 import { frameCount } from "../engine/timeline";
 import { Icon } from "./icon";
+import { SidebarPanel } from "./sidebar-panel";
 
 export function ExportPanel({
   ready,
@@ -16,6 +17,8 @@ export function ExportPanel({
   total,
   result,
   download,
+  collapsed,
+  onToggleCollapse,
   onResolution,
   onFps,
   onExport,
@@ -34,14 +37,21 @@ export function ExportPanel({
   total: number;
   result: string;
   download: string;
+  collapsed?: boolean;
+  onToggleCollapse?: (collapsed: boolean) => void;
   onResolution: (resolution: string) => void;
   onFps: (fps: number) => void;
   onExport: () => void;
   onCancel: () => void;
 }) {
   return (
-    <section className="p-3">
-      <h2 className="mb-0.5 text-[11px] font-medium">Export video</h2>
+    <SidebarPanel
+      icon="export"
+      title="Export video"
+      collapsed={collapsed}
+      onToggleCollapse={onToggleCollapse}
+      contentClassName="p-3"
+    >
       <p className="mb-2.5 text-[11px] leading-[1.4] text-muted-foreground">
         From source to a shareable MP4.
         <br />
@@ -113,7 +123,7 @@ export function ExportPanel({
       <button
         onClick={onExport}
         disabled={!ready || exporting || !resolution}
-        className="flex h-8 w-full items-center justify-center gap-1.5 rounded-sm bg-primary text-[11px] font-semibold text-primary-foreground hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45"
+        className="flex h-8 w-full items-center justify-center gap-1.5 rounded-sm bg-primary text-[11px] font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45"
       >
         <Icon name="export" size={16} />
         {exporting ? "Exporting…" : "Export Video"}
@@ -160,6 +170,6 @@ export function ExportPanel({
           )}
         </div>
       )}
-    </section>
+    </SidebarPanel>
   );
 }

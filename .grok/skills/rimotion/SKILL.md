@@ -37,5 +37,5 @@ Types are `src/engine/types.ts`. Timeline checks are `src/engine/timeline.ts`. F
 
 1. Follow the reference. Keep scenes ordered, gapless, and hard-cut. Keep each audio clip inside the composition, and keep clips on one track from overlapping.
 2. Render a PNG on each side of every cut you touched, and one timestamp inside the scene. Seek backward as well as forward.
-3. Export with `--json`. A nonzero exit, or stderr `{"event":"error",...}`, is a failed export.
+3. Set the manifest resolution to the frame the request names, and pass that same size to `export --resolution`. The size names are in [references/command-sessions.md](references/command-sessions.md). Export with `--json`. A nonzero exit, or stderr `{"event":"error",...}`, is a failed export.
 4. Fix the scene or the manifest. Edit `src/engine/` only when the task is the framework.

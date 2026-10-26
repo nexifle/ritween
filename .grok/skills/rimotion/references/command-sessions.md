@@ -41,7 +41,7 @@ Stdout on success:
 }
 ```
 
-`bytes` and `elapsedSeconds` vary. `width` and `height` follow the project base resolution unless `--resolution` is set. Frame accepts `360p`, `720p`, `1080p`, or `WIDTHxHEIGHT` with each side from 1 to 8192. Export accepts only `360p` (640×360), `720p` (1280×720), and `1080p` (1920×1080), and defaults to `720p`.
+`bytes` and `elapsedSeconds` vary. `width` and `height` follow the project base resolution unless `--resolution` is set. `frame` accepts `360p`, `720p`, `1080p`, or `WIDTHxHEIGHT` with each side from 1 to 8192.
 
 Frame index `156` at 30 FPS is time `5.2`:
 
@@ -54,6 +54,18 @@ rimotion frame --frame 156 --fps 30 -o /tmp/frame.png --json --force
 Repeat the same `--time` and compare the two PNGs when you need proof the scene is seekable.
 
 ## MP4
+
+Set `resolution` to the frame the request names, and pass that same size to `--resolution`.
+
+`360p`, `720p`, and `1080p` are only 640×360, 1280×720, and 1920×1080. They match a 16:9 project. On any other aspect they fail. Every other aspect uses an even `WIDTHxHEIGHT` with the same aspect as `resolution`.
+
+Full HD is the short-side 1080 step. 16:9 full HD is `1080p` (1920×1080). 9:16 full HD is `1080x1920`, with `resolution: [1080, 1920]` and `aspectRatio: [9, 16]`. 1:1 full HD is `1080x1080`. 4:5 full HD is `1080x1350`. HD is the short-side 720 step, so 9:16 HD is `720x1280`, not full HD.
+
+The steps are short side 360, 720, and 1080 when the frame fits H.264 Level 4.2: even dimensions, at most 8704 macroblocks, neither side above 4208. A 21:9 full HD frame does not fit, so that project has no 1080-class size.
+
+Omitting `--resolution` exports the short-side 720 step. That is 1280×720 on 16:9 and 720×1280 on 9:16. It is not full HD. Do not omit the flag when the request names a frame.
+
+The bundled demo is 16:9, so its full-HD export is `1080p` and its default export is `720p`:
 
 ```sh
 rimotion export -o /tmp/video.mp4 --resolution 720p --fps 30 --json

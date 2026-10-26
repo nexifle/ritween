@@ -120,7 +120,7 @@ export const project: Project = {
 };
 ```
 
-`resolution / aspect` must match within `0.001`. `1280/720` and `16/9` do. Sound, when this project has any, is `audioTracks` on that same object. Follow [audio.md](audio.md). Import `AudioClipSource` from `rimotion`.
+`resolution / aspect` must match within `0.001`. `1280/720` and `16/9` do. That pair is the 16:9 example. When the request names another frame, set both fields to that frame. Export sizes are in [command-sessions.md](command-sessions.md). Sound, when this project has any, is `audioTracks` on that same object. Follow [audio.md](audio.md). Import `AudioClipSource` from `rimotion`.
 
 The fragment above divides by `1280` because this manifest's base width is 1280. Export presets change the target size. Prefer `resolution` from the render context, written into the uniform, whenever the same scene is exported at more than one preset. The in-repo helper already does that with `u.resolution`.
 

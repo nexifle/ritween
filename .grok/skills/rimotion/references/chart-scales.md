@@ -18,7 +18,7 @@ const plot = {
 };
 ```
 
-`width` and `height` are `resolution`. A 720p export and a 1080p export must both receive that pair. A scale baked for 1280 will slide when the preset changes.
+`width` and `height` are `resolution`. A 720-step export and a 1080-step export must both receive that pair. A scale baked for one width will slide when the export size changes. The frame may be portrait or square.
 
 Pixel y grows downward. Data y grows upward, so the y range runs from the bottom of the plot to the top: `[plot.y + plot.h, plot.y]`. Clip y grows upward again. One place flips it, the uniform, and every mark uses that uniform.
 
@@ -81,7 +81,7 @@ view.offset = [pxc * (2 / width) - 1, 1 - pyc * (2 / height)];
 
 Sixteen floats, 64 bytes, is the whole view. Changing the window writes those bytes again.
 
-A device pixel ratio above 1 is `resolution` itself in an export: the frame is already 1280×720 or 1920×1080. Use `dpr = 1` unless you are mapping CSS pixels. Anti-alias widths are in target pixels, so multiply a pixel-space distance by `dpr` only when the positions were computed in a smaller CSS space.
+A device pixel ratio above 1 is `resolution` itself in an export: the frame is already the chosen export size. Use `dpr = 1` unless you are mapping CSS pixels. Anti-alias widths are in target pixels, so multiply a pixel-space distance by `dpr` only when the positions were computed in a smaller CSS space.
 
 ## Ticks at 1, 2, and 5
 

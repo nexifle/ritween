@@ -19,9 +19,15 @@ Options:
   --time SECONDS           Frame timestamp (default: 0)
   --frame INDEX            Zero-based frame index, divided by --fps
   --resolution PRESET      360p, 720p, 1080p or WIDTHxHEIGHT
+                           360p, 720p, and 1080p are 16:9 only
+                           (640x360, 1280x720, 1920x1080).
+                           Any other aspect uses WIDTHxHEIGHT.
+                           9:16 full HD is 1080x1920.
+                           The size must be even and match
+                           the project aspect.
+                           Omitting this flag exports the
+                           short-side 720 step, not full HD.
                            Frame defaults to the project resolution.
-                           Export defaults to that aspect at short side 720.
-                           360p, 720p and 1080p stay 16:9.
   --fps N                  24, 30 or 60 (default: 30)
   --port N                 Preview port (default: 5173; next free if busy)
   --open                   Open the web preview in your default browser

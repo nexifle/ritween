@@ -15,10 +15,13 @@ Read the `message` in the stderr JSON. Change the scene or the manifest to match
 | `Frame time 12s exceeds composition duration 8s.` | Pick a time from `0` through `duration`, inclusive. |
 | `Frame index must be less than N for this composition at 30 FPS.` | Valid indexes are `0 .. ceil(duration * fps) - 1`. |
 | `Use frame for a single timestamp; export renders the whole composition.` | Drop `--time` and `--frame` from `export`. |
-| `MP4 export supports 360p, 720p or 1080p.` | Export presets only. Custom `WIDTHxHEIGHT` is for `frame`. |
+| `Export 1920×1080 does not match the project aspect 9:16 (1080×1920).` | The export size and the manifest aspect differ. Use the matching size in [command-sessions.md](command-sessions.md). `1080p` is 1920×1080. |
 | `Output exists: ... Pass --force to replace it.` | New path, or `--force`. |
 | `Could not launch Chrome/Chromium...` | Install Chrome, or pass `--channel` / `--browser`. |
-| `Export exceeds 4 GiB; choose a smaller resolution.` | Lower the preset or shorten the composition. |
+| `Export dimensions must be even.` | Both sides of an export size are even. |
+| `Export dimensions must be even and fit H.264 Level 4.2` | The frame is too large. Use a shorter side. The limits are in [command-sessions.md](command-sessions.md). |
+| `No export size keeps this project aspect within H.264 Level 4.2.` | No 360, 720, or 1080 step of this aspect fits. |
+| `Export exceeds 4 GiB; choose a smaller resolution.` | Lower the size or shorten the composition. |
 
 A Vite overlay on the preview page is a scene compile error. The CLI copies that overlay text into the error message. Fix the module it names.
 

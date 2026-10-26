@@ -2,6 +2,7 @@ import {
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type Ref,
@@ -197,10 +198,13 @@ export function Timeline({
 
   const viewStart = pxPerSec > 0 ? scrollLeft / pxPerSec : 0;
   const viewEnd = pxPerSec > 0 ? (scrollLeft + laneWidth) / pxPerSec : duration;
-  const ruler =
-    pxPerSec > 0
-      ? rulerMarks(duration, pxPerSec, fps, viewStart, viewEnd)
-      : { marks: [] as { time: number; major: boolean }[], major: 1 };
+  const ruler = useMemo(
+    () =>
+      pxPerSec > 0
+        ? rulerMarks(duration, pxPerSec, fps, viewStart, viewEnd)
+        : { marks: [] as { time: number; major: boolean }[], major: 1 },
+    [duration, pxPerSec, fps, viewStart, viewEnd],
+  );
   const timeAtClient = (clientX: number) => {
     const content = contentRef.current;
     if (!content) return 0;

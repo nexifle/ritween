@@ -125,8 +125,8 @@ export async function renderAudio(
 }
 
 /**
- * Lookahead preview. The picture waits while the score is recorded, then
- * follows the audio clock. Export does not use this class.
+ * Lookahead preview. Prepare while opening the project; playback only resumes
+ * the context and arms the prepared score. The picture follows the audio clock.
  * `unlock` must run inside the user gesture, before any await.
  */
 export class PreviewAudio {
@@ -140,8 +140,14 @@ export class PreviewAudio {
   private blocking = false;
   private pendingOffset = 0;
   private generation = 0;
+  private disposed = false;
+  private resuming: Promise<void> | null = null;
+  private suspension: Promise<void> | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  private mutedTrackIds: readonly string[] = [];
 
-  unlock() {
+  private createContext() {
+    if (this.disposed) throw Error("Preview audio is disposed.");
     const Ctx =
       window.AudioContext ??
       (
@@ -160,7 +166,31 @@ export class PreviewAudio {
       this.mix = new LiveMix(this.ctx, this.monitor);
       this.applyMonitor(true);
     }
-    if (this.ctx.state !== "running") void this.ctx.resume();
+  }
+
+  /** No resume here: assets/score can be prepared before the first gesture. */
+  async prepare(project: Project) {
+    if (!(project.audioTracks ?? []).some((track) => track.clips.length))
+      return false;
+    this.createContext();
+    // Also suspend on browsers that allow autoplay, avoiding idle device work.
+    if (!this.playing && this.ctx!.state === "running") this.suspend();
+    return this.mix!.prepare(project, this.mutedTrackIds);
+  }
+
+  unlock() {
+    clearTimeout(this.idleTimer);
+    this.createContext();
+    if (this.suspension || this.ctx!.state !== "running") {
+      this.resuming = this.ctx!.resume();
+      // Gesture handlers do not await this. play() observes the same promise.
+      void this.resuming.catch(() => {});
+    }
+  }
+
+  setMuted(trackIds: readonly string[]) {
+    this.mutedTrackIds = [...trackIds];
+    this.mix?.setMuted(trackIds);
   }
 
   setMonitor(volumeDb: number, masterMuted: boolean) {
@@ -169,7 +199,7 @@ export class PreviewAudio {
     this.applyMonitor(false);
   }
 
-  /** True while the score is still being recorded. The picture should hold. */
+  /** True while preparation or context resume is pending. The picture holds. */
   isBlocking() {
     return this.blocking;
   }
@@ -182,13 +212,26 @@ export class PreviewAudio {
   }
 
   async play(from: number, project: Project, mutedTrackIds: readonly string[]) {
+    if (!(project.audioTracks ?? []).some((track) => track.clips.length)) {
+      this.stop();
+      return;
+    }
     this.unlock();
     const generation = ++this.generation;
     this.playing = true;
     this.pendingOffset = from;
     this.blocking = true;
     this.armed = false;
-    const audible = await this.mix!.prepare(project, mutedTrackIds);
+    let audible: boolean;
+    try {
+      [audible] = await Promise.all([
+        this.mix!.prepare(project, mutedTrackIds),
+        this.resuming,
+      ]);
+    } catch (error) {
+      if (generation === this.generation) this.stop();
+      throw error;
+    }
     if (!this.playing || generation !== this.generation) return;
     this.blocking = false;
     if (!audible) return;
@@ -208,15 +251,32 @@ export class PreviewAudio {
     this.armed = false;
     this.blocking = false;
     this.mix?.stop();
+    clearTimeout(this.idleTimer);
+    if (!this.disposed && this.ctx) {
+      this.idleTimer = setTimeout(() => {
+        if (!this.playing && this.ctx?.state === "running") this.suspend();
+      }, 3000);
+    }
   }
 
   dispose() {
+    this.disposed = true;
     this.stop();
     this.mix?.dispose();
     this.mix = null;
     void this.ctx?.close();
     this.ctx = null;
     this.monitor = null;
+  }
+
+  private suspend() {
+    const pending = this.ctx!.suspend();
+    this.suspension = pending;
+    void pending
+      .catch(() => {})
+      .finally(() => {
+        if (this.suspension === pending) this.suspension = null;
+      });
   }
 
   private applyMonitor(immediate: boolean) {

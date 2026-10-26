@@ -12,6 +12,8 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "node scripts/validate-browser.mjs",
+    "test:preview": "node scripts/validate-preview.mjs",
+    "benchmark:preview": "node scripts/diagnose-preview.mjs",
     "benchmark:export": "node scripts/benchmark-export.mjs",
     "cli": "node bin/rimotion.mjs",
     "test:cli": "node scripts/validate-cli.mjs"

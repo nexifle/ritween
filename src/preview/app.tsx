@@ -1,6 +1,5 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 import { PreviewAudio } from "../engine/audio";
-import { exportVideo } from "../engine/export";
 import { exportSizes } from "../engine/export-size";
 import { Renderer } from "../engine/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
@@ -39,26 +38,37 @@ export function App() {
     alive.current = true;
     let cancelled = false;
     const initialization = new AbortController();
-    void Renderer.create(
+    const player = mix();
+    const picture = Renderer.create(
       canvas.current!,
       project,
       (error) => {
         if (!cancelled) patch({ error, playing: false, ready: false });
       },
       initialization.signal,
-    )
-      .then((r) => {
-        if (cancelled) {
-          r.dispose();
-          return;
-        }
-        renderer.current = r;
-        r.render(0);
-        patch({ ready: true });
+    ).then((r) => {
+      if (cancelled) {
+        r.dispose();
+        return;
+      }
+      renderer.current = r;
+      r.render(0);
+    });
+    // Download/decode and record the score alongside GPU setup. Once the
+    // transport is enabled, first Play has the same prepared score as replay.
+    void Promise.all([picture, player.prepare(project)])
+      .then(() => {
+        if (!cancelled) patch({ ready: true });
       })
       .catch((e) => {
-        if (!cancelled)
+        if (!cancelled) {
           patch({ error: String(e instanceof Error ? e.message : e) });
+          cancelled = true;
+          initialization.abort();
+          player.dispose();
+          renderer.current?.dispose();
+          renderer.current = null;
+        }
       });
     return () => {
       alive.current = false;
@@ -81,6 +91,9 @@ export function App() {
     }
   }, [state.time, state.ready]);
   const mutedKey = state.mutedTrackIds.join("\0");
+  useEffect(() => {
+    audio.current?.setMuted(state.mutedTrackIds);
+  }, [mutedKey]);
   useEffect(() => {
     const player = audio.current;
     if (!player) return;
@@ -123,7 +136,7 @@ export function App() {
       cancelAnimationFrame(id);
       player.stop();
     };
-  }, [state.playing, mutedKey]);
+  }, [state.playing]);
   useEffect(() => {
     const onHide = () => {
       if (document.hidden) dispatch({ type: "pause" });
@@ -133,7 +146,11 @@ export function App() {
   }, []);
   const toggle = () => {
     if (!state.ready || state.exporting) return;
-    mix().unlock();
+    if (
+      !state.playing &&
+      project.audioTracks?.some((track) => track.clips.length)
+    )
+      mix().unlock();
     dispatch({ type: "toggle" });
   };
   const seekTo = (time: number) => {
@@ -192,6 +209,7 @@ export function App() {
     });
     const [width, height] = state.resolution.split("x").map(Number);
     try {
+      const { exportVideo } = await import("../engine/export");
       const result = await exportVideo(project, {
         width,
         height,
@@ -235,7 +253,18 @@ export function App() {
     }
   }
   const active = evaluate(project, state.time).entry;
-  const pinSource = (id: string) => dispatch({ type: "pinSource", id });
+  const pinSource = useCallback(
+    (id: string) => dispatch({ type: "pinSource", id }),
+    [],
+  );
+  const followSource = useCallback(
+    () => dispatch({ type: "followSource" }),
+    [],
+  );
+  const expandSource = useCallback(
+    () => dispatch({ type: "setSourceOpen", open: true }),
+    [],
+  );
   const sceneSource = (
     <SceneSource
       scenes={project.scenes}
@@ -244,12 +273,8 @@ export function App() {
       pinnedId={state.pinnedSourceId}
       expanded={state.sourceOpen}
       onPin={pinSource}
-      onFollow={() => dispatch({ type: "followSource" })}
-      onExpand={
-        state.sourceOpen
-          ? undefined
-          : () => dispatch({ type: "setSourceOpen", open: true })
-      }
+      onFollow={followSource}
+      onExpand={state.sourceOpen ? undefined : expandSource}
     />
   );
   return (
@@ -294,7 +319,6 @@ export function App() {
                   onSeek={seekAndReveal}
                   onToggle={toggle}
                   onMasterMute={() => {
-                    mix().unlock();
                     dispatch({ type: "toggleMasterMute" });
                   }}
                   onVolume={(volumeDb) =>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { SceneEntry } from "../engine/types";
 import { miniButton } from "./controls";
 import { highlightLines, type HighlightKind } from "./highlight";
@@ -14,7 +14,7 @@ const tokenClass: Partial<Record<HighlightKind, string>> = {
   punctuation: "hl-punctuation",
 };
 
-export function SceneSource({
+export const SceneSource = memo(function SceneSource({
   scenes,
   sources,
   activeId,
@@ -39,8 +39,14 @@ export function SceneSource({
       ? pinnedId
       : activeId;
   const scene = scenes.find((item) => item.id === shownId) ?? scenes[0];
-  const code = scene && Object.hasOwn(sources, scene.source) ? sources[scene.source] : null;
-  const lines = code == null ? [] : highlightLines(code);
+  const code =
+    scene && Object.hasOwn(sources, scene.source)
+      ? sources[scene.source]
+      : null;
+  const lines = useMemo(
+    () => (code == null ? [] : highlightLines(code)),
+    [code],
+  );
   const copy = () => {
     if (code == null) return;
     void navigator.clipboard?.writeText(code).then(
@@ -141,4 +147,4 @@ export function SceneSource({
       )}
     </section>
   );
-}
+});

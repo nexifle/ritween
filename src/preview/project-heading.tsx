@@ -11,7 +11,7 @@ export function ProjectHeading({
     ? "Runtime connected"
     : error
       ? "Runtime unavailable"
-      : "Initializing WebGPU";
+      : "Preparing preview";
   return (
     <div className="flex min-h-10 shrink-0 items-center gap-3 border-b border-separator px-3">
       <div className="min-w-0">

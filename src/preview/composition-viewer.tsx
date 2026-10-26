@@ -289,8 +289,8 @@ export function CompositionViewer({
           {!ready && (
             <div className="absolute inset-0 flex items-center justify-center bg-overlay/90 p-4 text-center text-[13px] text-overlay-foreground">
               {error
-                ? "Preview requires an available WebGPU device."
-                : "Preparing scene pipelines…"}
+                ? "Preview could not be prepared."
+                : "Preparing picture and audio…"}
             </div>
           )}
         </div>

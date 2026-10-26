@@ -3,6 +3,7 @@ export const help = `Rimotion — code-first WebGPU video rendering
 
 Usage:
   rimotion preview [project]                  Serve live web preview
+  rimotion --demo --open                      Preview the bundled example
   rimotion preview [project] --time 5.2 -o frame.png
   rimotion frame [project] --time 5.2 -o frame.png
   rimotion frame [project] --frame 156 --fps 30 -o frame.png
@@ -59,7 +60,12 @@ export function parseOptions(argv) {
   });
   if (values.help || values.version) return values;
   let [command, positionalProject, ...extra] = positionals;
-  if (!command) return { ...values, help: true };
+  if (!command) {
+    // --demo and --open only apply to preview, so they select that command.
+    if (values.demo || values.open || values.port !== undefined)
+      command = "preview";
+    else return { ...values, help: true };
+  }
   if (!["preview", "frame", "export"].includes(command))
     throw Error(`Unknown command: ${command}. Use --help.`);
   if (extra.length || (positionalProject && values.project))

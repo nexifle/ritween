@@ -32,10 +32,12 @@ The published package is a Node program. `npm install -g` links `rimotion` to `b
 ```sh
 npm install -g rimotion
 rimotion --help
-rimotion preview --demo --open
+rimotion --demo --open
 rimotion frame --demo --time 5.2 -o frame.png
 rimotion export --demo -o video.mp4
 ```
+
+`--demo` and `--open` start a web preview when no command is given. `rimotion preview --demo --open` is the same command.
 
 From a checkout of this repository, `npm install -g .` installs the working tree the same way. `npm pack --pack-destination release` writes `release/rimotion-0.1.0.tgz`; `npm install -g ./release/rimotion-0.1.0.tgz` installs that tarball. Chrome/Chromium and a working GPU driver remain external requirements.
 

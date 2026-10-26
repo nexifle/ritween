@@ -29,6 +29,11 @@ test("CLI resolves web preview, PNG preview alias, frame indices and export pres
   assert.equal(video.height, 1080);
   assert.equal(video.fps, 60);
   assert.equal(parseOptions(["frame", "--resolution", "256x144"]).width, 256);
+  const demo = parseOptions(["--demo", "--open"]);
+  assert.equal(demo.command, "preview");
+  assert.equal(demo.demo, true);
+  assert.equal(demo.open, true);
+  assert.equal(parseOptions([]).help, true);
 });
 test("CLI rejects ambiguous and unsupported options before browser startup", () => {
   for (const args of [

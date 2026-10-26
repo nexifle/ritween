@@ -62,11 +62,11 @@ export const SceneSource = memo(function SceneSource({
     <section
       data-scene-source
       aria-label={`Source of ${scene.source}`}
-      className="flex min-h-0 flex-1 flex-col border-t border-separator bg-card"
+      className="flex min-h-0 flex-1 flex-col bg-card"
     >
       <div className="flex shrink-0 items-center gap-1.5 px-3 pt-2 pb-1">
         <Icon name="code" size={16} />
-        <h2 className="text-xs/normal font-medium">Scene source</h2>
+        <h2 className="text-[11px] font-medium">Scene source</h2>
         <span className="min-w-0 truncate font-mono text-[11px] text-code-foreground">
           {scene.name}
         </span>

@@ -41,7 +41,7 @@ export function ExportPanel({
 }) {
   return (
     <section className="p-3">
-      <h2 className="mb-0.5 text-[13px] font-medium">Export video</h2>
+      <h2 className="mb-0.5 text-[11px] font-medium">Export video</h2>
       <p className="mb-2.5 text-[11px] leading-[1.4] text-muted-foreground">
         From source to a shareable MP4.
         <br />
@@ -56,7 +56,7 @@ export function ExportPanel({
           disabled={exporting}
           value={resolution}
           onChange={(e) => onResolution(e.target.value)}
-          className="mb-2 h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-xs/normal"
+          className="mb-2 h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-[11px]"
         >
           {sizes.map((size) => (
             <option
@@ -84,7 +84,7 @@ export function ExportPanel({
         disabled={exporting}
         value={fps}
         onChange={(e) => onFps(Number(e.target.value))}
-        className="h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-xs/normal"
+        className="h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-[11px]"
       >
         {[24, 30, 60].map((f) => (
           <option key={f} value={f}>
@@ -113,13 +113,13 @@ export function ExportPanel({
       <button
         onClick={onExport}
         disabled={!ready || exporting || !resolution}
-        className="flex h-8 w-full items-center justify-center gap-1.5 rounded-sm bg-primary text-xs/normal font-semibold text-primary-foreground hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45"
+        className="flex h-8 w-full items-center justify-center gap-1.5 rounded-sm bg-primary text-[11px] font-semibold text-primary-foreground hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45"
       >
         <Icon name="export" size={16} />
         {exporting ? "Exporting…" : "Export Video"}
       </button>
       {exporting ? (
-        <div className="mt-3.5 text-xs/normal">
+        <div className="mt-3.5 text-[11px]">
           <p role="status" className="mb-2 text-muted-foreground">
             {stage}
           </p>
@@ -146,7 +146,7 @@ export function ExportPanel({
       {result && (
         <div
           role="status"
-          className="mt-4 text-xs leading-[1.7] text-success-foreground"
+          className="mt-4 text-[11px] leading-[1.7] text-success-foreground"
         >
           {result}
           {download && (

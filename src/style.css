@@ -284,11 +284,6 @@
 }
 
 button,
-select,
-input {
-  font: inherit;
-}
-button,
 select {
   cursor: pointer;
 }

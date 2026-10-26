@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useDefaultLayout } from "react-resizable-panels";
 import { PreviewAudio } from "../engine/audio";
 import { exportSizes } from "../engine/export-size";
 import { Renderer } from "../engine/renderer";
@@ -9,6 +10,12 @@ import { CompositionViewer } from "./composition-viewer";
 import { ErrorBanner } from "./error-banner";
 import { ExportPanel } from "./export-panel";
 import { ProjectHeading } from "./project-heading";
+import {
+  dockPaneStyle,
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "./resizable";
 import { SceneSource } from "./scene-source";
 import { initial, reducer } from "./state";
 import { StudioDock } from "./studio-dock";
@@ -27,6 +34,10 @@ export function App() {
   const audio = useRef<PreviewAudio | null>(null);
   const timeRef = useRef(0);
   const timelineRef = useRef<TimelineHandle>(null);
+  const inspectorLayout = useDefaultLayout({
+    id: "rimotion-inspector",
+    onlySaveAfterUserInteractions: true,
+  });
   const patch = (value: Partial<typeof state>) =>
     dispatch({ type: "patch", value });
   const mix = () => {
@@ -343,37 +354,61 @@ export function App() {
             </>
           }
           inspector={
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="max-h-[48%] min-h-0 shrink overflow-y-auto">
-                <ExportPanel
-                  ready={state.ready}
-                  exporting={state.exporting}
-                  stage={state.exportStage}
-                  resolution={state.resolution}
-                  sizes={exportSizes(project.resolution)}
-                  aspectRatio={project.aspectRatio}
-                  fps={state.fps}
-                  duration={project.duration}
-                  hasAudio={(project.audioTracks ?? []).length > 0}
-                  done={state.done}
-                  total={state.total}
-                  result={state.result}
-                  download={state.download}
-                  onResolution={(resolution) => patch({ resolution })}
-                  onFps={(fps) => patch({ fps })}
-                  onExport={() => void startExport()}
-                  onCancel={() => abort.current?.abort()}
-                />
-              </div>
-              {state.sourceOpen ? (
-                <p className="border-t border-separator px-3 py-2.5 text-[11px] leading-[1.4] text-hint-foreground">
-                  Scene source is open on the composition. Choose Picture to
-                  read it here again.
-                </p>
-              ) : (
-                sceneSource
-              )}
-            </div>
+            <ResizablePanelGroup
+              id="rimotion-inspector"
+              orientation="vertical"
+              defaultLayout={inspectorLayout.defaultLayout}
+              onLayoutChanged={inspectorLayout.onLayoutChanged}
+            >
+              <ResizablePanel
+                id="export"
+                defaultSize="48%"
+                minSize="20%"
+                style={dockPaneStyle}
+              >
+                <div className="absolute inset-0 min-h-0 overflow-y-auto">
+                  <ExportPanel
+                    ready={state.ready}
+                    exporting={state.exporting}
+                    stage={state.exportStage}
+                    resolution={state.resolution}
+                    sizes={exportSizes(project.resolution)}
+                    aspectRatio={project.aspectRatio}
+                    fps={state.fps}
+                    duration={project.duration}
+                    hasAudio={(project.audioTracks ?? []).length > 0}
+                    done={state.done}
+                    total={state.total}
+                    result={state.result}
+                    download={state.download}
+                    onResolution={(resolution) => patch({ resolution })}
+                    onFps={(fps) => patch({ fps })}
+                    onExport={() => void startExport()}
+                    onCancel={() => abort.current?.abort()}
+                  />
+                </div>
+              </ResizablePanel>
+              <ResizableHandle withHandle />
+              <ResizablePanel
+                id="source"
+                defaultSize="52%"
+                minSize="20%"
+                style={dockPaneStyle}
+              >
+                <div className="absolute inset-0 flex min-h-0 flex-col">
+                  {state.sourceOpen ? (
+                    <div className="flex h-full min-h-0 flex-col bg-card p-3">
+                      <p className="text-[11px] leading-[1.4] text-hint-foreground">
+                        Scene source is open on the composition. Choose Picture to
+                        read it here again.
+                      </p>
+                    </div>
+                  ) : (
+                    sceneSource
+                  )}
+                </div>
+              </ResizablePanel>
+            </ResizablePanelGroup>
           }
           timeline={
             <Timeline

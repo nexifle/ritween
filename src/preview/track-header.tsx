@@ -8,7 +8,7 @@ export function TrackHeader({
   onMute?: () => void;
 }) {
   return (
-    <div className={`flex h-[34px] items-center justify-between gap-1 border-b border-row px-1.5 ${muted ? "opacity-45" : ""}`}>
+    <div className={`flex h-10 shrink-0 items-center justify-between gap-1 border-b border-row px-1.5 ${muted ? "opacity-45" : ""}`}>
       <span className="min-w-0 truncate text-[11px] font-medium text-secondary-foreground">
         {label}
       </span>

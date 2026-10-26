@@ -53,6 +53,7 @@ export function Timeline({
   onOpenSource: (id: string) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const pendingScroll = useRef<number | null>(null);
   const tlDrag = useRef<{ id: number; x: number; scroll: number } | null>(null);
@@ -60,8 +61,9 @@ export function Timeline({
   const zoomRef = useRef(zoom);
   const [laneWidth, setLaneWidth] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
+  const [laneScrollbar, setLaneScrollbar] = useState(0);
   const gesture = useRestHint(
-    "Scroll to pan. Command or Ctrl-scroll to zoom. Drag to scrub. Alt-drag to pan.",
+    "Scroll vertically to reach tracks below. Shift-scroll pans. Command or Ctrl-scroll zooms. Drag to scrub. Alt-drag to pan.",
   );
   zoomRef.current = zoom;
 
@@ -142,10 +144,26 @@ export function Timeline({
     pendingScroll.current = null;
     setScrollLeft(el.scrollLeft);
   }, [zoom, laneWidth]);
+  const syncHeader = () => {
+    const lane = scrollerRef.current;
+    const header = headerRef.current;
+    if (!lane || !header) return;
+    const bar = lane.offsetHeight - lane.clientHeight;
+    setLaneScrollbar((current) => (current === bar ? current : bar));
+    header.scrollTop = lane.scrollTop;
+  };
+  useLayoutEffect(() => {
+    const lane = scrollerRef.current;
+    const header = headerRef.current;
+    if (lane && header) header.scrollTop = lane.scrollTop;
+  }, [laneScrollbar]);
   useEffect(() => {
     const lane = scrollerRef.current;
     const watch = new ResizeObserver(() => {
-      if (lane) setLaneWidth(lane.clientWidth);
+      if (!lane) return;
+      setLaneWidth(lane.clientWidth);
+      const bar = lane.offsetHeight - lane.clientHeight;
+      setLaneScrollbar((current) => (current === bar ? current : bar));
     });
     if (lane) {
       watch.observe(lane);
@@ -163,8 +181,10 @@ export function Timeline({
         applyZoomRef.current(zoomRef.current * factor, event.clientX);
         return;
       }
-      const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
-      if (!horizontal && zoomRef.current <= 1.01) return;
+      const canScrollY = lane.scrollHeight > lane.clientHeight + 1;
+      const horizontal =
+        event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY);
+      if (!horizontal && (zoomRef.current <= 1.01 || canScrollY)) return;
       event.preventDefault();
       lane.scrollLeft += horizontal ? event.deltaX : event.deltaY;
     };
@@ -192,7 +212,7 @@ export function Timeline({
   return (
     <section
       aria-label="Read-only composition timeline"
-      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-sequence"
+      className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-sequence"
     >
       {gesture.hint}
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-separator px-2 py-1">
@@ -249,8 +269,11 @@ export function Timeline({
           </button>
         </div>
       </div>
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-y-auto">
-        <div className="w-[92px] shrink-0 border-r border-separator bg-secondary">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div
+          ref={headerRef}
+          className="w-[92px] shrink-0 overflow-hidden border-r border-separator bg-secondary"
+        >
           <div className="h-7 border-b border-row" />
           <TrackHeader label="V1" />
           {audioTracks.map((track) => (
@@ -261,11 +284,15 @@ export function Timeline({
               onMute={() => onToggleMute(track.id)}
             />
           ))}
+          <div style={{ height: laneScrollbar }} />
         </div>
         <div
           ref={scrollerRef}
-          className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden"
-          onScroll={(event) => setScrollLeft(event.currentTarget.scrollLeft)}
+          className="min-h-0 min-w-0 flex-1 overflow-auto"
+          onScroll={(event) => {
+            setScrollLeft(event.currentTarget.scrollLeft);
+            syncHeader();
+          }}
           onPointerEnter={gesture.onPointerEnter}
           onPointerMove={gesture.onPointerMove}
           onPointerLeave={gesture.onPointerLeave}
@@ -357,7 +384,7 @@ export function Timeline({
                   />
                 ))}
             </div>
-            <div className="relative h-[34px] border-b border-row">
+            <div className="relative h-10 border-b border-row">
               {scenes.map((scene, index) => (
                 <LaneBlock
                   key={scene.id}
@@ -375,7 +402,7 @@ export function Timeline({
             {audioTracks.map((track, index) => (
               <div
                 key={track.id}
-                className={`relative h-[34px] border-b border-row ${mutedTrackIds.includes(track.id) ? "opacity-45" : ""}`}
+                className={`relative h-10 border-b border-row ${mutedTrackIds.includes(track.id) ? "opacity-45" : ""}`}
               >
                 {track.clips.map((clip) => (
                   <LaneBlock

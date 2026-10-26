@@ -16,7 +16,9 @@
     "benchmark:preview": "node scripts/diagnose-preview.mjs",
     "benchmark:export": "node scripts/benchmark-export.mjs",
     "cli": "node bin/rimotion.mjs",
-    "test:cli": "node scripts/validate-cli.mjs"
+    "test:cli": "node scripts/validate-cli.mjs",
+    "benchmark:pipelines": "node scripts/benchmark-pipelines.mjs",
+    "test:export": "node scripts/validate-export-pipeline.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.0",

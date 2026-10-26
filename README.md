@@ -73,3 +73,5 @@ Run `npm run benchmark:export` while Vite is running. It benchmarks all nine pre
 
 See [export audio performance](PERFORMANCE.md) for profiling, automatic graph scheduling, and memory limits.
 See [preview startup research and measurements](PREVIEW_PERFORMANCE.md) for first-play preparation, idle behavior, and the Web Audio course review.
+
+Audio and video export run concurrently by default. See the [pipeline benchmark](EXPORT_PIPELINE_BENCHMARK.md) for the sequential comparison and validation.

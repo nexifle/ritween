@@ -1,3 +1,4 @@
+import { runExportPipelines, type ExportPipeline } from "./export-pipeline";
 import { waitForEncoderCapacity } from "./encoder-queue";
 import { renderAudio, SAMPLE_RATE } from "./audio";
 import { assertExportSize } from "./export-size";
@@ -16,17 +17,31 @@ export const AAC_CODEC = "mp4a.40.2";
  */
 export const AAC_PRIMING_SAMPLES = 2112;
 
+export type ExportStage =
+  "audio-mix" | "audio-encode" | "scene-setup" | "video-encode" | "mux";
 export interface ExportOptions {
   width: number;
   height: number;
   fps: number;
+  /** Audio and video overlap by default; sequential is retained for comparison. */
+  pipeline?: ExportPipeline;
   mutedTrackIds?: readonly string[];
   signal?: AbortSignal;
-  onStage?: (
-    stage:
-      "audio-mix" | "audio-encode" | "scene-setup" | "video-encode" | "mux",
-  ) => void;
+  onStage?: (stage: ExportStage) => void;
+  onStageComplete?: (stage: ExportStage) => void;
   onProgress?: (done: number, total: number) => void;
+}
+async function exportStage<T>(
+  options: ExportOptions,
+  stage: ExportStage,
+  job: () => Promise<T>,
+) {
+  options.onStage?.(stage);
+  try {
+    return await job();
+  } finally {
+    options.onStageComplete?.(stage);
+  }
 }
 export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
   if (typeof AudioEncoder === "undefined" || typeof AudioData === "undefined")
@@ -143,25 +158,61 @@ export async function exportVideo(project: Project, options: ExportOptions) {
     );
   signal?.throwIfAborted();
   onProgress?.(0, frameCount(project.duration, fps));
-  options.onStage?.("audio-mix");
+  // Paint the initial status before author-supplied audio/scene setup starts.
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const soundtrack = await renderAudio(
-    project,
-    options.mutedTrackIds ?? [],
-    fps,
+  const muxer = new MP4Muxer(width, height, fps);
+  const [aac, encoded] = await runExportPipelines(
+    options.pipeline ?? "parallel",
     signal,
+    async (signal) => {
+      const soundtrack = await exportStage(options, "audio-mix", () =>
+        renderAudio(project, options.mutedTrackIds ?? [], fps, signal),
+      );
+      signal.throwIfAborted();
+      const aac = soundtrack
+        ? await exportStage(options, "audio-encode", () =>
+            encodeAac(soundtrack, signal),
+          )
+        : null;
+      if (aac && aac.sampleRate !== SAMPLE_RATE)
+        throw Error("Audio mix sample rate did not match the export clock.");
+      return aac;
+    },
+    (signal) =>
+      encodeVideoTrack(
+        project,
+        { ...options, signal },
+        support.config ?? config,
+        muxer,
+      ),
   );
   signal?.throwIfAborted();
-  options.onStage?.("audio-encode");
-  const aac = soundtrack ? await encodeAac(soundtrack, signal) : null;
-  if (aac && aac.sampleRate !== SAMPLE_RATE)
-    throw Error("Audio mix sample rate did not match the export clock.");
+  if (aac) {
+    muxer.setAudioPriming(AAC_PRIMING_SAMPLES);
+    for (const chunk of aac.chunks)
+      muxer.addAudio(
+        chunk,
+        aac.description,
+        aac.sampleRate,
+        AAC_FRAME_SAMPLES,
+        AAC_BITRATE,
+      );
+  }
+  const blob = await exportStage(options, "mux", async () => muxer.finalize());
+  return { blob, frames: encoded, duration: encoded / fps };
+}
+
+async function encodeVideoTrack(
+  project: Project,
+  options: ExportOptions,
+  config: VideoEncoderConfig,
+  muxer: MP4Muxer,
+) {
+  const { width, height, fps, signal, onProgress } = options;
   let failure: unknown;
   const codecFailure = new AbortController();
   let encoded = 0;
   let renderer: Renderer | undefined;
-  const muxer = new MP4Muxer(width, height, fps);
-  if (aac) muxer.setAudioPriming(AAC_PRIMING_SAMPLES);
   const encoder = new VideoEncoder({
     output(chunk, metadata) {
       try {
@@ -184,53 +235,50 @@ export async function exportVideo(project: Project, options: ExportOptions) {
     },
   });
   try {
-    encoder.configure(support.config ?? config);
+    signal?.throwIfAborted();
+    encoder.configure(config);
     const canvas = new OffscreenCanvas(width, height);
-    options.onStage?.("scene-setup");
-    renderer = await Renderer.create(
-      canvas,
-      project,
-      (message) => {
-        failure = Error(message);
-        codecFailure.abort(failure);
-      },
-      signal,
+    renderer = await exportStage(options, "scene-setup", () =>
+      Renderer.create(
+        canvas,
+        project,
+        (message) => {
+          failure = Error(message);
+          codecFailure.abort(failure);
+        },
+        signal,
+      ),
     );
     const total = frameCount(project.duration, fps);
-    options.onStage?.("video-encode");
-    for (let i = 0; i < total; i++) {
+    const activeRenderer = renderer;
+    await exportStage(options, "video-encode", async () => {
+      for (let i = 0; i < total; i++) {
+        signal?.throwIfAborted();
+        if (failure) throw failure;
+        activeRenderer.render(i / fps);
+        await activeRenderer.device.queue.onSubmittedWorkDone();
+        const frame = new VideoFrame(canvas, frameTiming(i, fps));
+        try {
+          encoder.encode(frame, { keyFrame: true });
+        } finally {
+          frame.close();
+        }
+        if (encoder.encodeQueueSize >= 4)
+          await waitForEncoderCapacity(encoder, 4, [
+            signal,
+            codecFailure.signal,
+          ]);
+        onProgress?.(i + 1, total);
+        // Yield to input, painting, and cancellation even on fast GPU devices.
+        if (i % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      await encoder.flush();
       signal?.throwIfAborted();
       if (failure) throw failure;
-      renderer.render(i / fps);
-      await renderer.device.queue.onSubmittedWorkDone();
-      const frame = new VideoFrame(canvas, frameTiming(i, fps));
-      try {
-        encoder.encode(frame, { keyFrame: true });
-      } finally {
-        frame.close();
-      }
-      if (encoder.encodeQueueSize >= 4)
-        await waitForEncoderCapacity(encoder, 4, [signal, codecFailure.signal]);
-      onProgress?.(i + 1, total);
-      // Yield to input, painting, and cancellation even on fast GPU devices.
-      if (i % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    await encoder.flush();
-    signal?.throwIfAborted();
-    if (failure) throw failure;
-    if (encoded !== total)
-      throw Error(`Encoder returned ${encoded} samples; expected ${total}.`);
-    if (aac)
-      for (const chunk of aac.chunks)
-        muxer.addAudio(
-          chunk,
-          aac.description,
-          aac.sampleRate,
-          AAC_FRAME_SAMPLES,
-          AAC_BITRATE,
-        );
-    options.onStage?.("mux");
-    return { blob: muxer.finalize(), frames: encoded, duration: encoded / fps };
+      if (encoded !== total)
+        throw Error(`Encoder returned ${encoded} samples; expected ${total}.`);
+    });
+    return encoded;
   } finally {
     if (encoder.state !== "closed") encoder.close();
     renderer?.dispose();

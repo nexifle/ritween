@@ -207,6 +207,22 @@ export function App() {
       error: "",
       result: "",
     });
+    const activeStages = new Set<string>();
+    const stageLabels: Record<string, string> = {
+      "audio-mix": "Mixing audio",
+      "audio-encode": "Encoding audio",
+      "scene-setup": "Preparing scenes",
+      "video-encode": "Encoding video",
+      mux: "Finalizing MP4",
+    };
+    const showStages = () => {
+      if (alive.current && activeStages.size)
+        patch({
+          exportStage:
+            [...activeStages].map((stage) => stageLabels[stage]).join(" + ") +
+            "…",
+        });
+    };
     const [width, height] = state.resolution.split("x").map(Number);
     try {
       const { exportVideo } = await import("../engine/export");
@@ -217,14 +233,12 @@ export function App() {
         mutedTrackIds: state.mutedTrackIds,
         signal: controller.signal,
         onStage: (stage) => {
-          const labels = {
-            "audio-mix": "Mixing audio…",
-            "audio-encode": "Encoding audio…",
-            "scene-setup": "Preparing scenes…",
-            "video-encode": "Encoding video…",
-            mux: "Finalizing MP4…",
-          };
-          if (alive.current) patch({ exportStage: labels[stage] });
+          activeStages.add(stage);
+          showStages();
+        },
+        onStageComplete: (stage) => {
+          activeStages.delete(stage);
+          showStages();
         },
         onProgress: (done, total) => {
           if (alive.current) patch({ done, total });

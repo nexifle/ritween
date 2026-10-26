@@ -34,7 +34,10 @@ Ordinary existing schedules are automatically compiled for preview and export.
 4. Cache one successful PCM mix per immutable project object and mute/FPS setting.
    A new project object/HMR invalidates the weak-key cache. Do not mutate a
    project in place after preparing it.
-5. Encode through WebCodecs with bounded queues (`encodeQueueSize` / `dequeue`),
+5. Run audio mixing/AAC and WebGPU/H.264 concurrently, then mux once both succeed.
+   The API retains `pipeline: "sequential"` for comparison. A failure or user
+   cancellation aborts the sibling job and waits for cleanup, including pending
+   scene setup. Encode through WebCodecs with bounded queues (`encodeQueueSize` / `dequeue`),
    closing each AudioData/VideoFrame after submission. Flush once at the end.
    UI and CLI show audio mix, AAC, setup, video and mux stages immediately.
 
@@ -130,3 +133,5 @@ are unchanged. `--compare` uses the test-only `scripts/audio-reference.mjs` eage
 renderer and checks maximum PCM difference ≤ 1e-4. It does not disable the managed
 compiler in production. Diagnostic output includes per-clip preparation, mixing,
 AAC, scene setup, 24 GPU frames and event-loop heartbeat delay.
+
+See [the parallel-versus-sequential benchmark](EXPORT_PIPELINE_BENCHMARK.md) for repeated timing, first-frame latency, audio repeatability, and decoded media checks.

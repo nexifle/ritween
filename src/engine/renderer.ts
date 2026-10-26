@@ -1,5 +1,30 @@
 import type { Project, Scene } from "./types";
 import { evaluate, validateProject } from "./timeline";
+/** Observe late setup failures even after a sibling pipeline cancels this wait. */
+function waitForSetup<T>(
+  work: T | PromiseLike<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal?.removeEventListener("abort", abort);
+    const abort = () => {
+      cleanup();
+      reject(signal?.reason);
+    };
+    Promise.resolve(work).then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+  });
+}
 export class Renderer {
   private scenes = new Map<string, Scene>();
   private disposed = false;
@@ -17,6 +42,7 @@ export class Renderer {
     onError: (message: string) => void = () => {},
     signal?: AbortSignal,
   ) {
+    signal?.throwIfAborted();
     validateProject(project);
     if (!navigator.gpu)
       throw Error(
@@ -27,7 +53,12 @@ export class Renderer {
       throw Error(
         "No WebGPU adapter found. Enable GPU acceleration and reload.",
       );
+    signal?.throwIfAborted();
     const device = await adapter.requestDevice();
+    if (signal?.aborted) {
+      device.destroy();
+      signal.throwIfAborted();
+    }
     const context = canvas.getContext("webgpu") as GPUCanvasContext | null;
     if (!context) {
       device.destroy();
@@ -50,20 +81,24 @@ export class Renderer {
     });
     try {
       for (const entry of project.scenes) {
+        signal?.throwIfAborted();
         const scene = entry.create();
         renderer.scenes.set(entry.id, scene);
         device.pushErrorScope("validation");
         let setupError: unknown;
         try {
-          await scene.setup({
-            device,
-            format,
-            resolution: renderer.resolution,
-          });
+          await waitForSetup(
+            scene.setup({
+              device,
+              format,
+              resolution: renderer.resolution,
+            }),
+            signal,
+          );
         } catch (error) {
           setupError = error;
         }
-        const error = await device.popErrorScope();
+        const error = await waitForSetup(device.popErrorScope(), signal);
         if (setupError) throw setupError;
         if (error) throw Error(`${entry.name}: ${error.message}`);
       }
@@ -85,24 +120,28 @@ export class Renderer {
     if (this.disposed) throw Error("Renderer is disposed.");
     const evaluation = evaluate(this.project, time);
     const encoder = this.device.createCommandEncoder();
-    this.scenes
-      .get(evaluation.entry.id)!
-      .render({
-        device: this.device,
-        format: this.format,
-        resolution: this.resolution,
-        target: this.context.getCurrentTexture(),
-        encoder,
-        ...evaluation,
-      });
+    this.scenes.get(evaluation.entry.id)!.render({
+      device: this.device,
+      format: this.format,
+      resolution: this.resolution,
+      target: this.context.getCurrentTexture(),
+      encoder,
+      ...evaluation,
+    });
     this.device.queue.submit([encoder.finish()]);
   }
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    for (const scene of this.scenes.values()) scene.dispose();
-    this.scenes.clear();
-    if (this.configured) this.context.unconfigure();
-    this.device.destroy();
+    try {
+      for (const scene of this.scenes.values()) scene.dispose();
+    } finally {
+      this.scenes.clear();
+      try {
+        if (this.configured) this.context.unconfigure();
+      } finally {
+        this.device.destroy();
+      }
+    }
   }
 }

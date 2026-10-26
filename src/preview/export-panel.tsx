@@ -33,7 +33,7 @@ export function ExportPanel({
   onCancel: () => void;
 }) {
   return (
-    <section className="rounded-lg border border-border bg-card p-3">
+    <section className="p-3">
       <h2 className="mb-0.5 text-[13px] font-medium">Export video</h2>
       <p className="mb-2.5 text-[11px] leading-[1.4] text-muted-foreground">
         From source to a shareable MP4.

@@ -32,6 +32,7 @@ export function CompositionViewer({
   onView: (zoom: number, panX: number, panY: number) => void;
   children: ReactNode;
 }) {
+  const wellRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const compDrag = useRef<{
     id: number;
@@ -40,7 +41,7 @@ export function CompositionViewer({
     panX: number;
     panY: number;
   } | null>(null);
-  const [stageWidth, setStageWidth] = useState(0);
+  const [frame, setFrame] = useState({ width: 0, height: 0 });
   const [dragging, setDragging] = useState(false);
   const viewRef = useRef({ zoom, panX, panY });
   const onViewRef = useRef(onView);
@@ -82,17 +83,18 @@ export function CompositionViewer({
   useEffect(() => {
     const stage = stageRef.current;
     const watch = new ResizeObserver(() => {
-      if (stage) setStageWidth(stage.clientWidth);
+      if (!stage) return;
+      setFrame({ width: stage.clientWidth, height: stage.clientHeight });
     });
     if (stage) {
       watch.observe(stage);
-      setStageWidth(stage.clientWidth);
+      setFrame({ width: stage.clientWidth, height: stage.clientHeight });
     }
     return () => watch.disconnect();
   }, []);
   useEffect(() => {
     const stage = stageRef.current;
-    if (!stage || stageWidth <= 0) return;
+    if (!stage || frame.width <= 0) return;
     const next = clampCompPan(
       zoom,
       panX,
@@ -102,23 +104,23 @@ export function CompositionViewer({
     );
     if (next.panX !== panX || next.panY !== panY)
       onViewRef.current(zoom, next.panX, next.panY);
-  }, [stageWidth, zoom, panX, panY]);
+  }, [frame.width, frame.height, zoom, panX, panY]);
   useEffect(() => {
-    const stage = stageRef.current;
+    const well = wellRef.current;
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       const factor = Math.exp(-event.deltaY * 0.0016);
       zoomAtRef.current(event.clientX, event.clientY, factor);
     };
-    stage?.addEventListener("wheel", onWheel, { passive: false });
-    return () => stage?.removeEventListener("wheel", onWheel);
-  }, [stageWidth]);
+    well?.addEventListener("wheel", onWheel, { passive: false });
+    return () => well?.removeEventListener("wheel", onWheel);
+  }, []);
 
   const percent =
-    stageWidth > 0
-      ? Math.max(1, Math.round(zoom * (stageWidth / resolution[0]) * 100))
+    frame.width > 0
+      ? Math.max(1, Math.round(zoom * (frame.width / resolution[0]) * 100))
       : 100;
-  const actualSizeZoom = stageWidth > 0 ? resolution[0] / stageWidth : 1;
+  const actualSizeZoom = frame.width > 0 ? resolution[0] / frame.width : 1;
   const zoomFromCenter = (factor: number) => {
     const stage = stageRef.current?.getBoundingClientRect();
     if (!stage) return;
@@ -128,7 +130,7 @@ export function CompositionViewer({
   return (
     <section
       aria-label="Video preview"
-      className="min-w-0 overflow-hidden rounded-lg border border-border bg-card"
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     >
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-separator px-2 py-1 text-[11px]">
         <span className="flex items-center gap-1.5 text-emphasis">
@@ -179,10 +181,10 @@ export function CompositionViewer({
         </div>
       </div>
       <div
-        ref={stageRef}
+        ref={wellRef}
         title="Scroll to zoom. Drag to pan."
-        className={`relative touch-none overflow-hidden bg-canvas ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
-        style={{ aspectRatio: aspectRatio[0] / aspectRatio[1] }}
+        className={`relative min-h-0 flex-1 touch-none overflow-hidden bg-canvas ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+        style={{ containerType: "size" }}
         onPointerDown={(event) => {
           if (event.button !== 0 && event.button !== 1) return;
           event.preventDefault();
@@ -224,26 +226,37 @@ export function CompositionViewer({
         }}
       >
         <div
-          className="absolute left-1/2 top-1/2 h-full w-full"
+          ref={stageRef}
+          className="absolute top-1/2 left-1/2"
           style={{
-            transform: `translate(calc(-50% + ${panX}px), calc(-50% + ${panY}px)) scale(${zoom})`,
+            aspectRatio: `${aspectRatio[0]} / ${aspectRatio[1]}`,
+            width: `min(100cqw, calc(100cqh * ${aspectRatio[0]} / ${aspectRatio[1]}))`,
+            height: `min(100cqh, calc(100cqw * ${aspectRatio[1]} / ${aspectRatio[0]}))`,
+            transform: "translate(-50%, -50%)",
           }}
         >
-          <canvas
-            ref={canvasRef}
-            width={resolution[0]}
-            height={resolution[1]}
-            className="block h-full w-full ring-1 ring-stage"
-            aria-label="WebGPU composition preview"
-          />
-        </div>
-        {!ready && (
-          <div className="absolute inset-0 flex items-center justify-center bg-overlay/90 p-4 text-center text-[13px] text-overlay-foreground">
-            {error
-              ? "Preview requires an available WebGPU device."
-              : "Preparing scene pipelines…"}
+          <div
+            className="h-full w-full"
+            style={{
+              transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
+            }}
+          >
+            <canvas
+              ref={canvasRef}
+              width={resolution[0]}
+              height={resolution[1]}
+              className="block h-full w-full ring-1 ring-stage"
+              aria-label="WebGPU composition preview"
+            />
           </div>
-        )}
+          {!ready && (
+            <div className="absolute inset-0 flex items-center justify-center bg-overlay/90 p-4 text-center text-[13px] text-overlay-foreground">
+              {error
+                ? "Preview requires an available WebGPU device."
+                : "Preparing scene pipelines…"}
+            </div>
+          )}
+        </div>
       </div>
       <div className="px-2 pt-1.5 pb-2">{children}</div>
     </section>

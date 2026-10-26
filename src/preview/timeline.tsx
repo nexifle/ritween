@@ -10,13 +10,7 @@ import type { AudioTrack, SceneEntry } from "../engine/types";
 import { miniButton } from "./controls";
 import { LaneBlock } from "./lane-block";
 import { TrackHeader } from "./track-header";
-import {
-  clamp,
-  clock,
-  formatRulerTime,
-  rulerMarks,
-  TL_ZOOM_MAX,
-} from "./view";
+import { clamp, clock, formatRulerTime, rulerMarks, TL_ZOOM_MAX } from "./view";
 
 const colors = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)"];
 
@@ -124,12 +118,16 @@ export function Timeline({
   applyZoomRef.current = applyZoom;
   const api = useRef({ reveal, zoomAroundTime, fit });
   api.current = { reveal, zoomAroundTime, fit };
-  useImperativeHandle(ref, () => ({
-    reveal: (nextTime) => api.current.reveal(nextTime),
-    zoomAroundTime: (factor, anchorTime) =>
-      api.current.zoomAroundTime(factor, anchorTime),
-    fit: () => api.current.fit(),
-  }), []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      reveal: (nextTime) => api.current.reveal(nextTime),
+      zoomAroundTime: (factor, anchorTime) =>
+        api.current.zoomAroundTime(factor, anchorTime),
+      fit: () => api.current.fit(),
+    }),
+    [],
+  );
 
   useLayoutEffect(() => {
     const el = scrollerRef.current;
@@ -188,7 +186,7 @@ export function Timeline({
   return (
     <section
       aria-label="Read-only composition timeline"
-      className="mt-3 overflow-hidden rounded-lg border border-border bg-card"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-separator px-2 py-1">
         <div className="flex items-center gap-2">
@@ -219,7 +217,10 @@ export function Timeline({
             max={1000}
             value={Math.round((Math.log(zoom) / Math.log(TL_ZOOM_MAX)) * 1000)}
             onChange={(event) =>
-              applyZoom(Math.pow(TL_ZOOM_MAX, Number(event.target.value) / 1000), null)
+              applyZoom(
+                Math.pow(TL_ZOOM_MAX, Number(event.target.value) / 1000),
+                null,
+              )
             }
             className="w-[88px] accent-primary"
           />
@@ -241,7 +242,7 @@ export function Timeline({
           </button>
         </div>
       </div>
-      <div className="flex min-w-0">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-y-auto">
         <div className="w-[92px] shrink-0 border-r border-separator bg-secondary">
           <div className="h-7 border-b border-row" />
           <TrackHeader label="V1" />
@@ -313,7 +314,8 @@ export function Timeline({
             <div className="relative h-7 overflow-hidden border-b border-row bg-muted">
               {ruler.marks.map((mark, index) => {
                 const left = `${(mark.time / duration) * 100}%`;
-                const room = contentWidth - (mark.time / duration) * contentWidth;
+                const room =
+                  contentWidth - (mark.time / duration) * contentWidth;
                 const label = formatRulerTime(mark.time, ruler.major, fps);
                 return (
                   <div

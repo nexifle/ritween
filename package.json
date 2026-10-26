@@ -17,14 +17,16 @@
     "test:cli": "node scripts/validate-cli.mjs"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "@webgpu/types": "^0.1.65",
+    "cn": "^0.5.0",
+    "playwright-core": "^1.56.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "vite": "^7.1.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "@tailwindcss/vite": "^4.1.0",
+    "react-resizable-panels": "^4.15.0",
     "tailwindcss": "^4.1.0",
-    "playwright-core": "^1.56.0",
-    "@webgpu/types": "^0.1.65"
+    "vite": "^7.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -10,6 +10,7 @@ import { ExportPanel } from "./export-panel";
 import { ProjectHeading } from "./project-heading";
 import { SourceNote } from "./source-note";
 import { initial, reducer } from "./state";
+import { StudioDock } from "./studio-dock";
 import { StudioFooter } from "./studio-footer";
 import { StudioHeader } from "./studio-header";
 import { Timeline, type TimelineHandle } from "./timeline";
@@ -139,10 +140,10 @@ export function App() {
   };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
       if (
-        ["INPUT", "SELECT", "BUTTON", "A"].includes(
-          (e.target as HTMLElement).tagName,
-        )
+        ["INPUT", "SELECT", "BUTTON", "A"].includes(target.tagName) ||
+        target.closest("[data-slot=resizable-handle]")
       )
         return;
       if (e.code === "Space") {
@@ -151,16 +152,14 @@ export function App() {
       }
       if (e.code === "ArrowRight" || e.code === "ArrowLeft") {
         e.preventDefault();
-        const time = state.time + (e.code === "ArrowRight" ? 1 : -1) / state.fps;
+        const time =
+          state.time + (e.code === "ArrowRight" ? 1 : -1) / state.fps;
         seekAndReveal(time);
       }
       if (e.key === "-" || e.key === "_" || e.key === "=" || e.key === "+") {
         e.preventDefault();
         const zoomingIn = e.key === "=" || e.key === "+";
-        timelineRef.current?.zoomAroundTime(
-          zoomingIn ? 1.25 : 0.8,
-          state.time,
-        );
+        timelineRef.current?.zoomAroundTime(zoomingIn ? 1.25 : 0.8, state.time);
       }
       if (e.key === "\\") {
         e.preventDefault();
@@ -216,83 +215,97 @@ export function App() {
   }
   const active = evaluate(project, state.time).entry;
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <StudioHeader />
-      <main className="mx-auto max-w-[1600px] px-3 py-3">
-        <ProjectHeading
-          name={project.name}
-          ready={state.ready}
-          error={state.error}
-        />
-        <ErrorBanner error={state.error} />
-        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_268px]">
-          <CompositionViewer
-            resolution={project.resolution}
-            aspectRatio={project.aspectRatio}
-            zoom={state.compZoom}
-            panX={state.compPanX}
-            panY={state.compPanY}
-            ready={state.ready}
-            error={state.error}
-            canvasRef={canvas}
-            onView={(zoom, panX, panY) =>
-              dispatch({ type: "compView", zoom, panX, panY })
-            }
-          >
-            <Transport
-              ready={state.ready}
-              playing={state.playing}
+      <ErrorBanner error={state.error} />
+      <main className="min-h-0 flex-1">
+        <StudioDock
+          viewer={
+            <>
+              <ProjectHeading
+                name={project.name}
+                ready={state.ready}
+                error={state.error}
+              />
+              <CompositionViewer
+                resolution={project.resolution}
+                aspectRatio={project.aspectRatio}
+                zoom={state.compZoom}
+                panX={state.compPanX}
+                panY={state.compPanY}
+                ready={state.ready}
+                error={state.error}
+                canvasRef={canvas}
+                onView={(zoom, panX, panY) =>
+                  dispatch({ type: "compView", zoom, panX, panY })
+                }
+              >
+                <Transport
+                  ready={state.ready}
+                  playing={state.playing}
+                  time={state.time}
+                  duration={project.duration}
+                  fps={state.fps}
+                  volumeDb={state.volumeDb}
+                  masterMuted={state.masterMuted}
+                  onSeek={seekAndReveal}
+                  onToggle={toggle}
+                  onMasterMute={() => {
+                    mix().unlock();
+                    dispatch({ type: "toggleMasterMute" });
+                  }}
+                  onVolume={(volumeDb) =>
+                    dispatch({ type: "setVolume", volumeDb })
+                  }
+                />
+              </CompositionViewer>
+            </>
+          }
+          inspector={
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="flex min-h-full flex-col">
+                <ExportPanel
+                  ready={state.ready}
+                  exporting={state.exporting}
+                  resolution={state.resolution}
+                  fps={state.fps}
+                  duration={project.duration}
+                  hasAudio={(project.audioTracks ?? []).length > 0}
+                  done={state.done}
+                  total={state.total}
+                  result={state.result}
+                  download={state.download}
+                  onResolution={(resolution) => patch({ resolution })}
+                  onFps={(fps) => patch({ fps })}
+                  onExport={() => void startExport()}
+                  onCancel={() => abort.current?.abort()}
+                />
+                <div className="mt-auto">
+                  <SourceNote source="src/project/manifest.ts" />
+                </div>
+              </div>
+            </div>
+          }
+          timeline={
+            <Timeline
+              ref={timelineRef}
+              duration={project.duration}
+              fps={state.fps}
               time={state.time}
-              duration={project.duration}
-              fps={state.fps}
-              volumeDb={state.volumeDb}
-              masterMuted={state.masterMuted}
-              onSeek={seekAndReveal}
-              onToggle={toggle}
-              onMasterMute={() => {
-                mix().unlock();
-                dispatch({ type: "toggleMasterMute" });
-              }}
-              onVolume={(volumeDb) => dispatch({ type: "setVolume", volumeDb })}
+              playing={state.playing}
+              zoom={state.tlZoom}
+              scenes={project.scenes}
+              audioTracks={project.audioTracks ?? []}
+              activeSceneId={active.id}
+              mutedTrackIds={state.mutedTrackIds}
+              onZoom={(zoom) => dispatch({ type: "tlZoom", zoom })}
+              onSeek={seekTo}
+              onToggleMute={(id) => dispatch({ type: "toggleTrackMute", id })}
             />
-          </CompositionViewer>
-          <aside className="space-y-2.5">
-            <ExportPanel
-              ready={state.ready}
-              exporting={state.exporting}
-              resolution={state.resolution}
-              fps={state.fps}
-              duration={project.duration}
-              hasAudio={(project.audioTracks ?? []).length > 0}
-              done={state.done}
-              total={state.total}
-              result={state.result}
-              download={state.download}
-              onResolution={(resolution) => patch({ resolution })}
-              onFps={(fps) => patch({ fps })}
-              onExport={() => void startExport()}
-              onCancel={() => abort.current?.abort()}
-            />
-            <SourceNote source="src/project/manifest.ts" />
-          </aside>
-        </div>
-        <Timeline
-          ref={timelineRef}
-          duration={project.duration}
-          fps={state.fps}
-          time={state.time}
-          playing={state.playing}
-          zoom={state.tlZoom}
-          scenes={project.scenes}
-          audioTracks={project.audioTracks ?? []}
-          activeSceneId={active.id}
-          mutedTrackIds={state.mutedTrackIds}
-          onZoom={(zoom) => dispatch({ type: "tlZoom", zoom })}
-          onSeek={seekTo}
-          onToggleMute={(id) => dispatch({ type: "toggleTrackMute", id })}
+          }
         />
-        <StudioFooter />
       </main>
+      <StudioFooter />
     </div>
   );
 }

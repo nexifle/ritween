@@ -10,13 +10,15 @@ export function StudioHeader() {
     root.classList.toggle("dark", theme === "dark");
     root.style.colorScheme = theme;
     localStorage.setItem("rimotion-theme", theme);
-    const color = getComputedStyle(root).getPropertyValue("--background").trim();
+    const color = getComputedStyle(root)
+      .getPropertyValue("--background")
+      .trim();
     document
       .querySelector('meta[name="theme-color"]')
       ?.setAttribute("content", color);
   }, [theme]);
   return (
-    <header className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-rule px-4">
+    <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-rule px-4">
       <a
         href="/"
         className="flex items-center gap-[11px] text-[21px] font-semibold tracking-[-0.6px]"
@@ -30,12 +32,12 @@ export function StudioHeader() {
         </span>
       </a>
       <div className="flex items-center gap-[22px] text-xs/normal text-muted-foreground">
-        <span className="hidden sm:inline">
-          Code authored. Frame perfect.
-        </span>
+        <span className="hidden sm:inline">Code authored. Frame perfect.</span>
         <button
           type="button"
-          aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          aria-label={
+            theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+          }
           aria-pressed={theme === "dark"}
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           className="flex items-center gap-1.5 hover:text-accent-foreground"

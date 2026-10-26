@@ -5,6 +5,7 @@ import { Icon } from "./icon";
 export function ExportPanel({
   ready,
   exporting,
+  stage,
   resolution,
   sizes,
   aspectRatio,
@@ -22,6 +23,7 @@ export function ExportPanel({
 }: {
   ready: boolean;
   exporting: boolean;
+  stage: string;
   resolution: string;
   sizes: readonly ExportSize[];
   aspectRatio: readonly [number, number];
@@ -67,7 +69,10 @@ export function ExportPanel({
           ))}
         </select>
       ) : (
-        <p id="resolution" className="mb-2 text-[11px] text-destructive-foreground">
+        <p
+          id="resolution"
+          className="mb-2 text-[11px] text-destructive-foreground"
+        >
           No export size keeps this aspect within H.264 Level 4.2.
         </p>
       )}
@@ -115,6 +120,9 @@ export function ExportPanel({
       </button>
       {exporting ? (
         <div className="mt-3.5 text-xs/normal">
+          <p role="status" className="mb-2 text-muted-foreground">
+            {stage}
+          </p>
           <progress
             aria-label="Export progress"
             value={done}

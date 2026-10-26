@@ -132,7 +132,7 @@ export function App() {
     return () => document.removeEventListener("visibilitychange", onHide);
   }, []);
   const toggle = () => {
-    if (!state.ready) return;
+    if (!state.ready || state.exporting) return;
     mix().unlock();
     dispatch({ type: "toggle" });
   };
@@ -176,12 +176,15 @@ export function App() {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [state.time, state.playing, state.ready, state.fps]);
+  }, [state.time, state.playing, state.ready, state.fps, state.exporting]);
   async function startExport() {
     const controller = new AbortController();
     abort.current = controller;
+    audio.current?.stop();
     patch({
+      playing: false,
       exporting: true,
+      exportStage: "Preparing export…",
       done: 0,
       total: frameCount(project.duration, state.fps),
       error: "",
@@ -195,6 +198,16 @@ export function App() {
         fps: state.fps,
         mutedTrackIds: state.mutedTrackIds,
         signal: controller.signal,
+        onStage: (stage) => {
+          const labels = {
+            "audio-mix": "Mixing audio…",
+            "audio-encode": "Encoding audio…",
+            "scene-setup": "Preparing scenes…",
+            "video-encode": "Encoding video…",
+            mux: "Finalizing MP4…",
+          };
+          if (alive.current) patch({ exportStage: labels[stage] });
+        },
         onProgress: (done, total) => {
           if (alive.current) patch({ done, total });
         },
@@ -271,7 +284,7 @@ export function App() {
                 source={state.sourceOpen ? sceneSource : null}
               >
                 <Transport
-                  ready={state.ready}
+                  ready={state.ready && !state.exporting}
                   playing={state.playing}
                   time={state.time}
                   duration={project.duration}
@@ -297,6 +310,7 @@ export function App() {
                 <ExportPanel
                   ready={state.ready}
                   exporting={state.exporting}
+                  stage={state.exportStage}
                   resolution={state.resolution}
                   sizes={exportSizes(project.resolution)}
                   aspectRatio={project.aspectRatio}

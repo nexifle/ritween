@@ -1,3 +1,4 @@
+import { waitForEncoderCapacity } from "./encoder-queue";
 import { renderAudio, SAMPLE_RATE } from "./audio";
 import { assertExportSize } from "./export-size";
 import { Renderer } from "./renderer";
@@ -21,6 +22,10 @@ export interface ExportOptions {
   fps: number;
   mutedTrackIds?: readonly string[];
   signal?: AbortSignal;
+  onStage?: (
+    stage:
+      "audio-mix" | "audio-encode" | "scene-setup" | "video-encode" | "mux",
+  ) => void;
   onProgress?: (done: number, total: number) => void;
 }
 export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
@@ -41,15 +46,14 @@ export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
   const chunks: Uint8Array[] = [];
   let description: Uint8Array | undefined;
   let failure: unknown;
+  const codecFailure = new AbortController();
   const encoder = new AudioEncoder({
     output(chunk, metadata) {
       const data = new Uint8Array(chunk.byteLength);
       chunk.copyTo(data);
       chunks.push(data);
       const next = metadata?.decoderConfig?.description as
-        | ArrayBuffer
-        | ArrayBufferView
-        | undefined;
+        ArrayBuffer | ArrayBufferView | undefined;
       if (next)
         description = (
           ArrayBuffer.isView(next)
@@ -59,18 +63,23 @@ export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
     },
     error(error) {
       failure = error;
+      codecFailure.abort(error);
     },
   });
   try {
     encoder.configure(support.config ?? config);
     const channels = buffer.numberOfChannels;
+    let lastYield = performance.now();
     for (let at = 0; at < buffer.length; at += AAC_FRAME_SAMPLES) {
       signal?.throwIfAborted();
       if (failure) throw failure;
       const count = Math.min(AAC_FRAME_SAMPLES, buffer.length - at);
       const planar = new Float32Array(AAC_FRAME_SAMPLES * channels);
       for (let c = 0; c < channels; c++)
-        planar.set(buffer.getChannelData(c).subarray(at, at + count), c * AAC_FRAME_SAMPLES);
+        planar.set(
+          buffer.getChannelData(c).subarray(at, at + count),
+          c * AAC_FRAME_SAMPLES,
+        );
       const frame = new AudioData({
         format: "f32-planar",
         sampleRate: buffer.sampleRate,
@@ -83,6 +92,16 @@ export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
         encoder.encode(frame);
       } finally {
         frame.close();
+      }
+      // Bound native encoder memory and let input/cancellation run during long mixes.
+      if (encoder.encodeQueueSize >= 32)
+        await waitForEncoderCapacity(encoder, 32, [
+          signal,
+          codecFailure.signal,
+        ]);
+      if (performance.now() - lastYield >= 8) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        lastYield = performance.now();
       }
     }
     await encoder.flush();
@@ -123,16 +142,22 @@ export async function exportVideo(project: Project, options: ExportOptions) {
       `H.264 encoding is not supported for ${width}×${height} at ${fps} FPS on this browser. Try a smaller preset.`,
     );
   signal?.throwIfAborted();
+  onProgress?.(0, frameCount(project.duration, fps));
+  options.onStage?.("audio-mix");
+  await new Promise((resolve) => setTimeout(resolve, 0));
   const soundtrack = await renderAudio(
     project,
     options.mutedTrackIds ?? [],
     fps,
+    signal,
   );
   signal?.throwIfAborted();
+  options.onStage?.("audio-encode");
   const aac = soundtrack ? await encodeAac(soundtrack, signal) : null;
   if (aac && aac.sampleRate !== SAMPLE_RATE)
     throw Error("Audio mix sample rate did not match the export clock.");
   let failure: unknown;
+  const codecFailure = new AbortController();
   let encoded = 0;
   let renderer: Renderer | undefined;
   const muxer = new MP4Muxer(width, height, fps);
@@ -150,19 +175,29 @@ export async function exportVideo(project: Project, options: ExportOptions) {
         encoded++;
       } catch (error) {
         failure = error;
+        codecFailure.abort(error);
       }
     },
     error(error) {
       failure = error;
+      codecFailure.abort(error);
     },
   });
   try {
     encoder.configure(support.config ?? config);
     const canvas = new OffscreenCanvas(width, height);
-    renderer = await Renderer.create(canvas, project, (message) => {
-      failure = Error(message);
-    });
+    options.onStage?.("scene-setup");
+    renderer = await Renderer.create(
+      canvas,
+      project,
+      (message) => {
+        failure = Error(message);
+        codecFailure.abort(failure);
+      },
+      signal,
+    );
     const total = frameCount(project.duration, fps);
+    options.onStage?.("video-encode");
     for (let i = 0; i < total; i++) {
       signal?.throwIfAborted();
       if (failure) throw failure;
@@ -174,7 +209,8 @@ export async function exportVideo(project: Project, options: ExportOptions) {
       } finally {
         frame.close();
       }
-      if (encoder.encodeQueueSize >= 4) await encoder.flush();
+      if (encoder.encodeQueueSize >= 4)
+        await waitForEncoderCapacity(encoder, 4, [signal, codecFailure.signal]);
       onProgress?.(i + 1, total);
       // Yield to input, painting, and cancellation even on fast GPU devices.
       if (i % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -193,6 +229,7 @@ export async function exportVideo(project: Project, options: ExportOptions) {
           AAC_FRAME_SAMPLES,
           AAC_BITRATE,
         );
+    options.onStage?.("mux");
     return { blob: muxer.finalize(), frames: encoded, duration: encoded / fps };
   } finally {
     if (encoder.state !== "closed") encoder.close();

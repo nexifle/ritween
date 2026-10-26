@@ -6,6 +6,12 @@ import type { Project } from "./types";
 export const SAMPLE_RATE = 48_000;
 export const PREVIEW_VOLUME_DB = -18;
 const CLIP_RAMP_SECONDS = 0.005;
+// Retain at most one successful mix per project. Weak ownership lets HMR and
+// closed projects release PCM; switching mute settings replaces the old mix.
+const exportMixes = new WeakMap<
+  Project,
+  { key: string; buffer: AudioBuffer }
+>();
 
 export const dbToGain = (db: number) => 10 ** (db / 20);
 export const gainToDb = (gain: number) =>
@@ -36,8 +42,17 @@ export async function renderAudio(
   project: Project,
   mutedTrackIds: readonly string[],
   fps: number,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   validateProject(project);
+  const key = JSON.stringify([
+    fps,
+    project.duration,
+    [...mutedTrackIds].sort(),
+  ]);
+  const cached = exportMixes.get(project);
+  if (cached?.key === key) return cached.buffer;
   const muted = new Set(mutedTrackIds);
   const tracks = (project.audioTracks ?? []).filter(
     (track) => !muted.has(track.id) && track.clips.length > 0,
@@ -58,8 +73,11 @@ export async function renderAudio(
     release: 0.12,
   });
   master.connect(limiter).connect(ctx.destination);
+  const deferred: { time: number; schedule: () => void }[] = [];
   for (const track of tracks) {
     for (const clip of track.clips) {
+      signal?.throwIfAborted();
+      await new Promise((resolve) => setTimeout(resolve, 0));
       const bus = new GainNode(ctx, { gain: 0 });
       bus.connect(master);
       windowClip(bus.gain, clip.start, clip.duration);
@@ -70,10 +88,52 @@ export async function renderAudio(
         start: clip.start,
         duration: clip.duration,
         at: (localTime) => clip.start + localTime,
+        defer: (time, schedule) => {
+          if (!Number.isFinite(time) || time < 0)
+            throw Error("Invalid deferred audio time.");
+          deferred.push({ time, schedule });
+        },
       });
     }
   }
-  return ctx.startRendering();
+  signal?.throwIfAborted();
+  // Populate independent voices just before they are needed. Shared buses and
+  // effects stay connected throughout, preserving their state and tails.
+  deferred.sort((a, b) => a.time - b.time);
+  let next = 0;
+  const populate = (until: number) => {
+    signal?.throwIfAborted();
+    while (next < deferred.length && deferred[next].time <= until)
+      deferred[next++].schedule();
+  };
+  populate(0.5);
+  const duration = ctx.length / SAMPLE_RATE;
+  // Register each suspension before resuming so fast offline rendering cannot
+  // overrun the next lookahead window. Do not suspend at/after the final sample.
+  const advance = (at: number): Promise<void> => {
+    if (next >= deferred.length || at >= duration) return Promise.resolve();
+    return ctx.suspend(at).then(async () => {
+      populate(ctx.currentTime + 0.5);
+      const upcoming = advance(at + 0.25);
+      // Observe future errors immediately, including while resume is pending.
+      await Promise.all([ctx.resume(), upcoming]);
+    });
+  };
+  const windows = advance(0.25);
+  let rendered: AudioBuffer;
+  try {
+    [rendered] = await Promise.all([ctx.startRendering(), windows]);
+  } catch (error) {
+    // Offline contexts have no close(). Remove the audible graph and resume a
+    // failed/suspended render so its native resources can finish and be released.
+    master.disconnect();
+    limiter.disconnect();
+    void ctx.resume().catch(() => {});
+    throw error;
+  }
+  signal?.throwIfAborted();
+  exportMixes.set(project, { key, buffer: rendered });
+  return rendered;
 }
 
 /**

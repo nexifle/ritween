@@ -95,11 +95,19 @@ try {
     walk(0, data.length, null);
     const videoTrack = traks.find((trak) => {
       const handler = trak.hdlr;
-      return handler && new TextDecoder().decode(data.subarray(handler + 16, handler + 20)) === "vide";
+      return (
+        handler &&
+        new TextDecoder().decode(data.subarray(handler + 16, handler + 20)) ===
+          "vide"
+      );
     });
     const audio = traks.find((trak) => {
       const handler = trak.hdlr;
-      return handler && new TextDecoder().decode(data.subarray(handler + 16, handler + 20)) === "soun";
+      return (
+        handler &&
+        new TextDecoder().decode(data.subarray(handler + 16, handler + 20)) ===
+          "soun"
+      );
     });
     if (!videoTrack) throw Error("Missing video track");
     Object.assign(found, videoTrack);
@@ -302,12 +310,119 @@ try {
     false,
     "Mobile must not overflow horizontally",
   );
+  const offlineAudio = await page.evaluate(async () => {
+    const { renderAudio } = await import("/src/engine/audio.ts");
+    const { project } = await import("/src/project/manifest.ts");
+    const times = [0, 0.1, 0.5, 0.5001, 0.7499, 1, 1.25, 1.5, 1.999];
+    const make = (deferred, onVoice = () => {}) => ({
+      ...project,
+      duration: 2,
+      scenes: [{ ...project.scenes[0], start: 0, duration: 2 }],
+      audioTracks: [
+        {
+          id: "test",
+          name: "test",
+          clips: [
+            {
+              id: "voices",
+              name: "voices",
+              start: 0,
+              duration: 2,
+              create: () => ({
+                schedule(host) {
+                  const delay = new DelayNode(host.context, {
+                    delayTime: 0.05,
+                  });
+                  delay.connect(host.destination);
+                  for (const when of times) {
+                    const run = () => {
+                      onVoice(when);
+                      const osc = new OscillatorNode(host.context, {
+                        frequency: 220 + when * 100,
+                      });
+                      const gain = new GainNode(host.context, { gain: 0 });
+                      gain.gain.setValueAtTime(0, when);
+                      gain.gain.linearRampToValueAtTime(0.05, when + 0.005);
+                      gain.gain.linearRampToValueAtTime(0, when + 0.08);
+                      osc.connect(gain).connect(delay);
+                      osc.start(when);
+                      osc.stop(when + 0.08);
+                    };
+                    if (deferred) host.defer(when, run);
+                    else run();
+                  }
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    });
+    const eager = await renderAudio(make(false), [], 24);
+    const lazyProject = make(true);
+    const lazy = await renderAudio(lazyProject, [], 24);
+    let maxDifference = 0;
+    for (let c = 0; c < eager.numberOfChannels; c++) {
+      const a = eager.getChannelData(c),
+        b = lazy.getChannelData(c);
+      for (let i = 0; i < a.length; i++)
+        maxDifference = Math.max(maxDifference, Math.abs(a[i] - b[i]));
+    }
+    const cacheReused = lazy === (await renderAudio(lazyProject, [], 24));
+    const mutedIsSilent =
+      (await renderAudio(lazyProject, ["test"], 24)) === null;
+    const controller = new AbortController();
+    let cancelled = false;
+    try {
+      await renderAudio(
+        make(true, (when) => {
+          if (when >= 1) controller.abort();
+        }),
+        [],
+        24,
+        controller.signal,
+      );
+    } catch (error) {
+      cancelled = error.name === "AbortError";
+    }
+    let failurePropagated = false;
+    try {
+      await renderAudio(
+        make(true, (when) => {
+          if (when >= 1) throw Error("voice failed");
+        }),
+        [],
+        24,
+      );
+    } catch (error) {
+      failurePropagated = error.message === "voice failed";
+    }
+    return {
+      maxDifference,
+      cacheReused,
+      mutedIsSilent,
+      cancelled,
+      failurePropagated,
+    };
+  });
+  assert.ok(
+    offlineAudio.maxDifference < 1e-5,
+    "deferred voices must preserve native PCM across suspension boundaries and shared delay tails",
+  );
+  for (const key of [
+    "cacheReused",
+    "mutedIsSilent",
+    "cancelled",
+    "failurePropagated",
+  ])
+    assert.equal(offlineAudio[key], true, key);
   assert.deepEqual(errors, []);
   await writeFile(
     new URL("validation.json", artifacts),
     JSON.stringify(
       {
         ...report,
+        offlineAudio,
         deterministicSeek: true,
         cancellation: true,
         mobileOverflow: false,
@@ -319,7 +434,7 @@ try {
   );
   console.log(JSON.stringify(report, null, 2));
   console.log(
-    "PASS: GPU seek determinism, transport, real export, 240 decoded frames, MP4 playback/seeking, cancellation, mobile layout.",
+    "PASS: GPU seek determinism, transport, real export, 240 decoded frames, MP4 playback/seeking, cancellation, mobile layout, deferred audio PCM/cache/mute/abort/failure.",
   );
 } finally {
   await browser.close();

@@ -69,3 +69,5 @@ API references: [WebCodecs AVC registration](https://www.w3.org/TR/webcodecs-avc
 ## Export benchmark
 
 Run `npm run benchmark:export` while Vite is running. It benchmarks all nine presets with three runs each after one warm-up and writes timing, throughput, output sizes, and environment details to `BENCHMARK.md` and `artifacts/benchmark-export.json`. See [measured results](BENCHMARK.md). Override `BENCH_REPEATS` to change the run count.
+
+See [export audio performance](PERFORMANCE.md) for profiling, deferred synthesizer scheduling, and memory limits.

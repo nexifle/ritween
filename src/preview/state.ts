@@ -10,6 +10,7 @@ export type State = {
   ready: boolean;
   error: string;
   exporting: boolean;
+  exportStage: string;
   done: number;
   total: number;
   resolution: string;
@@ -33,6 +34,7 @@ export const initial: State = {
   ready: false,
   error: "",
   exporting: false,
+  exportStage: "",
   done: 0,
   total: frameCount(project.duration, 30),
   resolution: (() => {

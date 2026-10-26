@@ -86,6 +86,9 @@ const api = {
       ...options,
       width,
       height,
+      onStage: (stage) => {
+        void window.rimotionStage?.(stage);
+      },
       onProgress: (done, total) => {
         void window.rimotionProgress?.({ done, total });
       },
@@ -104,6 +107,7 @@ const api = {
 declare global {
   interface Window {
     rimotion: typeof api;
+    rimotionStage?: (stage: string) => Promise<void>;
     rimotionProgress?: (progress: {
       done: number;
       total: number;

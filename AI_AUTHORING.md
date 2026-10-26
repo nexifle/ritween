@@ -81,6 +81,8 @@ audioTracks: [
 
 `phrase` is one factory used with different pitches. Placement stays on the clip. The preview timeline draws these rows under V1. The M button on a row omits that track from preview and from the next export. Preview volume does not enter the file. Keep peaks modest; the mix runs through a limiter at −1 dB. Schedule on the audio clock (`start(time)`, ramps). Do not trigger notes from `setTimeout`.
 
+For long synthesizer scores, put each independent voice’s node creation and automation inside a synchronous callback. Use `host.defer(host.at(noteTime), callback)` when available, otherwise call the callback immediately. Create shared buses and effects outside these callbacks; load and decode samples before registering them. This keeps offline export from building the entire future native graph upfront while preserving the same start times and effect tails. See [export audio performance](PERFORMANCE.md) for an example and measurements.
+
 ## Determinism rules
 
 Derive every animated value directly from supplied time and a fixed seed. Use analytic easing or fixed seeded hashing. Never use `Date.now()`, `performance.now()`, unseeded `Math.random()`, accumulated frame deltas, or mutable particle positions to determine the image. Rendering 5.2 seconds must work as the first render and after any other seek.

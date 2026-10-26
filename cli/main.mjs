@@ -135,6 +135,13 @@ export async function main(argv = process.argv.slice(2)) {
       void initializationFailure.catch(() => {});
       const failures = [];
       page.on("pageerror", (error) => failures.push(error.message));
+      await page.exposeFunction("rimotionStage", (stage) => {
+        console.error(
+          options.json
+            ? JSON.stringify({ event: "stage", stage })
+            : `Export: ${stage}`,
+        );
+      });
       let lastPercent = -1;
       await page.exposeFunction("rimotionProgress", ({ done, total }) => {
         const percent = Math.floor((done / total) * 10) * 10;

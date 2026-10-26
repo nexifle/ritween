@@ -5,7 +5,7 @@ description: >
   tracks, and a project manifest, then preview, render a PNG frame, and
   export MP4 with the rimotion CLI. Use when the user wants a Rimotion video,
   a new scene, a shader scene, a chart in a video, sound, music, an audio
-  track, a still frame, an MP4 export, or runs /rimotion.
+  track, a tracker pattern, a still frame, an MP4 export, or runs /rimotion.
 ---
 
 # Rimotion
@@ -18,6 +18,9 @@ Read the one that matches the task and follow it. Use a second reference when th
 
 - Add or change a scene in this repository: [references/author-a-scene.md](references/author-a-scene.md)
 - Add or move sound: [references/audio.md](references/audio.md)
+- Shape a tone, a drum, a filter, or a sample: [references/audio-voices.md](references/audio-voices.md)
+- Mix a grid, a room, a bus, or a placed sound, and match the picture to it: [references/audio-mix.md](references/audio-mix.md)
+- Play a tracker pattern, with ticks and effects, inside the video: [references/audio-tracker.md](references/audio-tracker.md)
 - Author a project outside this repository: [references/external-project.md](references/external-project.md)
 - Preview, render a PNG, or export: [references/command-sessions.md](references/command-sessions.md)
 - The command failed, the manifest was rejected, or the frame looks wrong: [references/failures.md](references/failures.md)

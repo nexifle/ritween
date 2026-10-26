@@ -77,3 +77,7 @@ Gaps on a track are silent. Clips do not move when a scene cut moves. Lengthenin
 The timeline draws V1, then one row per audio track. M on a row drops that track from the mix you hear and from the next export. The transport speaker and its volume are preview only. They are not in the file.
 
 `rimotion frame` is a silent PNG. `rimotion export` mixes every unmuted track with `OfflineAudioContext` at 48 kHz and muxes AAC next to the H.264 track. Play the MP4 and seek it. A green `npm test` does not prove the mix.
+
+## Sound beyond a phrase
+
+A tone, a drum, a filter, or a played sample is [audio-voices.md](audio-voices.md). A beat grid, a room, buses, and a sound placed in the scene are [audio-mix.md](audio-mix.md). A pattern of notes, samples, and effects is [audio-tracker.md](audio-tracker.md). That pattern is still this contract: one clip schedules the whole grid, because the columns play together.

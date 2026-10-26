@@ -28,6 +28,30 @@ export function validateProject(p: Project) {
   }
   if (Math.abs(end - p.duration) > 1e-8)
     throw Error("Scene durations must fill the composition.");
+  const trackIds = new Set<string>();
+  const clipIds = new Set<string>();
+  for (const track of p.audioTracks ?? []) {
+    if (!track.id || trackIds.has(track.id))
+      throw Error(`Invalid audio track: ${track.id}`);
+    trackIds.add(track.id);
+    const clips = [...track.clips].sort((a, b) => a.start - b.start);
+    let cursor = 0;
+    for (const clip of clips) {
+      if (
+        !clip.id ||
+        clipIds.has(clip.id) ||
+        !Number.isFinite(clip.start) ||
+        !Number.isFinite(clip.duration) ||
+        clip.duration <= 0 ||
+        clip.start < -1e-8 ||
+        clip.start + clip.duration > p.duration + 1e-8 ||
+        clip.start < cursor - 1e-8
+      )
+        throw Error(`Invalid audio clip: ${clip.id || track.id}`);
+      clipIds.add(clip.id);
+      cursor = clip.start + clip.duration;
+    }
+  }
 }
 export function evaluate(p: Project, time: number) {
   if (!Number.isFinite(time)) throw Error("Timeline time must be finite.");

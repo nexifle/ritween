@@ -66,6 +66,21 @@ import createPulse from './scenes/pulse';
 
 `source` is a display label, while `create` is the real registration. `name`, `resolution`, `aspectRatio`, duration, imports, sequence order, start times and transition metadata all belong to the manifest. Entries must be ordered, unique, finite, positive in duration, contiguous from time zero, and end exactly at the project duration. Overlaps and gaps fail validation. At a cut timestamp the next scene is selected. At composition end the last scene evaluates at progress 1.
 
+## Audio tracks
+
+Sound is not part of a scene. Add `audioTracks` to the project. Each track has clips placed on the composition clock. Clips on one track cannot overlap. Tracks sum. A clip module schedules Web Audio nodes against `host.at(localTime)` and does not read the playhead.
+
+```ts
+import { phrase } from "./audio/phrase";
+audioTracks: [
+  { id: "a1", name: "A1", clips: [
+    { id: "bed", name: "Bed", start: 0, duration: 4, create: phrase(220) },
+  ]},
+]
+```
+
+`phrase` is one factory used with different pitches. Placement stays on the clip. The preview timeline draws these rows under V1. The M button on a row omits that track from preview and from the next export. Preview volume does not enter the file. Keep peaks modest; the mix runs through a limiter at −1 dB. Schedule on the audio clock (`start(time)`, ramps). Do not trigger notes from `setTimeout`.
+
 ## Determinism rules
 
 Derive every animated value directly from supplied time and a fixed seed. Use analytic easing or fixed seeded hashing. Never use `Date.now()`, `performance.now()`, unseeded `Math.random()`, accumulated frame deltas, or mutable particle positions to determine the image. Rendering 5.2 seconds must work as the first render and after any other seek.

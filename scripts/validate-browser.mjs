@@ -52,10 +52,20 @@ try {
     .getByRole("button", { name: "Previous frame", exact: true })
     .click();
   await page.getByRole("button", { name: "Restart", exact: true }).click();
+  await page.getByRole("button", { name: "Mute A1", exact: true }).click();
+  await page.getByRole("button", { name: "Unmute A1", exact: true }).click();
+  await page.getByRole("button", { name: "Mute mix", exact: true }).click();
+  await page.getByRole("button", { name: "Unmute mix", exact: true }).click();
   await page.getByRole("button", { name: "Play", exact: true }).click();
   await page.waitForTimeout(200);
   await page.getByRole("button", { name: "Pause", exact: true }).click();
-  assert.ok(Number(await page.getByRole("slider").inputValue()) > 0);
+  assert.ok(
+    Number(
+      await page
+        .getByRole("slider", { name: "Playback scrubber" })
+        .inputValue(),
+    ) > 0,
+  );
   const downloadEvent = page.waitForEvent("download", { timeout: 120000 });
   await page.getByRole("button", { name: "Export Video", exact: true }).click();
   const download = await downloadEvent;
@@ -67,18 +77,32 @@ try {
     const data = new Uint8Array(await blob.arrayBuffer());
     const view = new DataView(data.buffer);
     const found = {};
-    const containers = ["moov", "trak", "mdia", "minf", "stbl"];
-    function walk(start, end) {
+    const containers = ["moov", "trak", "mdia", "minf", "stbl", "edts"];
+    const traks = [];
+    function walk(start, end, into) {
       for (let pos = start; pos < end;) {
         const size = view.getUint32(pos);
         if (size < 8 || pos + size > end) throw Error("Invalid MP4 box");
         const type = new TextDecoder().decode(data.subarray(pos + 4, pos + 8));
-        found[type] = pos;
-        if (containers.includes(type)) walk(pos + 8, pos + size);
+        if (type === "trak") traks.push({});
+        const bag = type === "trak" ? traks[traks.length - 1] : into;
+        if (bag) bag[type] = pos;
+        if (!into && type !== "trak") found[type] = pos;
+        if (containers.includes(type)) walk(pos + 8, pos + size, bag ?? into);
         pos += size;
       }
     }
-    walk(0, data.length);
+    walk(0, data.length, null);
+    const videoTrack = traks.find((trak) => {
+      const handler = trak.hdlr;
+      return handler && new TextDecoder().decode(data.subarray(handler + 16, handler + 20)) === "vide";
+    });
+    const audio = traks.find((trak) => {
+      const handler = trak.hdlr;
+      return handler && new TextDecoder().decode(data.subarray(handler + 16, handler + 20)) === "soun";
+    });
+    if (!videoTrack) throw Error("Missing video track");
+    Object.assign(found, videoTrack);
     const count = view.getUint32(found.stsz + 16),
       timescale = view.getUint32(found.mdhd + 20),
       duration = view.getUint32(found.mdhd + 24) / timescale;
@@ -147,6 +171,88 @@ try {
     }
     const playbackDuration = video.duration;
     video.remove();
+    let audioRms = 0;
+    let audioFrames = 0;
+    if (!audio?.stsd || !audio.stsz || !audio.stco || !audio.mdhd)
+      throw Error("Missing audio track");
+    const audioRate = view.getUint32(audio.mdhd + 20);
+    const audioCount = view.getUint32(audio.stsz + 16);
+    const audioEntry = audio.stsd + 16;
+    let esds = 0;
+    for (
+      let pos = audioEntry + 36;
+      pos + 8 <= audioEntry + view.getUint32(audioEntry);
+    ) {
+      const size = view.getUint32(pos);
+      const type = new TextDecoder().decode(data.subarray(pos + 4, pos + 8));
+      if (type === "esds") esds = pos;
+      if (size < 8) break;
+      pos += size;
+    }
+    if (!esds) throw Error("Missing AAC descriptor");
+    const findAsc = (start, end) => {
+      let pos = start;
+      while (pos + 2 <= end) {
+        const tag = data[pos];
+        let size = 0;
+        let i = pos + 1;
+        for (let n = 0; n < 4 && i < end; n++) {
+          const byte = data[i++];
+          size = (size << 7) | (byte & 0x7f);
+          if ((byte & 0x80) === 0) break;
+        }
+        const body = i;
+        const next = body + size;
+        if (tag === 5) return data.slice(body, next);
+        const nestedStart = tag === 3 ? body + 3 : tag === 4 ? body + 13 : -1;
+        if (nestedStart >= 0) {
+          const nested = findAsc(nestedStart, next);
+          if (nested) return nested;
+        }
+        pos = next;
+      }
+      return null;
+    };
+    const asc = findAsc(esds + 12, esds + view.getUint32(esds));
+    if (!asc) throw Error("Missing AAC AudioSpecificConfig");
+    const audioDecoder = new AudioDecoder({
+      output(frame) {
+        const plane = new Float32Array(
+          frame.allocationSize({ planeIndex: 0, format: "f32-planar" }) / 4,
+        );
+        frame.copyTo(plane, { planeIndex: 0, format: "f32-planar" });
+        let sum = 0;
+        for (const sample of plane) sum += sample * sample;
+        audioRms += sum;
+        audioFrames += frame.numberOfFrames;
+        frame.close();
+      },
+      error(e) {
+        decoderError = String(e);
+      },
+    });
+    audioDecoder.configure({
+      codec: "mp4a.40.2",
+      sampleRate: audioRate,
+      numberOfChannels: 2,
+      description: asc,
+    });
+    let audioOffset = view.getUint32(audio.stco + 16);
+    for (let i = 0; i < audioCount; i++) {
+      const size = view.getUint32(audio.stsz + 20 + 4 * i);
+      audioDecoder.decode(
+        new EncodedAudioChunk({
+          type: "key",
+          timestamp: Math.round((i * 1024 * 1e6) / audioRate),
+          duration: Math.round((1024 * 1e6) / audioRate),
+          data: data.subarray(audioOffset, audioOffset + size),
+        }),
+      );
+      audioOffset += size;
+    }
+    await audioDecoder.flush();
+    audioDecoder.close();
+    if (decoderError) throw Error(decoderError);
     return {
       samples: count,
       decoded,
@@ -156,12 +262,20 @@ try {
       lastTimestamp: timestamps.at(-1),
       seekable,
       bytes: data.length,
+      audioRate,
+      audioFrames,
+      audioRms,
+      tracks: traks.length,
     };
   });
   assert.equal(report.samples, 240);
   assert.equal(report.decoded, 240);
   assert.equal(report.duration, 8);
   assert.equal(report.playbackDuration, 8);
+  assert.equal(report.tracks, 2);
+  assert.equal(report.audioRate, 48000);
+  assert.ok(report.audioFrames > 0);
+  assert.ok(report.audioRms > 1, "scheduled notes should survive AAC");
   assert.equal(report.firstTimestamp, 0);
   assert.equal(report.lastTimestamp, 7966667);
   for (const seek of report.seekable) {

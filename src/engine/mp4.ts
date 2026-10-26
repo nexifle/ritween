@@ -1,5 +1,5 @@
-/** Minimal ISO BMFF writer: one AVC track, one chunk, all sync samples, no B frames.
- * Timescale is FPS: each sample lasts exactly one tick. mdat precedes moov.
+/** Minimal ISO BMFF writer: one AVC track, optional AAC track, one chunk each.
+ * Video timescale is FPS: each sample lasts exactly one tick. mdat precedes moov.
  * In-memory only, 32-bit boxes/offsets: files >= 4 GiB are rejected.
  */
 const concat = (...parts: Uint8Array[]) => {
@@ -38,9 +38,61 @@ const matrix = concat(
   u32(0),
   u32(0x40000000),
 );
+/** Four-byte expandable size used by common MP4 readers. */
+const descriptor = (tag: number, body: Uint8Array) =>
+  concat(
+    u8(
+      tag,
+      (body.length >> 21) | 0x80,
+      (body.length >> 14) | 0x80,
+      (body.length >> 7) | 0x80,
+      body.length & 0x7f,
+    ),
+    body,
+  );
+const esds = (asc: Uint8Array, bitrate: number) => {
+  const specific = descriptor(0x05, asc);
+  const config = descriptor(
+    0x04,
+    concat(u8(0x40, 0x15, 0, 0, 0), u32(bitrate), u32(bitrate), specific),
+  );
+  const sl = descriptor(0x06, u8(2));
+  return full("esds", 0, 0, descriptor(0x03, concat(u16(2), u8(0), config, sl)));
+};
+/** stts, stsc, stsz, and stco. Video adds stss; audio does not. */
+const sampleTables = (
+  samples: Uint8Array[],
+  sampleDuration: number,
+  chunkOffset: number,
+  sync: boolean,
+) => {
+  const n = samples.length;
+  const tables = [
+    full("stts", 0, 0, u32(1), u32(n), u32(sampleDuration)),
+    full("stsc", 0, 0, u32(1), u32(1), u32(n), u32(1)),
+    full("stsz", 0, 0, u32(0), u32(n), ...samples.map((s) => u32(s.length))),
+    full("stco", 0, 0, u32(1), u32(chunkOffset)),
+  ];
+  if (sync)
+    tables.push(
+      full("stss", 0, 0, u32(n), ...samples.map((_, i) => u32(i + 1))),
+    );
+  return tables;
+};
+const bytes = (value: AllowSharedBufferSource) =>
+  ArrayBuffer.isView(value)
+    ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice()
+    : new Uint8Array(value).slice();
 export class MP4Muxer {
   private samples: Uint8Array[] = [];
   private description?: Uint8Array;
+  private audio: Uint8Array[] = [];
+  private audioDescription?: Uint8Array;
+  private audioRate = 0;
+  private audioFrame = 0;
+  private audioBitrate = 0;
+  /** Decoder delay, in audio samples, skipped by the audio edit list. */
+  private priming = 0;
   constructor(
     readonly width: number,
     readonly height: number,
@@ -56,13 +108,7 @@ export class MP4Muxer {
   add(data: Uint8Array, key: boolean, description?: AllowSharedBufferSource) {
     if (!key) throw Error("This muxer requires all-keyframe H.264.");
     if (description) {
-      const next = ArrayBuffer.isView(description)
-        ? new Uint8Array(
-            description.buffer,
-            description.byteOffset,
-            description.byteLength,
-          ).slice()
-        : new Uint8Array(description).slice();
+      const next = bytes(description);
       if (
         this.description &&
         (next.length !== this.description.length ||
@@ -73,14 +119,57 @@ export class MP4Muxer {
     }
     this.samples.push(data.slice());
   }
+  addAudio(
+    data: Uint8Array,
+    description: AllowSharedBufferSource,
+    sampleRate: number,
+    frameSamples: number,
+    bitrate: number,
+  ) {
+    if (
+      !Number.isInteger(sampleRate) ||
+      sampleRate <= 0 ||
+      !Number.isInteger(frameSamples) ||
+      frameSamples <= 0 ||
+      !Number.isInteger(bitrate) ||
+      bitrate <= 0
+    )
+      throw Error("Invalid AAC sample rate, frame size, or bitrate.");
+    const next = bytes(description);
+    if (!next.length) throw Error("Missing AAC decoder configuration.");
+    if (
+      this.audioDescription &&
+      (next.length !== this.audioDescription.length ||
+        next.some((v, i) => v !== this.audioDescription![i]))
+    )
+      throw Error("AAC configuration changed during export.");
+    if (this.audioRate && this.audioRate !== sampleRate)
+      throw Error("AAC sample rate changed during export.");
+    this.audioDescription = next;
+    this.audioRate = sampleRate;
+    this.audioFrame = frameSamples;
+    this.audioBitrate = bitrate;
+    this.audio.push(data.slice());
+  }
+  /** Samples of encoder delay to skip so picture and sound start together. */
+  setAudioPriming(samples: number) {
+    if (!Number.isInteger(samples) || samples < 0)
+      throw Error("Invalid AAC priming.");
+    this.priming = samples;
+  }
   finalize(): Blob {
     const n = this.samples.length;
     if (!n || !this.description || this.description[0] !== 1)
       throw Error("Missing AVC decoder configuration or samples.");
     const ftyp = box("ftyp", str("isom"), u32(512), str("isomiso2avc1mp41"));
-    const payloadSize = this.samples.reduce((v, s) => v + s.length, 0);
-    if (payloadSize + ftyp.length + 8 >= 2 ** 32)
+    const videoBytes = this.samples.reduce((v, s) => v + s.length, 0);
+    const audioBytes = this.audio.reduce((v, s) => v + s.length, 0);
+    if (videoBytes + audioBytes + ftyp.length + 8 >= 2 ** 32)
       throw Error("Export exceeds 4 GiB; choose a smaller resolution.");
+    const hasAudio = this.audio.length > 0;
+    if (hasAudio && !this.audioDescription)
+      throw Error("Missing AAC decoder configuration or samples.");
+    const dataOffset = ftyp.length + 8;
     const mvhd = full(
       "mvhd",
       0,
@@ -94,8 +183,25 @@ export class MP4Muxer {
       zeros(10),
       matrix,
       zeros(24),
-      u32(2),
+      u32(hasAudio ? 3 : 2),
     );
+    const video = this.videoTrack(n, dataOffset);
+    const audio = hasAudio
+      ? this.audioTrack(n, dataOffset + videoBytes)
+      : undefined;
+    const moov = box("moov", mvhd, video, ...(audio ? [audio] : []));
+    return new Blob(
+      [
+        ftyp.buffer,
+        concat(u32(videoBytes + audioBytes + 8), str("mdat")).buffer,
+        ...this.samples.map((s) => s.buffer as ArrayBuffer),
+        ...this.audio.map((s) => s.buffer as ArrayBuffer),
+        moov.buffer,
+      ],
+      { type: "video/mp4" },
+    );
+  }
+  private videoTrack(frames: number, chunkOffset: number) {
     const tkhd = full(
       "tkhd",
       0,
@@ -104,7 +210,7 @@ export class MP4Muxer {
       u32(0),
       u32(1),
       u32(0),
-      u32(n),
+      u32(frames),
       zeros(8),
       u16(0),
       u16(0),
@@ -121,7 +227,7 @@ export class MP4Muxer {
       u32(0),
       u32(0),
       u32(this.fps),
-      u32(n),
+      u32(frames),
       u16(0x55c4),
       u16(0),
     );
@@ -148,39 +254,96 @@ export class MP4Muxer {
       zeros(32),
       u16(24),
       u16(65535),
-      box("avcC", this.description),
+      box("avcC", this.description!),
     );
     const stbl = box(
       "stbl",
       full("stsd", 0, 0, u32(1), avc1),
-      full("stts", 0, 0, u32(1), u32(n), u32(1)),
-      full("stsc", 0, 0, u32(1), u32(1), u32(n), u32(1)),
-      full(
-        "stsz",
-        0,
-        0,
-        u32(0),
-        u32(n),
-        ...this.samples.map((s) => u32(s.length)),
-      ),
-      full("stco", 0, 0, u32(1), u32(ftyp.length + 8)),
-      full("stss", 0, 0, u32(n), ...this.samples.map((_, i) => u32(i + 1))),
+      ...sampleTables(this.samples, 1, chunkOffset, true),
     );
-    const dinf = box("dinf", full("dref", 0, 0, u32(1), full("url ", 0, 1)));
+    const dinf = box("dinf", full("dref", 0, 1, u32(1), full("url ", 0, 1)));
     const minf = box("minf", full("vmhd", 0, 1, zeros(8)), dinf, stbl);
-    const moov = box(
-      "moov",
-      mvhd,
-      box("trak", tkhd, box("mdia", mdhd, hdlr, minf)),
+    return box("trak", tkhd, box("mdia", mdhd, hdlr, minf));
+  }
+  private audioTrack(videoFrames: number, chunkOffset: number) {
+    const mediaSamples = this.audio.length * this.audioFrame;
+    const tkhd = full(
+      "tkhd",
+      0,
+      7,
+      u32(0),
+      u32(0),
+      u32(2),
+      u32(0),
+      u32(videoFrames),
+      zeros(8),
+      u16(0),
+      u16(1),
+      u16(0x100),
+      u16(0),
+      matrix,
+      u32(0),
+      u32(0),
     );
-    return new Blob(
-      [
-        ftyp.buffer,
-        concat(u32(payloadSize + 8), str("mdat")).buffer,
-        ...this.samples.map((s) => s.buffer as ArrayBuffer),
-        moov.buffer,
-      ],
-      { type: "video/mp4" },
+    const mdhd = full(
+      "mdhd",
+      0,
+      0,
+      u32(0),
+      u32(0),
+      u32(this.audioRate),
+      u32(mediaSamples),
+      u16(0x55c4),
+      u16(0),
+    );
+    const hdlr = full(
+      "hdlr",
+      0,
+      0,
+      u32(0),
+      str("soun"),
+      zeros(12),
+      str("Rimotion Audio\0"),
+    );
+    const mp4a = box(
+      "mp4a",
+      zeros(6),
+      u16(1),
+      zeros(8),
+      u16(2),
+      u16(16),
+      zeros(4),
+      u32(this.audioRate * 65536),
+      esds(this.audioDescription!, this.audioBitrate),
+    );
+    const stbl = box(
+      "stbl",
+      full("stsd", 0, 0, u32(1), mp4a),
+      ...sampleTables(this.audio, this.audioFrame, chunkOffset, false),
+    );
+    const dinf = box("dinf", full("dref", 0, 1, u32(1), full("url ", 0, 1)));
+    const minf = box("minf", full("smhd", 0, 0, u16(0), u16(0)), dinf, stbl);
+    const edts =
+      this.priming > 0
+        ? box(
+            "edts",
+            full(
+              "elst",
+              0,
+              0,
+              u32(1),
+              u32(videoFrames),
+              u32(this.priming),
+              u16(1),
+              u16(0),
+            ),
+          )
+        : undefined;
+    return box(
+      "trak",
+      tkhd,
+      ...(edts ? [edts] : []),
+      box("mdia", mdhd, hdlr, minf),
     );
   }
 }

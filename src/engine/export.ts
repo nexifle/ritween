@@ -1,13 +1,99 @@
+import { renderAudio, SAMPLE_RATE } from "./audio";
 import { Renderer } from "./renderer";
 import { MP4Muxer } from "./mp4";
 import { frameCount, frameTiming } from "./timeline";
 import type { Project } from "./types";
+
+/** AAC-LC frame size. Encoder delay is measured in the browser and applied as an edit list. */
+export const AAC_FRAME_SAMPLES = 1024;
+export const AAC_BITRATE = 128_000;
+export const AAC_CODEC = "mp4a.40.2";
+/**
+ * Chrome's AAC-LC encoder emits 2112 silent warmup samples before the signal.
+ * The audio edit list skips them so a note at composition time 0 stays in sync.
+ */
+export const AAC_PRIMING_SAMPLES = 2112;
+
 export interface ExportOptions {
   width: number;
   height: number;
   fps: number;
+  mutedTrackIds?: readonly string[];
   signal?: AbortSignal;
   onProgress?: (done: number, total: number) => void;
+}
+export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
+  if (typeof AudioEncoder === "undefined" || typeof AudioData === "undefined")
+    throw Error(
+      "WebCodecs audio encoding is unavailable. Use a current Chrome or Edge browser.",
+    );
+  const config: AudioEncoderConfig = {
+    codec: AAC_CODEC,
+    sampleRate: buffer.sampleRate,
+    numberOfChannels: buffer.numberOfChannels,
+    bitrate: AAC_BITRATE,
+  };
+  const support = await AudioEncoder.isConfigSupported(config);
+  if (!support.supported)
+    throw Error("AAC encoding is not supported in this browser.");
+  signal?.throwIfAborted();
+  const chunks: Uint8Array[] = [];
+  let description: Uint8Array | undefined;
+  let failure: unknown;
+  const encoder = new AudioEncoder({
+    output(chunk, metadata) {
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      chunks.push(data);
+      const next = metadata?.decoderConfig?.description as
+        | ArrayBuffer
+        | ArrayBufferView
+        | undefined;
+      if (next)
+        description = (
+          ArrayBuffer.isView(next)
+            ? new Uint8Array(next.buffer, next.byteOffset, next.byteLength)
+            : new Uint8Array(next)
+        ).slice();
+    },
+    error(error) {
+      failure = error;
+    },
+  });
+  try {
+    encoder.configure(support.config ?? config);
+    const channels = buffer.numberOfChannels;
+    for (let at = 0; at < buffer.length; at += AAC_FRAME_SAMPLES) {
+      signal?.throwIfAborted();
+      if (failure) throw failure;
+      const count = Math.min(AAC_FRAME_SAMPLES, buffer.length - at);
+      const planar = new Float32Array(AAC_FRAME_SAMPLES * channels);
+      for (let c = 0; c < channels; c++)
+        planar.set(buffer.getChannelData(c).subarray(at, at + count), c * AAC_FRAME_SAMPLES);
+      const frame = new AudioData({
+        format: "f32-planar",
+        sampleRate: buffer.sampleRate,
+        numberOfFrames: AAC_FRAME_SAMPLES,
+        numberOfChannels: channels,
+        timestamp: Math.round((at / buffer.sampleRate) * 1e6),
+        data: planar,
+      });
+      try {
+        encoder.encode(frame);
+      } finally {
+        frame.close();
+      }
+    }
+    await encoder.flush();
+    signal?.throwIfAborted();
+    if (failure) throw failure;
+    if (!chunks.length) throw Error("AAC encoder returned no samples.");
+    // AAC-LC, 48 kHz, stereo. Used when the encoder omits a description.
+    description ??= new Uint8Array([0x11, 0x90]);
+    return { chunks, description, sampleRate: buffer.sampleRate };
+  } finally {
+    if (encoder.state !== "closed") encoder.close();
+  }
 }
 export async function exportVideo(project: Project, options: ExportOptions) {
   const { width, height, fps, signal, onProgress } = options;
@@ -42,10 +128,20 @@ export async function exportVideo(project: Project, options: ExportOptions) {
       `H.264 encoding is not supported for ${width}×${height} at ${fps} FPS on this browser. Try a smaller preset.`,
     );
   signal?.throwIfAborted();
+  const soundtrack = await renderAudio(
+    project,
+    options.mutedTrackIds ?? [],
+    fps,
+  );
+  signal?.throwIfAborted();
+  const aac = soundtrack ? await encodeAac(soundtrack, signal) : null;
+  if (aac && aac.sampleRate !== SAMPLE_RATE)
+    throw Error("Audio mix sample rate did not match the export clock.");
   let failure: unknown;
   let encoded = 0;
   let renderer: Renderer | undefined;
   const muxer = new MP4Muxer(width, height, fps);
+  if (aac) muxer.setAudioPriming(AAC_PRIMING_SAMPLES);
   const encoder = new VideoEncoder({
     output(chunk, metadata) {
       try {
@@ -93,6 +189,15 @@ export async function exportVideo(project: Project, options: ExportOptions) {
     if (failure) throw failure;
     if (encoded !== total)
       throw Error(`Encoder returned ${encoded} samples; expected ${total}.`);
+    if (aac)
+      for (const chunk of aac.chunks)
+        muxer.addAudio(
+          chunk,
+          aac.description,
+          aac.sampleRate,
+          AAC_FRAME_SAMPLES,
+          AAC_BITRATE,
+        );
     return { blob: muxer.finalize(), frames: encoded, duration: encoded / fps };
   } finally {
     if (encoder.state !== "closed") encoder.close();

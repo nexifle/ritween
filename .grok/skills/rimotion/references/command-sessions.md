@@ -82,7 +82,7 @@ Stdout after a good 8 second demo export:
 }
 ```
 
-`frames` must equal `ceil(duration * fps)`. The 8 second demo at 24, 30, and 60 FPS is 192, 240, and 480 frames. `export` rejects `--time` and `--frame`. There is no audio. Every sample is a keyframe. An output of 4 GiB or more is rejected.
+`frames` must equal `ceil(duration * fps)`. The 8 second demo at 24, 30, and 60 FPS is 192, 240, and 480 frames. `export` rejects `--time` and `--frame`. Audio tracks in the manifest are mixed with Web Audio and muxed as AAC. A project with no audio tracks stays silent. Every video sample is a keyframe. An output of 4 GiB or more is rejected.
 
 Ctrl+C during frame or export exits `130` and leaves an existing output in place. Other failures exit `1` and look like:
 

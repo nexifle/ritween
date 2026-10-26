@@ -1,4 +1,5 @@
 import type { Project } from "../engine/types";
+import { phrase } from "./audio/phrase";
 import intro from "./scenes/intro";
 import main from "./scenes/main";
 import outro from "./scenes/outro.js";
@@ -34,6 +35,34 @@ export const project: Project = {
       duration: 2,
       create: outro,
       transition: { type: "cut" },
+    },
+  ],
+  audioTracks: [
+    {
+      id: "a1",
+      name: "A1",
+      clips: [
+        {
+          id: "a1-phrase",
+          name: "Phrase",
+          start: 0,
+          duration: 4,
+          create: phrase(220),
+        },
+      ],
+    },
+    {
+      id: "a2",
+      name: "A2",
+      clips: [
+        {
+          id: "a2-phrase",
+          name: "Phrase",
+          start: 2,
+          duration: 6,
+          create: phrase(330),
+        },
+      ],
     },
   ],
 };

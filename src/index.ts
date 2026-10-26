@@ -6,6 +6,10 @@ export type {
   SetupContext,
   RenderContext,
   Compositor,
+  AudioHost,
+  AudioClip,
+  AudioClipSource,
+  AudioTrack,
 } from "./engine/types";
 export { Renderer } from "./engine/renderer";
 export { exportVideo } from "./engine/export";

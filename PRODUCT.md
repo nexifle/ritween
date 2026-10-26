@@ -16,7 +16,7 @@ External AI coding agents author source files; people preview, seek, and export 
 
 ## Success
 
-An eight-second, three-scene composition previews deterministically and exports 240 H.264 frames at 30 FPS to playable, seekable MP4.
+An eight-second, three-scene composition previews deterministically and exports 240 H.264 frames at 30 FPS, with separate audio tracks mixed to AAC, to a playable, seekable MP4.
 
 ## Constraints
 

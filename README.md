@@ -33,12 +33,13 @@ Play/pause with Space. Seek using the scrubber; step with the transport buttons 
 - `src/engine/types.ts`: reusable Scene, Project, RenderContext and future Compositor contracts.
 - `src/engine/timeline.ts`: stateless absolute-time evaluation, frame schedules and manifest validation.
 - `src/engine/renderer.ts`: GPU lifecycle and renderer shared by preview and export. Each renderer owns independent scene instances and device resources.
-- `src/engine/export.ts`: WebGPU → OffscreenCanvas → VideoFrame → native H.264 VideoEncoder → MP4.
-- `src/engine/mp4.ts`: custom video-only ISO BMFF muxer. AVC configuration is preserved in `avcC`; sample sizes, chunk offsets, durations and sync sample tables are written explicitly.
+- `src/engine/audio.ts`: one Web Audio mix. Preview and export both call `renderAudio`. Track mutes are arguments, not a second graph.
+- `src/engine/export.ts`: WebGPU → OffscreenCanvas → VideoFrame → native H.264 VideoEncoder, plus AAC from that mix, → MP4.
+- `src/engine/mp4.ts`: custom ISO BMFF muxer. AVC configuration is preserved in `avcC`. An optional AAC track stores `esds`, sample sizes, chunk offsets and durations. Video samples stay all-keyframe.
 - `src/project/manifest.ts`: the entire composition, independent of the engine.
 - `src/project/scenes/`: separate TS, TSX and JS example modules. Fullscreen WGSL shaders render procedural orbital geometry and GPU bitmap lettering.
 
-Export evaluates frame `i` at `i / FPS`. VideoFrame timestamps are rounded microseconds with adjacent durations computed from the next timestamp. MP4 uses FPS as its timescale and one tick per sample, giving exact duration. Every sample is a keyframe; there are no reordered/B frames or audio. This deliberately favors muxer simplicity and seeking over compression. The browser may copy GPU data internally; this implementation makes no zero-copy claim and performs no manual GPU readback for encoding.
+Export evaluates frame `i` at `i / FPS`. VideoFrame timestamps are rounded microseconds with adjacent durations computed from the next timestamp. MP4 uses FPS as its timescale and one tick per video sample, giving exact duration. Every video sample is a keyframe; there are no reordered/B frames. Audio is a separate timeline: clips live on audio tracks, not inside scenes. The mix is rendered once with `OfflineAudioContext` at 48 kHz and encoded as AAC. Preview plays that same mix from a user gesture. Track mute is part of the exported mix. The preview volume is not. This deliberately favors muxer simplicity and seeking over compression. The browser may copy GPU data internally; this implementation makes no zero-copy claim and performs no manual GPU readback for encoding.
 
 See [AI Authoring Guide](AI_AUTHORING.md) to create a different video entirely through source files.
 
@@ -51,7 +52,7 @@ npm run build
 npm run test:browser
 ```
 
-`CHROME_CHANNEL` and `BASE_URL` can override the browser channel and server address. The browser test uses actual WebGPU and H.264 encoding. It exports the default eight-second composition, parses its MP4, decodes all 240 samples with native VideoDecoder, verifies exact eight-second media duration, opens the MP4 in a native video element and seeks to 0.5, 5.2 and 7.5 seconds. It also checks identical GPU canvas screenshots when revisiting 5.2 seconds, transport actions, cancellation, browser errors, and mobile overflow. Artifacts are written to ignored `artifacts/` (including the actual MP4 and validation report). Screenshot use is limited to tests; no screenshot enters the export pipeline.
+`CHROME_CHANNEL` and `BASE_URL` can override the browser channel and server address. The browser test uses actual WebGPU, H.264, and AAC encoding. It exports the default eight-second composition, parses its MP4, decodes all 240 video samples with native VideoDecoder, decodes the AAC track, verifies exact eight-second media duration, opens the MP4 in a native video element and seeks to 0.5, 5.2 and 7.5 seconds. It also checks identical GPU canvas screenshots when revisiting 5.2 seconds, transport actions, cancellation, browser errors, and mobile overflow. Artifacts are written to ignored `artifacts/` (including the actual MP4 and validation report). Screenshot use is limited to tests; no screenshot enters the export pipeline.
 
 Unit tests cover cut boundaries, scene timing, invalid manifests, frame timing at every supported FPS, MP4 table consistency and rejected muxer inputs. Synthetic sample bytes in unit tests only test box structure; the browser test verifies real encoded media.
 
@@ -59,7 +60,7 @@ Unit tests cover cut boundaries, scene timing, invalid manifests, frame timing a
 
 Sequential, gapless, hard-cut scenes only. A Compositor interface reserves a path to rendering active scenes to intermediate textures and blending transitions; overlapping transitions are not implemented. Base preview resolution is specified by the manifest. Export presets are 16:9 and do not implement automatic letterboxing for other project ratios. Projects keep compressed samples in memory; files of 4 GiB or more are rejected. Encoding is asynchronous on the UI thread with bounded queues and cooperative yields, not a worker. Long or GPU-intensive compositions may reduce preview responsiveness during export.
 
-No audio, DOM/HTML rasterization, editor, or automatic TSX-to-GPU conversion. Setup may fetch resources, but rendering must be synchronous and seekable. Use trusted scene code only: scene modules execute as part of the application. GPU/codec availability varies by platform; unsupported configurations display errors rather than substitute a different rendering or recording pipeline.
+No microphone input, DOM/HTML rasterization, clip dragging, or automatic TSX-to-GPU conversion. Setup may fetch resources, but rendering must be synchronous and seekable. Use trusted scene code only: scene modules execute as part of the application. GPU/codec availability varies by platform; unsupported configurations display errors rather than substitute a different rendering or recording pipeline.
 
 API references: [WebCodecs AVC registration](https://www.w3.org/TR/webcodecs-avc-codec-registration/), [WebCodecs](https://www.w3.org/TR/webcodecs/), [WebGPU](https://gpuweb.github.io/gpuweb/).
 

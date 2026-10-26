@@ -1,6 +1,7 @@
 import React, { useEffect, useReducer, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { Renderer } from "./engine/renderer";
+import { PREVIEW_VOLUME_DB, PreviewAudio } from "./engine/audio";
 import { exportVideo } from "./engine/export";
 import { evaluate, frameCount } from "./engine/timeline";
 import { project } from "virtual:rimotion-project";
@@ -18,6 +19,9 @@ type State = {
   fps: number;
   result: string;
   download: string;
+  mutedTrackIds: string[];
+  volumeDb: number;
+  masterMuted: boolean;
 };
 const initial: State = {
   time: 0,
@@ -31,19 +35,48 @@ const initial: State = {
   fps: 30,
   result: "",
   download: "",
+  mutedTrackIds: [],
+  volumeDb: PREVIEW_VOLUME_DB,
+  masterMuted: false,
 };
 type Action =
   | { type: "patch"; value: Partial<State> }
   | { type: "seek"; time: number }
-  | { type: "tick"; delta: number };
+  | { type: "tick"; delta: number }
+  | { type: "sync"; time: number }
+  | { type: "toggle" }
+  | { type: "pause" }
+  | { type: "toggleTrackMute"; id: string }
+  | { type: "toggleMasterMute" }
+  | { type: "setVolume"; volumeDb: number };
 function reducer(s: State, a: Action): State {
   if (a.type === "patch") return { ...s, ...a.value };
-  if (a.type === "seek")
+  if (a.type === "pause") return { ...s, playing: false };
+  if (a.type === "toggle")
     return {
       ...s,
-      time: Math.max(0, Math.min(project.duration, a.time)),
-      playing: false,
+      playing: !s.playing,
+      time: s.time >= project.duration ? 0 : s.time,
     };
+  if (a.type === "toggleMasterMute")
+    return { ...s, masterMuted: !s.masterMuted };
+  if (a.type === "setVolume")
+    return { ...s, volumeDb: Math.max(-60, Math.min(0, a.volumeDb)) };
+  if (a.type === "toggleTrackMute")
+    return {
+      ...s,
+      mutedTrackIds: s.mutedTrackIds.includes(a.id)
+        ? s.mutedTrackIds.filter((id) => id !== a.id)
+        : [...s.mutedTrackIds, a.id],
+    };
+  if (a.type === "seek" || a.type === "sync") {
+    const time = Math.max(0, Math.min(project.duration, a.time));
+    return {
+      ...s,
+      time,
+      playing: a.type === "sync" ? time < project.duration : s.playing,
+    };
+  }
   const time = Math.min(project.duration, s.time + a.delta);
   return { ...s, time, playing: time < project.duration };
 }
@@ -108,6 +141,73 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
     </svg>
   );
 }
+function TrackRow({
+  label,
+  muted,
+  onMute,
+  children,
+}: {
+  label: string;
+  muted?: boolean;
+  onMute?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`flex h-[58px] items-stretch gap-[10px] ${muted ? "opacity-45" : ""}`}>
+      <div className="flex w-[78px] shrink-0 items-center justify-between gap-[6px] pr-[4px]">
+        <span className="truncate text-[11px] font-medium tracking-[0.4px] text-[#c5c8d6]">
+          {label}
+        </span>
+        {onMute && (
+          <button
+            type="button"
+            aria-label={muted ? `Unmute ${label}` : `Mute ${label}`}
+            aria-pressed={muted}
+            onClick={onMute}
+            className={`flex h-[22px] w-[22px] items-center justify-center rounded-[4px] border text-[10px] font-semibold ${muted ? "border-[#baa5ff] bg-[#2a2438] text-[#e4d8ff]" : "border-[#3a3d49] text-[#9aa0b2]"}`}
+          >
+            M
+          </button>
+        )}
+      </div>
+      <div className="relative min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+function LaneBlock({
+  start,
+  duration,
+  total,
+  color,
+  title,
+  detail,
+  active,
+}: {
+  start: number;
+  duration: number;
+  total: number;
+  color: string;
+  title: string;
+  detail: string;
+  active?: boolean;
+}) {
+  return (
+    <div
+      className="absolute top-[6px] bottom-[6px] overflow-hidden rounded-[5px] border px-[8px] py-[6px]"
+      style={{
+        left: `${(start / total) * 100}%`,
+        width: `${(duration / total) * 100}%`,
+        borderColor: active ? color : "#373b4a",
+        backgroundColor: `${color}12`,
+      }}
+    >
+      <div className="truncate text-[12px] font-medium" style={{ color }}>
+        {title}
+      </div>
+      <p className="truncate font-mono text-[10px] text-[#9da4b7]">{detail}</p>
+    </div>
+  );
+}
 const control =
   "flex h-[34px] w-[34px] items-center justify-center rounded-[6px] text-[#b8bac6] hover:bg-[#30323c] hover:text-white disabled:opacity-40";
 function App() {
@@ -117,7 +217,14 @@ function App() {
   const abort = useRef<AbortController | null>(null);
   const resultUrl = useRef("");
   const alive = useRef(true);
+  const audio = useRef<PreviewAudio | null>(null);
+  const timeRef = useRef(0);
   const patch = (value: Partial<State>) => dispatch({ type: "patch", value });
+  const mix = () => {
+    if (!audio.current) audio.current = new PreviewAudio();
+    return audio.current;
+  };
+  timeRef.current = state.time;
   useEffect(() => {
     alive.current = true;
     let cancelled = false;
@@ -150,6 +257,8 @@ function App() {
       abort.current?.abort();
       renderer.current?.dispose();
       renderer.current = null;
+      audio.current?.dispose();
+      audio.current = null;
       if (resultUrl.current) URL.revokeObjectURL(resultUrl.current);
     };
   }, []);
@@ -161,24 +270,61 @@ function App() {
       patch({ error: String(e), playing: false, ready: false });
     }
   }, [state.time, state.ready]);
+  const mutedKey = state.mutedTrackIds.join("\0");
   useEffect(() => {
-    if (!state.playing) return;
+    const player = audio.current;
+    if (!player) return;
+    player.setMonitor(state.volumeDb, state.masterMuted);
+  }, [state.volumeDb, state.masterMuted]);
+  useEffect(() => {
+    if (!state.playing) {
+      audio.current?.stop();
+      return;
+    }
+    const player = mix();
+    player.setMonitor(state.volumeDb, state.masterMuted);
+    let cancelled = false;
+    void player
+      .play(timeRef.current, project, state.mutedTrackIds)
+      .catch((e) => {
+        if (!cancelled)
+          patch({
+            error: e instanceof Error ? e.message : String(e),
+            playing: false,
+          });
+      });
     let id = 0;
     let last = performance.now();
     const tick = (now: number) => {
-      dispatch({ type: "tick", delta: (now - last) / 1000 });
+      const heard = player.heardTime();
+      if (heard == null) dispatch({ type: "tick", delta: (now - last) / 1000 });
+      else dispatch({ type: "sync", time: heard });
       last = now;
       id = requestAnimationFrame(tick);
     };
     id = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(id);
-  }, [state.playing]);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(id);
+      player.stop();
+    };
+  }, [state.playing, mutedKey]);
+  useEffect(() => {
+    const onHide = () => {
+      if (document.hidden) dispatch({ type: "pause" });
+    };
+    document.addEventListener("visibilitychange", onHide);
+    return () => document.removeEventListener("visibilitychange", onHide);
+  }, []);
   const toggle = () => {
-    if (state.ready)
-      patch({
-        playing: !state.playing,
-        time: state.time >= project.duration ? 0 : state.time,
-      });
+    if (!state.ready) return;
+    mix().unlock();
+    dispatch({ type: "toggle" });
+  };
+  const seekTo = (time: number) => {
+    dispatch({ type: "seek", time });
+    if (state.playing)
+      audio.current?.seek(Math.max(0, Math.min(project.duration, time)));
   };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -194,10 +340,7 @@ function App() {
       }
       if (e.code === "ArrowRight" || e.code === "ArrowLeft") {
         e.preventDefault();
-        dispatch({
-          type: "seek",
-          time: state.time + (e.code === "ArrowRight" ? 1 : -1) / state.fps,
-        });
+        seekTo(state.time + (e.code === "ArrowRight" ? 1 : -1) / state.fps);
       }
     };
     window.addEventListener("keydown", key);
@@ -219,6 +362,7 @@ function App() {
         width,
         height,
         fps: state.fps,
+        mutedTrackIds: state.mutedTrackIds,
         signal: controller.signal,
         onProgress: (done, total) => {
           if (alive.current) patch({ done, total });
@@ -354,9 +498,7 @@ function App() {
                 max={project.duration}
                 step={1 / state.fps}
                 value={state.time}
-                onChange={(e) =>
-                  dispatch({ type: "seek", time: Number(e.target.value) })
-                }
+                onChange={(e) => seekTo(Number(e.target.value))}
                 className="w-full accent-[#baa5ff]"
               />
               <div className="mt-[9px] flex flex-wrap items-center justify-between gap-[8px]">
@@ -364,7 +506,7 @@ function App() {
                   <button
                     className={control}
                     disabled={!state.ready}
-                    onClick={() => dispatch({ type: "seek", time: 0 })}
+                    onClick={() => seekTo(0)}
                     aria-label="Restart"
                   >
                     <Icon name="restart" size={16} />
@@ -372,12 +514,7 @@ function App() {
                   <button
                     className={control}
                     disabled={!state.ready}
-                    onClick={() =>
-                      dispatch({
-                        type: "seek",
-                        time: state.time - 1 / state.fps,
-                      })
-                    }
+                    onClick={() => seekTo(state.time - 1 / state.fps)}
                     aria-label="Previous frame"
                   >
                     <Icon name="back" size={16} />
@@ -393,12 +530,7 @@ function App() {
                   <button
                     className={control}
                     disabled={!state.ready}
-                    onClick={() =>
-                      dispatch({
-                        type: "seek",
-                        time: state.time + 1 / state.fps,
-                      })
-                    }
+                    onClick={() => seekTo(state.time + 1 / state.fps)}
                     aria-label="Next frame"
                   >
                     <Icon name="next" size={16} />
@@ -410,6 +542,35 @@ function App() {
                   <span className="text-[#a1a5b5]">
                     {clock(project.duration)}
                   </span>
+                </div>
+                <div className="flex items-center gap-[8px] text-[11px] text-[#a1a5b5]">
+                  <button
+                    type="button"
+                    aria-label={state.masterMuted ? "Unmute mix" : "Mute mix"}
+                    aria-pressed={state.masterMuted}
+                    onClick={() => {
+                      mix().unlock();
+                      dispatch({ type: "toggleMasterMute" });
+                    }}
+                    className={`flex h-[28px] w-[28px] items-center justify-center rounded-[5px] border text-[10px] font-semibold ${state.masterMuted ? "border-[#baa5ff] bg-[#2a2438] text-[#e4d8ff]" : "border-[#3a3d49] text-[#b7bac8]"}`}
+                  >
+                    M
+                  </button>
+                  <input
+                    aria-label="Preview volume"
+                    type="range"
+                    min={-60}
+                    max={0}
+                    step={1}
+                    value={state.volumeDb}
+                    onChange={(e) =>
+                      dispatch({
+                        type: "setVolume",
+                        volumeDb: Number(e.target.value),
+                      })
+                    }
+                    className="w-[88px] accent-[#baa5ff]"
+                  />
                 </div>
                 <span className="text-[11px] tabular-nums text-[#a1a5b5]">
                   Frame{" "}
@@ -473,7 +634,11 @@ function App() {
               <div className="my-[21px] space-y-[10px] border-y border-[#30323c] py-[16px] text-[12px]">
                 <div className="flex justify-between">
                   <span className="text-[#a8abb9]">Format</span>
-                  <span>MP4 / H.264</span>
+                  <span>
+                    {(project.audioTracks ?? []).length
+                      ? "MP4 / H.264 / AAC"
+                      : "MP4 / H.264"}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[#a8abb9]">Duration</span>
@@ -514,7 +679,7 @@ function App() {
                 </div>
               ) : (
                 <p className="mt-[12px] text-center text-[11px] text-[#a8abb9]">
-                  Video only · No upload required
+                  Local mix · No upload required
                 </p>
               )}
               {state.result && (
@@ -551,61 +716,73 @@ function App() {
           </aside>
         </div>
         <section
-          aria-label="Read-only scene timeline"
+          aria-label="Read-only composition timeline"
           className="mt-[26px] overflow-hidden rounded-[10px] border border-[#30323c] bg-[#1b1d23]"
         >
           <div className="flex h-[51px] items-center justify-between border-b border-[#2c2f38] px-[20px]">
             <div className="flex items-center gap-[10px]">
               <h2 className="text-[14px] font-medium">Composition</h2>
               <span className="rounded-[4px] bg-[#292c36] px-[6px] py-[2px] text-[10px] text-[#b8bdce]">
-                {project.scenes.length} scenes
+                V1 · {(project.audioTracks ?? []).length} audio
               </span>
             </div>
             <span className="text-[11px] text-[#9ca2b4]">
               Read-only timeline
             </span>
           </div>
-          <div className="px-[20px] pb-[21px] pt-[14px]">
-            <div className="mb-[10px] flex justify-between font-mono text-[10px] text-[#969caf]">
+          <div className="px-[20px] pb-[18px] pt-[14px]">
+            <div className="mb-[8px] flex justify-between pl-[88px] font-mono text-[10px] text-[#969caf]">
               {Array.from({ length: 9 }, (_, i) => (
                 <span key={i}>
                   {Number(((i * project.duration) / 8).toFixed(2))}s
                 </span>
               ))}
             </div>
-            <div className="relative flex h-[67px] gap-[4px]">
-              {project.scenes.map((s, i) => (
-                <div
-                  key={s.id}
-                  style={{
-                    flex: s.duration,
-                    borderColor:
-                      active.id === s.id
-                        ? colors[i % colors.length]
-                        : "#373b4a",
-                    backgroundColor: `${colors[i % colors.length]}12`,
-                  }}
-                  className="min-w-0 rounded-[5px] border px-[12px] py-[9px]"
-                >
-                  <div className="flex items-center justify-between gap-[6px] text-[12px]">
-                    <span
-                      className="truncate font-medium"
-                      style={{ color: colors[i % colors.length] }}
-                    >
-                      {s.name}
-                    </span>
-                    <span className="text-[10px] text-[#adb2c4]">
-                      {s.duration}s
-                    </span>
-                  </div>
-                  <p className="mt-[8px] truncate font-mono text-[10px] text-[#9da4b7]">
-                    {s.source}
-                  </p>
-                </div>
-              ))}
+            <div className="relative">
+              <TrackRow label="V1">
+                {project.scenes.map((s, i) => (
+                  <LaneBlock
+                    key={s.id}
+                    start={s.start}
+                    duration={s.duration}
+                    total={project.duration}
+                    color={colors[i % colors.length]}
+                    title={s.name}
+                    detail={s.source}
+                    active={active.id === s.id}
+                  />
+                ))}
+              </TrackRow>
+              {(project.audioTracks ?? []).map((track, i) => {
+                const muted = state.mutedTrackIds.includes(track.id);
+                return (
+                  <TrackRow
+                    key={track.id}
+                    label={track.name}
+                    muted={muted}
+                    onMute={() =>
+                      dispatch({ type: "toggleTrackMute", id: track.id })
+                    }
+                  >
+                    {track.clips.map((clip) => (
+                      <LaneBlock
+                        key={clip.id}
+                        start={clip.start}
+                        duration={clip.duration}
+                        total={project.duration}
+                        color={colors[(i + 1) % colors.length]}
+                        title={clip.name}
+                        detail={`${clip.duration}s`}
+                      />
+                    ))}
+                  </TrackRow>
+                );
+              })}
               <div
-                className="pointer-events-none absolute bottom-[-5px] top-[-6px] w-[1px] bg-[#e0d3ff]"
-                style={{ left: `${(state.time / project.duration) * 100}%` }}
+                className="pointer-events-none absolute bottom-0 top-0 w-[1px] bg-[#e0d3ff]"
+                style={{
+                  left: `calc(88px + (100% - 88px) * ${state.time / project.duration})`,
+                }}
               >
                 <div className="absolute left-[-4px] top-[-3px] h-[8px] w-[9px] rounded-b-[2px] bg-[#e0d3ff]" />
               </div>

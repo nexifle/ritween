@@ -6,6 +6,7 @@ import {
   frameTiming,
   validateProject,
 } from "../src/engine/timeline";
+import { audioSampleCount } from "../src/engine/audio";
 import { MP4Muxer } from "../src/engine/mp4";
 import { project } from "../src/project/manifest";
 
@@ -33,6 +34,59 @@ test("manifest spans eight seconds with exact hard cuts and seekable local time"
       ],
     }),
   );
+});
+test("audio sample count matches every supported frame rate and clips stay on their own tracks", () => {
+  for (const fps of [24, 30, 60]) assert.equal(audioSampleCount(8, fps), 384000);
+  assert.equal(project.audioTracks?.length, 2);
+  assert.throws(() => audioSampleCount(8, 7));
+  assert.throws(() =>
+    validateProject({
+      ...project,
+      audioTracks: [
+        {
+          id: "a1",
+          name: "A1",
+          clips: [
+            { ...project.audioTracks![0].clips[0], start: 5, duration: 4 },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.throws(() =>
+    validateProject({
+      ...project,
+      audioTracks: [
+        {
+          id: "a1",
+          name: "A1",
+          clips: [
+            { ...project.audioTracks![0].clips[0], id: "one", start: 0, duration: 3 },
+            { ...project.audioTracks![0].clips[0], id: "two", start: 2, duration: 2 },
+          ],
+        },
+      ],
+    }),
+  );
+  validateProject({
+    ...project,
+    audioTracks: [
+      {
+        id: "a1",
+        name: "A1",
+        clips: [
+          { ...project.audioTracks![0].clips[0], id: "one", start: 0, duration: 2 },
+        ],
+      },
+      {
+        id: "a2",
+        name: "A2",
+        clips: [
+          { ...project.audioTracks![0].clips[0], id: "two", start: 1, duration: 2 },
+        ],
+      },
+    ],
+  });
 });
 test("frame schedules are gapless and exact for each supported FPS", () => {
   for (const fps of [24, 30, 60]) {
@@ -106,6 +160,52 @@ test("MP4 tables contain 240 sync samples, exact duration and valid media offset
     sizes.reduce((a, b) => a + b, 0),
     top[1].size - 8,
   );
+});
+test("MP4 audio track carries AAC tables without replacing the video track", async () => {
+  const mux = new MP4Muxer(1280, 720, 30);
+  const asc = new Uint8Array([0x11, 0x90]);
+  mux.setAudioPriming(2112);
+  mux.add(new Uint8Array([0, 0, 0, 2, 0x65]), true, new Uint8Array([1, 2, 3, 4]));
+  mux.addAudio(new Uint8Array([0xaa, 0xbb]), asc, 48000, 1024, 128000);
+  mux.addAudio(new Uint8Array([0xcc]), asc, 48000, 1024, 128000);
+  const data = new Uint8Array(await mux.finalize().arrayBuffer());
+  const view = new DataView(data.buffer);
+  const traks: number[] = [];
+  const walk = (start: number, end: number) => {
+    for (let pos = start; pos + 8 <= end; ) {
+      const size = view.getUint32(pos);
+      const type = String.fromCharCode(...data.subarray(pos + 4, pos + 8));
+      if (type === "trak") traks.push(pos);
+      if (["moov", "trak", "mdia", "minf", "stbl", "edts"].includes(type))
+        walk(pos + 8, pos + size);
+      pos += size;
+    }
+  };
+  walk(0, data.length);
+  assert.equal(traks.length, 2);
+  const text = new TextDecoder().decode(data);
+  assert.ok(text.includes("vide"));
+  assert.ok(text.includes("soun"));
+  assert.ok(data.includes(0x11) && data.includes(0x90));
+  let audioMdhd = -1;
+  let mediaTime = -1;
+  const scan = (start: number, end: number) => {
+    for (let pos = start; pos + 8 <= end; ) {
+      const size = view.getUint32(pos);
+      const type = String.fromCharCode(...data.subarray(pos + 4, pos + 8));
+      if (type === "mdhd" && pos > traks[1]) audioMdhd = pos;
+      if (type === "elst") mediaTime = view.getUint32(pos + 20);
+      if (["trak", "mdia", "edts"].includes(type)) scan(pos + 8, pos + size);
+      pos += size;
+    }
+  };
+  scan(traks[1], traks[1] + view.getUint32(traks[1]));
+  assert.equal(view.getUint32(audioMdhd + 20), 48000);
+  assert.equal(view.getUint32(audioMdhd + 24), 2048);
+  assert.equal(mediaTime, 2112);
+  const muxSilent = new MP4Muxer(640, 360, 24);
+  assert.throws(() => muxSilent.addAudio(new Uint8Array([1]), new Uint8Array(), 0, 1024, 128000));
+  assert.throws(() => muxSilent.addAudio(new Uint8Array([1]), asc, 0, 1024, 128000));
 });
 test("muxer rejects missing config, non-sync samples and changing AVC config", () => {
   const mux = new MP4Muxer(640, 360, 30);

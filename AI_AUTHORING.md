@@ -95,4 +95,4 @@ Run `npm test` and `npm run build`. Preview each cut and seek in a nonsequential
 
 ## Terminal workflow for agents
 
-Use `rimotion preview --project /path/to/project` for live browser review, `rimotion frame --project /path/to/project --time 5.2 -o frame.png --json` to inspect one GPU-rendered PNG, and `rimotion export --project /path/to/project -o video.mp4 --json` for the full composition. The same commands run from source through `node /path/to/rimotion/bin/rimotion.mjs`. Pass `--force` explicitly to replace files. Read [CLI.md](CLI.md) for executable packaging, errors, and all options.
+Use `rimotion preview --project /path/to/project` for live browser review, `rimotion frame --project /path/to/project --time 5.2 -o frame.png --json` to inspect one GPU-rendered PNG, and `rimotion export --project /path/to/project -o video.mp4 --json` for the full composition. The same commands run from source through `node /path/to/rimotion/bin/rimotion.mjs`. Pass `--force` explicitly to replace files. Read [CLI.md](CLI.md) for install, errors, and all options.

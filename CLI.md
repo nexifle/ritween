@@ -23,25 +23,21 @@ node bin/rimotion.mjs frame --frame 156 --fps 30 -o artifacts/frame.png --force
 node bin/rimotion.mjs export -o artifacts/video.mp4 --resolution 1080p --fps 60
 ```
 
-`npm run cli -- <arguments>` is equivalent. `npm link` installs the `rimotion` executable in your npm bin directory. `npm install -g /path/to/rimotion` also installs the package and its runtime dependencies; use `rimotion` in place of `node bin/rimotion.mjs` afterward. `npm pack --pack-destination release` produces an installable package tarball. No command automatically installs a browser.
+`npm run cli -- <arguments>` is equivalent. No command automatically installs a browser.
 
-## Standalone executable
+## Install the command
 
-Build on the target machine with dependencies installed and Bun available:
+The published package is a Node program. `npm install -g` links `rimotion` to `bin/rimotion.mjs`, which runs on the Node.js already on the machine. npm installs the runtime dependencies for that platform, including Vite, React, Tailwind, and Playwright Core. It does not download a browser and it does not embed a second JavaScript runtime.
 
 ```sh
-npm run build:binary
-./release/rimotion-darwin-arm64 --help
-./release/rimotion-darwin-arm64 preview --demo --open
-./release/rimotion-darwin-arm64 frame --demo --time 5.2 -o frame.png
-./release/rimotion-darwin-arm64 export --demo -o video.mp4
+npm install -g rimotion
+rimotion --help
+rimotion preview --demo --open
+rimotion frame --demo --time 5.2 -o frame.png
+rimotion export --demo -o video.mp4
 ```
 
-The output name includes the build host OS/architecture, with `.exe` on Windows. `BINARY_OUT=/path/to/rimotion npm run build:binary` overrides the destination. Only the host target is built: runtime dependencies include native host-specific Vite/Tailwind/esbuild libraries, so changing a Bun cross-compilation flag alone would not create a usable cross-platform build. The shipped artifact was built and tested on macOS Apple Silicon.
-
-The binary embeds Bun, CLI code, engine, preview sources, the demo and installed dependencies. It needs neither Node.js nor a separate Bun/npm install on the destination machine. Chrome/Chromium and a working GPU driver are external requirements. It is an unsigned development executable.
-
-On first run it extracts the embedded payload to a content-addressed local cache, then starts its embedded runtime against those files. Later runs reuse that cache. macOS defaults to `~/Library/Caches/rimotion`; other systems use `$XDG_CACHE_HOME/rimotion` or `~/.cache/rimotion`. Set `RIMOTION_CACHE_DIR` to relocate it. Removing the cache causes extraction on next run. The cache contains executable code and should be kept in a user-owned directory. Packaging and extraction are implemented without external archiving utilities.
+From a checkout of this repository, `npm install -g .` installs the working tree the same way. `npm pack --pack-destination release` writes `release/rimotion-0.1.0.tgz`; `npm install -g ./release/rimotion-0.1.0.tgz` installs that tarball. Chrome/Chromium and a working GPU driver remain external requirements.
 
 ## Render another codebase
 
@@ -54,7 +50,7 @@ rimotion export --project /path/to/manifest.ts -o final.mp4
 
 A project is either a manifest module, or a directory containing `src/project/manifest.ts`, `.tsx` or `.js`, `project/manifest.ts` or `.js`, or `manifest.ts`, `.tsx`, `.js` or `.mjs`. It exports a named `project` or a default Project object implementing the existing scene interface. Use `--demo` to render the bundled example from any directory. The CLI does not silently substitute the demo when a project is absent.
 
-External scenes can import the public engine API and types from `rimotion`; the CLI resolves that name to its own engine during browser compilation. Relative scene imports and Vite resource imports such as `./effect.wgsl?raw` work. Project `public/` assets are served when selecting a project directory. Package imports used by a project's scenes must be installed in that project; the binary does not install arbitrary dependencies. Source code is executed as trusted application code. The CLI supplies its own Vite configuration and does not load a project's Vite plugins/configuration.
+External scenes can import the public engine API and types from `rimotion`; the CLI resolves that name to its own engine during browser compilation. Relative scene imports and Vite resource imports such as `./effect.wgsl?raw` work. Project `public/` assets are served when selecting a project directory. Package imports used by a project's scenes must be installed in that project; the CLI does not install arbitrary dependencies. Source code is executed as trusted application code. The CLI supplies its own Vite configuration and does not load a project's Vite plugins/configuration.
 
 ```ts
 import type { Project, Scene } from "rimotion";
@@ -79,8 +75,8 @@ Web preview binds only to `127.0.0.1`, defaults to port 5173, and reports the ac
 npm test
 npm run build
 npm run test:cli
-npm run build:binary
-CLI_BINARY="$PWD/release/rimotion-darwin-arm64" npm run test:cli
 ```
+
+`CLI_BINARY=/path/to/rimotion npm run test:cli` runs the same suite against an installed `rimotion` command instead of `node bin/rimotion.mjs`.
 
 The CLI integration suite invokes commands from outside the repository, checks PNG dimensions and deterministic frame equivalence, renders an independent external TSX manifest with a JS scene, checks invalid timestamps and overwrite protection, tests timeout cleanup and web preview shutdown, and exports an eight-second 240-frame MP4 that is opened and sought using native Chrome playback. It writes artifacts under `artifacts/cli/`. The browser engine validation (`npm run test:browser` with Vite running) additionally decodes all 240 frames.

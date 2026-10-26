@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { parseOptions, help } from "./options.mjs";
 import { resolveProject } from "./project.mjs";
 import { startServer } from "./server.mjs";
-import { chromium } from "playwright";
+import { chromium } from "playwright-core";
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export async function main(argv = process.argv.slice(2)) {
   let options, server, browser, temporary, task;

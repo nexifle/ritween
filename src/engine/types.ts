@@ -33,8 +33,6 @@ export interface AudioHost {
   start: number;
   duration: number;
   at(localTime: number): number;
-  /** Optional offline lookahead. Use for independent voices; keep shared buses outside. */
-  defer?: (contextTime: number, schedule: () => void) => void;
 }
 export interface AudioClipSource {
   schedule(host: AudioHost): void | Promise<void>;

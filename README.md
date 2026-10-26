@@ -35,7 +35,7 @@ Play/pause with Space. Seek using the scrubber; step with the transport buttons 
 - `src/engine/types.ts`: reusable Scene, Project, RenderContext and future Compositor contracts.
 - `src/engine/timeline.ts`: stateless absolute-time evaluation, frame schedules and manifest validation.
 - `src/engine/renderer.ts`: GPU lifecycle and renderer shared by preview and export. Each renderer owns independent scene instances and device resources.
-- `src/engine/audio.ts`: export renders one offline mix with `renderAudio`. Preview records that same clip schedule, then keeps only the notes inside a short lookahead as live nodes. Track mutes are arguments, not a second graph.
+- `src/engine/audio.ts`: export and preview compile the same managed clip schedule. Export builds native voices automatically within offline lookahead windows; preview keeps a short lookahead of live nodes. Track mutes are arguments, not a second graph.
 - `src/engine/export.ts`: WebGPU → OffscreenCanvas → VideoFrame → native H.264 VideoEncoder, plus AAC from that mix, → MP4.
 - `src/engine/mp4.ts`: custom ISO BMFF muxer. AVC configuration is preserved in `avcC`. An optional AAC track stores `esds`, sample sizes, chunk offsets and durations. Video samples stay all-keyframe.
 - `src/project/manifest.ts`: the entire composition, independent of the engine.
@@ -70,4 +70,4 @@ API references: [WebCodecs AVC registration](https://www.w3.org/TR/webcodecs-avc
 
 Run `npm run benchmark:export` while Vite is running. It benchmarks all nine presets with three runs each after one warm-up and writes timing, throughput, output sizes, and environment details to `BENCHMARK.md` and `artifacts/benchmark-export.json`. See [measured results](BENCHMARK.md). Override `BENCH_REPEATS` to change the run count.
 
-See [export audio performance](PERFORMANCE.md) for profiling, deferred synthesizer scheduling, and memory limits.
+See [export audio performance](PERFORMANCE.md) for profiling, automatic graph scheduling, and memory limits.

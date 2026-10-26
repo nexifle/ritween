@@ -45,3 +45,9 @@ If both files match and both are wrong:
 Compare stdout `duration` and `frames` with `ceil(project.duration * fps)`. A mismatch means the export you opened is from an older file, or `--fps` was not the rate you think. `bytes` does not encode duration.
 
 `npm test` covers timeline math and the muxer tables. `npm run test:browser`, with `npm run dev` already running, decodes the shipped 8 second demo. After you change that demo's duration, update the expected frame count and the seek times `0.5`, `5.2`, and `7.5` in `scripts/validate-browser.mjs` or the test is checking the old film.
+
+## Managed audio failures
+
+`Audio clip "…": Unsupported audio …` names an API outside the managed graph contract. Use the supported nodes and operations in [audio.md](audio.md). Do not bypass the compiler with a second context or custom renderer. Resource-limit errors require a smaller graph, shared sample buffers, simpler routing, or shorter composition.
+
+Export emits stage events (`audio-mix`, `audio-encode`, `scene-setup`, `video-encode`, `mux`). Locate the slow stage before editing a scene or its soundtrack. If valid ordinary scheduling still performs badly, reproduce it as an engine issue; project-level `host.defer` or manual graph-window code is not the solution.

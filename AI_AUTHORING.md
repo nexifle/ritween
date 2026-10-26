@@ -81,7 +81,7 @@ audioTracks: [
 
 `phrase` is one factory used with different pitches. Placement stays on the clip. The preview timeline draws these rows under V1. The M button on a row omits that track from preview and from the next export. Preview volume does not enter the file. Keep peaks modest; the mix runs through a limiter at −1 dB. Schedule on the audio clock (`start(time)`, ramps). Do not trigger notes from `setTimeout`.
 
-For long synthesizer scores, put each independent voice’s node creation and automation inside a synchronous callback. Use `host.defer(host.at(noteTime), callback)` when available, otherwise call the callback immediately. Create shared buses and effects outside these callbacks; load and decode samples before registering them. This keeps offline export from building the entire future native graph upfront while preserving the same start times and effect tails. See [export audio performance](PERFORMANCE.md) for an example and measurements.
+Write the complete deterministic audio schedule using supported Web Audio nodes and `host.at`. Rimotion compiles the graph and creates native voices near their start automatically; no project-level `host.defer` or custom scheduler is needed. Use the managed subset and enforced resource limits in [.grok/skills/rimotion/references/audio.md](.grok/skills/rimotion/references/audio.md). Unsupported APIs fail explicitly. Fetch/decode may be awaited during scheduling; timers, retained hosts and separate audio contexts are outside the contract. See [export audio performance](PERFORMANCE.md) for implementation details.
 
 ## Determinism rules
 

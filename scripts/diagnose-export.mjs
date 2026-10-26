@@ -70,7 +70,7 @@ try {
         .filter((t) => track && t.id !== track)
         .map((t) => t.id);
       await window.report({
-        tracks: project.audioTracks.map((t) => ({
+        tracks: (project.audioTracks ?? []).map((t) => ({
           id: t.id,
           clips: t.clips.length,
         })),
@@ -79,24 +79,10 @@ try {
         renderAudio(project, muted, 24),
       );
       if (audio && compare) {
-        const eager = {
-          ...project,
-          audioTracks: project.audioTracks.map((track) => ({
-            ...track,
-            clips: track.clips.map((clip) => ({
-              ...clip,
-              create: () => {
-                const source = clip.create();
-                return {
-                  schedule: (host) =>
-                    source.schedule({ ...host, defer: undefined }),
-                };
-              },
-            })),
-          })),
-        };
+        const { renderEagerAudio } =
+          await import("/scripts/audio-reference.mjs");
         const baseline = await measure("eager-audio-mix", () =>
-          renderAudio(eager, muted, 24),
+          renderEagerAudio(project, muted, 24),
         );
         let maxDifference = 0,
           squared = 0;

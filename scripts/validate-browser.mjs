@@ -314,7 +314,8 @@ try {
     const { renderAudio } = await import("/src/engine/audio.ts");
     const { project } = await import("/src/project/manifest.ts");
     const times = [0, 0.1, 0.5, 0.5001, 0.7499, 1, 1.25, 1.5, 1.999];
-    const make = (deferred, onVoice = () => {}) => ({
+    const { renderEagerAudio } = await import("/scripts/audio-reference.mjs");
+    const make = (factories, onVoice = () => {}) => ({
       ...project,
       duration: 2,
       scenes: [{ ...project.scenes[0], start: 0, duration: 2 }],
@@ -337,9 +338,10 @@ try {
                   for (const when of times) {
                     const run = () => {
                       onVoice(when);
-                      const osc = new OscillatorNode(host.context, {
-                        frequency: 220 + when * 100,
-                      });
+                      const osc = factories
+                        ? host.context.createOscillator()
+                        : new OscillatorNode(host.context);
+                      osc.frequency.value = 220 + when * 100;
                       const gain = new GainNode(host.context, { gain: 0 });
                       gain.gain.setValueAtTime(0, when);
                       gain.gain.linearRampToValueAtTime(0.05, when + 0.005);
@@ -348,8 +350,7 @@ try {
                       osc.start(when);
                       osc.stop(when + 0.08);
                     };
-                    if (deferred) host.defer(when, run);
-                    else run();
+                    run();
                   }
                 },
               }),
@@ -358,7 +359,7 @@ try {
         },
       ],
     });
-    const eager = await renderAudio(make(false), [], 24);
+    const eager = await renderEagerAudio(make(false), [], 24);
     const lazyProject = make(true);
     const lazy = await renderAudio(lazyProject, [], 24);
     let maxDifference = 0;
@@ -395,10 +396,145 @@ try {
         24,
       );
     } catch (error) {
-      failurePropagated = error.message === "voice failed";
+      failurePropagated = error.message.includes("voice failed");
     }
+    const custom = (schedule) => {
+      const result = make(false);
+      result.audioTracks[0].clips[0].create = () => ({ schedule });
+      return result;
+    };
+    const effectScore = custom((host) => {
+      const ctx = host.context;
+      const bus = ctx.createGain();
+      bus.gain.value = 0.05;
+      const impulse = ctx.createBuffer(1, 64, ctx.sampleRate);
+      impulse.getChannelData(0)[0] = 1;
+      impulse.getChannelData(0)[30] = 0.2;
+      const room = new ConvolverNode(ctx, {
+        buffer: impulse,
+        normalize: false,
+      });
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = new Float32Array([-1, -0.5, 0, 0.5, 1]);
+      shaper.oversample = "2x";
+      bus.connect(room).connect(shaper).connect(host.destination);
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 5;
+      const depth = ctx.createGain();
+      depth.gain.value = 0.01;
+      lfo.connect(depth).connect(bus.gain);
+      lfo.start(0);
+      lfo.stop(2);
+      const wave = ctx.createPeriodicWave(
+        new Float32Array([0, 0, 0]),
+        new Float32Array([0, 1, 0.1]),
+      );
+      for (const when of [0.1, 0.75, 1.5]) {
+        const osc = ctx.createOscillator();
+        osc.setPeriodicWave(wave);
+        const filter = ctx.createBiquadFilter();
+        const gain = ctx.createGain();
+        gain.gain.value = 0;
+        gain.gain.setValueCurveAtTime(
+          new Float32Array([0, 0.2, 0.1]),
+          when,
+          0.2,
+        );
+        gain.gain.setValueAtTime(0, when + 0.3);
+        gain.gain.cancelScheduledValues(when + 0.3);
+        gain.gain.setValueAtTime(0.05, when + 0.25);
+        gain.gain.cancelAndHoldAtTime(when + 0.27);
+        gain.gain.linearRampToValueAtTime(0, when + 0.35);
+        osc.connect(filter).connect(gain).connect(bus);
+        osc.start(when);
+        osc.stop(when + 0.4);
+      }
+    });
+    const effectNative = await renderEagerAudio(effectScore, [], 24);
+    const effectManaged = await renderAudio(effectScore, [], 24);
+    let effectDifference = 0;
+    for (let c = 0; c < effectNative.numberOfChannels; c++) {
+      const a = effectNative.getChannelData(c),
+        b = effectManaged.getChannelData(c);
+      for (let i = 0; i < a.length; i++)
+        effectDifference = Math.max(effectDifference, Math.abs(a[i] - b[i]));
+    }
+    const violations = [];
+    const reject = async (schedule, expected) => {
+      try {
+        await renderAudio(custom(schedule), [], 24);
+      } catch (error) {
+        if (error.message.includes(expected)) {
+          violations.push(expected);
+          return;
+        }
+        throw error;
+      }
+      throw Error("Managed audio accepted invalid schedule: " + expected);
+    };
+    await reject(
+      (host) => host.context.createAnalyser(),
+      "Unsupported audio context API",
+    );
+    await reject(
+      (host) => new PannerNode(host.context),
+      "Unsupported audio node",
+    );
+    await reject(
+      (host) => new GainNode(host.context).gain.setValueAtTime(NaN, 0),
+      "Invalid audio parameter value",
+    );
+    await reject(
+      (host) => host.context.createBuffer(2, 40_000_000, 48_000),
+      "128 MiB",
+    );
+    await reject((host) => {
+      for (let i = 0; i < 16_001; i++) new GainNode(host.context);
+    }, "nodes limit");
+    await reject((host) => {
+      new GainNode(host.context).gain.automationRate = "a-rate";
+    }, "Unsupported audio parameter property");
+    await reject(
+      (host) => host.context.decodeAudioData(new ArrayBuffer(1), () => {}),
+      "promise-based decodeAudioData",
+    );
+    let retained;
+    await renderAudio(
+      custom((host) => {
+        retained = host;
+      }),
+      [],
+      24,
+    );
+    let retainedHostRejected = false;
+    try {
+      retained.context.createGain();
+    } catch (error) {
+      retainedHostRejected = error.message.includes("scheduling has finished");
+    }
+    const constructor = globalThis.OscillatorNode;
+    await Promise.all(
+      [0, 1].map(() =>
+        renderAudio(
+          custom(async (host) => {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            const osc = new OscillatorNode(host.context);
+            osc.connect(host.destination);
+            osc.start(0);
+            osc.stop(0.1);
+          }),
+          [],
+          24,
+        ),
+      ),
+    );
+    const constructorsRestored = constructor === globalThis.OscillatorNode;
     return {
       maxDifference,
+      effectDifference,
+      retainedHostRejected,
+      constructorsRestored,
+      violations,
       cacheReused,
       mutedIsSilent,
       cancelled,
@@ -409,6 +545,13 @@ try {
     offlineAudio.maxDifference < 1e-5,
     "deferred voices must preserve native PCM across suspension boundaries and shared delay tails",
   );
+  assert.ok(
+    offlineAudio.effectDifference < 1e-5,
+    "managed factories, default filters, modulation, periodic waves, convolution and automation must preserve native PCM",
+  );
+  assert.equal(offlineAudio.violations.length, 7);
+  assert.equal(offlineAudio.retainedHostRejected, true);
+  assert.equal(offlineAudio.constructorsRestored, true);
   for (const key of [
     "cacheReused",
     "mutedIsSilent",
@@ -434,7 +577,7 @@ try {
   );
   console.log(JSON.stringify(report, null, 2));
   console.log(
-    "PASS: GPU seek determinism, transport, real export, 240 decoded frames, MP4 playback/seeking, cancellation, mobile layout, deferred audio PCM/cache/mute/abort/failure.",
+    "PASS: GPU seek determinism, transport, real export, 240 decoded frames, MP4 playback/seeking, cancellation, mobile layout, managed audio PCM/effects/limits/cache/mute/abort/failure/concurrency.",
   );
 } finally {
   await browser.close();

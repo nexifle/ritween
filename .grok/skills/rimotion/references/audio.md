@@ -28,9 +28,21 @@ export function tone(frequency: number): () => AudioClipSource {
 }
 ```
 
-`host.context` is a `BaseAudioContext`. The same `schedule` runs for preview and for export. `host.destination` is this clip's bus. `host.start` and `host.duration` are composition seconds. `host.at(local)` is `start + local`. Schedule every `start`, ramp, and `stop` with `host.at`. Do not read `performance.now`, `AudioContext.currentTime`, or the video playhead.
+`host.context` is a managed facade with the supported subset of `BaseAudioContext`. The same `schedule` runs for preview and for export. `host.destination` is this clip's bus. `host.start` and `host.duration` are composition seconds. `host.at(local)` is `start + local`. Schedule every `start`, ramp, and `stop` with `host.at`. Do not read `performance.now`, `AudioContext.currentTime`, or the video playhead.
 
-`schedule` may return a promise. `decodeAudioData` and `audioWorklet.addModule` belong there. `getUserMedia` does not.
+`schedule` may return a promise for fetching and `decodeAudioData`. It must finish scheduling within 30 seconds. Do not register timers, retain the host for later scheduling, create a second audio context, start an offline render, or use `audioWorklet`, `getUserMedia`, `MediaRecorder`, or analyser-driven timing.
+
+Rimotion records this schedule as data, groups independent voices and creates native nodes automatically near their start times. Shared effects retain their state. Write ordinary loops over all notes; no `host.defer`, manual chunking, project-specific scheduler, or export workaround is required.
+
+### Supported API and enforced limits
+
+- Nodes: `OscillatorNode`, `AudioBufferSourceNode`, `ConstantSourceNode`, `GainNode`, `BiquadFilterNode`, `StereoPannerNode`, `DelayNode`, `WaveShaperNode`, `DynamicsCompressorNode`, `ConvolverNode`. Both `new Node(host.context, options)` and the matching `host.context.create*()` factories are supported. Connect only these managed nodes, their managed audio parameters, or `host.destination`.
+- Parameters: `.value`, `setValueAtTime`, `linearRampToValueAtTime`, positive `exponentialRampToValueAtTime`, `setTargetAtTime`, `setValueCurveAtTime`, `cancelScheduledValues`, `cancelAndHoldAtTime`. Times and values must be finite; times must be nonnegative. Curves contain 2..65,536 samples.
+- Assets: `createBuffer`, promise-based `decodeAudioData`, and `createPeriodicWave`/`setPeriodicWave`. Fetch and decode assets inside `schedule` before it returns. Samples and noise must be deterministic.
+- Sources start once. Use `host.at` for timing and stop voices after their release. Sources without a stop end at the clip boundary. The clip bus gates output to its own duration.
+- Per mix: at most 16,000 nodes, 64,000 connections, 200,000 automation events and 1,000,000 graph traversal steps. Source PCM buffers total at most 128 MiB; output PCM at most 256 MiB. Delay storage is at most 30 seconds per node and 60 seconds across nodes.
+
+The implementation in `src/engine/live-mix.ts` (`AUDIO_LIMITS`) is authoritative. Unsupported API calls and resource-limit violations fail with a diagnostic instead of silently falling back to an unbounded native graph. `PannerNode`, listener control, custom worklets, and IIR filters are outside this contract; use supported nodes or generate a deterministic PCM sample. Do not merely increase a timeout to conceal an error. General JavaScript is not sandboxed: keep loops finite and asset requests bounded.
 
 Keep each voice near `0.2`. The mix sums tracks and then limits at −1 dB. A jump in gain clicks, so open and close with `linearRampToValueAtTime` or `setTargetAtTime`.
 

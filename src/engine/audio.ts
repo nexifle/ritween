@@ -1,4 +1,4 @@
-import { LiveMix } from "./live-mix";
+import { LiveMix, prepareOfflineAudio, AUDIO_LIMITS } from "./live-mix";
 import { frameCount, validateProject } from "./timeline";
 import type { Project } from "./types";
 
@@ -63,6 +63,10 @@ export async function renderAudio(
       "OfflineAudioContext is unavailable. Use a current Chrome or Edge browser.",
     );
   const length = audioSampleCount(project.duration, fps);
+  if (length * 2 * 4 > AUDIO_LIMITS.mixBufferBytes)
+    throw Error(
+      "Audio mix exceeds the 256 MiB PCM limit. Split the composition.",
+    );
   const ctx = new OfflineAudioContext(2, length, SAMPLE_RATE);
   const master = new GainNode(ctx, { gain: 1 });
   const limiter = new DynamicsCompressorNode(ctx, {
@@ -73,29 +77,13 @@ export async function renderAudio(
     release: 0.12,
   });
   master.connect(limiter).connect(ctx.destination);
-  const deferred: { time: number; schedule: () => void }[] = [];
-  for (const track of tracks) {
-    for (const clip of track.clips) {
-      signal?.throwIfAborted();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      const bus = new GainNode(ctx, { gain: 0 });
-      bus.connect(master);
-      windowClip(bus.gain, clip.start, clip.duration);
-      const source = clip.create();
-      await source.schedule({
-        context: ctx,
-        destination: bus,
-        start: clip.start,
-        duration: clip.duration,
-        at: (localTime) => clip.start + localTime,
-        defer: (time, schedule) => {
-          if (!Number.isFinite(time) || time < 0)
-            throw Error("Invalid deferred audio time.");
-          deferred.push({ time, schedule });
-        },
-      });
-    }
-  }
+  const deferred = await prepareOfflineAudio(
+    ctx,
+    master,
+    project,
+    mutedTrackIds,
+    signal,
+  );
   signal?.throwIfAborted();
   // Populate independent voices just before they are needed. Shared buses and
   // effects stay connected throughout, preserving their state and tails.

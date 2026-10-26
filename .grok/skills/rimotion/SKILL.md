@@ -31,6 +31,8 @@ Read the one that matches the task and follow it. Use a second reference when th
 - Stroke a thick series, reduce a long series, or show density: [references/chart-series.md](references/chart-series.md)
 - Move a chart across the shot: [references/chart-motion.md](references/chart-motion.md)
 
+Audio schedules run through Rimotion's managed graph compiler for preview and export. Use the supported API and resource limits in [references/audio.md](references/audio.md); do not add project-level lazy scheduling, `host.defer`, custom export loops, or separate audio contexts. Fix rejected schedules within that contract. Performance scheduling belongs in the engine.
+
 Types are `src/engine/types.ts`. Timeline checks are `src/engine/timeline.ts`. Flags are `rimotion --help` and `CLI.md`.
 
 ## Loop

@@ -54,35 +54,9 @@ A room is a `ConvolverNode`. Build the impulse in a float buffer: wait `2 * mete
 
 ## Place
 
-`PannerNode` is per voice. `host.context.listener` is one listener for the whole mix, shared by every clip. Only one place in the project should write the listener. Two clips both automating it will fight.
+The managed audio API supports `StereoPannerNode` for left/right placement and `GainNode` for distance attenuation. Compute pan and distance from the same pure motion function used by the scene, then schedule their parameters with `host.at`. `PannerNode`, HRTF, and `host.context.listener` are not supported; do not create a separate context to obtain them.
 
-Web Audio is right-handed, and the listener faces −Z. If the scene treats forward as +Z, negate Z on the way in. Do that for position and for forward, up, and source orientation.
-
-```ts
-export const toAudio = (x: number, y: number, z: number) => ({ x, y, z: -z });
-```
-
-Write positions with `setValueAtTime` or a short `setTargetAtTime` along the clip. A jumped position clicks the same way a jumped gain does. Take the positions from the same function the scene uses for the camera. Composition time `t` goes in, a position comes out. The scene calls it with `time`. The clip calls it with `host.start + local`.
-
-`equalpower` only pans left and right, and it mirrors behind to in front. `HRTF` is heavier and reads front and back on headphones. Equal-power gains at azimuth 0 are both `Math.SQRT1_2`. A straight 0.5 and 0.5 split is quieter in the center because the energies sum to 0.5.
-
-Distance, with `ref` the distance that is still gain 1:
-
-- inverse: `ref / (ref + rolloff * (d - ref))`. Doubling distance at rolloff 1 drops about 6 dB. It never hits 0.
-- linear: `1 - rolloff * (d - ref) / (max - ref)`, then hold. Rolloff 1 is silent at `max`.
-- exponential: `(d / ref) ** -rolloff`.
-
-Clamp `d` to at least `ref`, or a camera that crosses the source spikes. Pick `ref` from the size of the object: under a meter for a person, several meters for a large machine.
-
-A cone is the source's facing. Inside half the inner angle the gain is 1. Outside half the outer angle it is `coneOuterGain`. Between them it is a straight mix. The default cone is 360 degrees, which is no cone.
-
-`PannerNode` does not apply Doppler. Project both velocities onto the unit vector from the source to the listener. Positive means moving along that vector. Closing speed raises pitch:
-
-```ts
-const rate = (343 - vListener) / (343 - vSource);
-```
-
-Keep the denominator away from 0. Multiply the buffer `playbackRate`, or the oscillator frequency, by `rate`. Do it from the same motion function as the picture, at the sample's start, or on a curve if the pass lasts a long time.
+For an inverse distance curve, use `ref / (ref + rolloff * (d - ref))`, clamping `d` to at least `ref`. Pan stays between −1 and 1. Smooth movements with short ramps; abruptly jumping gain or pan may click. Pitch changes for a passing object can be scheduled through `playbackRate` or oscillator frequency using the same deterministic motion data.
 
 ## What the picture uses
 
@@ -95,5 +69,5 @@ Skip these in a clip. They are live-page tools:
 - `getUserMedia`, a microphone meter, and recording the mic.
 - Web MIDI and `AudioContext.currentTime` as the playhead.
 - A voice pool that steals a slot at runtime. You already know every hit. Schedule those hits. A cap is just how many notes you wrote.
-- `AudioWorklet` for a saw, a delay, or a drum. Builtin nodes and a filled buffer already seek. A worklet is only for sample-by-sample work that has no node, and it has to be registered inside `schedule` and given every parameter up front. No message that depends on the wall clock.
+- `AudioWorklet` and message-driven custom DSP are outside the managed contract. Use supported builtin nodes or fill a deterministic PCM buffer before the schedule returns.
 - An FFT visualizer as the source of motion. Draw the spectrum from the notes you scheduled if the shot needs one.

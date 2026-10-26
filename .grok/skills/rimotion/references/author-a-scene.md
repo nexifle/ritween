@@ -1,8 +1,14 @@
 # Tutorial: add a scene in this repo
 
-The shipped composition is `src/project/manifest.ts`: intro `0–2`, main `2–6`, outro `6–8`, `duration: 8`. This tutorial appends a 2 second scene and moves the duration to 10. Adapt the names and the shader. Leave `src/engine/` alone.
+The shipped composition is `src/project/manifest.ts`: intro `0–2`, main `2–6`, outro `6–8`, `duration: 8`. This tutorial appends a 2 second scene and moves the duration to 10. Adapt the names and the picture to the request. Leave `src/engine/` alone.
 
-`shaderScene(fragment, title, mode)` in `src/project/scenes/shaderScene.ts` supplies a fullscreen triangle and the uniform `u`. `u.time` is scene-local seconds. `u.progress` is `localTime / duration`. `u.resolution` is the target size in pixels. The bitmap font draws uppercase `A–I`, `L–P`, `R–W`, `Y`, and space. Any other character is a blank cell. `text(uv, center, height)`, `orbit(p, t)`, and `background(uv)` come from that file's prelude.
+Match the picture to what was asked for. Every scene is still a WebGPU draw. `shaderScene` is only the fullscreen triangle in this repo. It is not a look.
+
+- A title, a logo, a lower third, a layout, or any clean motion graphic is a few flat marks. One paper color, one ink color, and motion of position, size, opacity, or a wipe. The example below is that.
+- A chart, a mesh, or a drawn shading model uses the chart, vertex, or NPR reference. Draw the marks that shot needs.
+- A procedural field is for a request that asks for a shader, a generative image, neon, a tunnel, or the shipped intro. `background()` and `orbit()` in `src/project/scenes/shaderScene.ts` are that field. Copy `src/project/scenes/intro.ts` when that is the request.
+
+`shaderScene(fragment, title, mode)` supplies the triangle and the uniform `u`. `u.time` is scene-local seconds. `u.progress` is `localTime / duration`. `u.resolution` is the target size in pixels. The bitmap font draws uppercase `A–I`, `L–P`, `R–W`, `Y`, and space. Any other character is a blank cell. `text(uv, center, height)` comes from that file's prelude.
 
 ## 1. Add the module
 
@@ -16,13 +22,12 @@ export default function createHold() {
     /* wgsl */ `
     @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
       let uv = position.xy / u.resolution;
-      let p = (uv - vec2f(0.5)) * vec2f(u.resolution.x / u.resolution.y, 1.0);
-      var color = background(uv);
-      let edge = abs(p.x) - u.progress * 0.85;
-      let band = exp(-abs(edge) * 90.0);
-      color += vec3f(0.45, 0.55, 1.0) * band;
-      let glyph = text(uv, vec2f(0.5, 0.5), 0.06);
-      color = mix(color, vec3f(0.93, 0.94, 1.0), glyph);
+      let paper = vec3f(0.96, 0.96, 0.95);
+      let ink = vec3f(0.12, 0.13, 0.15);
+      let panel = step(uv.x, u.progress);
+      var color = mix(paper, vec3f(0.90, 0.91, 0.93), panel);
+      let glyph = text(uv, vec2f(0.5, 0.5), 0.05);
+      color = mix(color, ink, glyph);
       return vec4f(color, 1.0);
     }
     `,
@@ -32,9 +37,9 @@ export default function createHold() {
 }
 ```
 
-The bar width is `u.progress`, so time 8.0 is a thin line and time 10.0 is fully open. "HOLD" uses only letters in the font.
+The panel edge is `u.progress`, so time 8.0 is paper only and time 10.0 is the full gray field. "HOLD" uses only letters in the font. Move a shape by mixing its center from a start to an end with `u.progress`. A second mark needs a reason in the request.
 
-A `.tsx` module uses this same factory shape. JSX in that file is not drawn. Copy `src/project/scenes/main.tsx` when you want that shape, and keep the drawing in the WGSL string.
+A `.tsx` module uses this same factory shape. JSX in that file is not drawn. Copy `src/project/scenes/main.tsx` when you want that module shape, and keep the drawing in the WGSL string.
 
 For a pipeline of your own, follow [external-project.md](external-project.md). Own every `GPUBuffer` you create and `destroy` it in `dispose`, including when `setup` fails after the buffer exists.
 
@@ -71,7 +76,7 @@ rimotion frame --time 9 -o /tmp/rimotion-mid.png --json --force
 rimotion frame --time 8 -o /tmp/rimotion-cut-again.png --json --force
 ```
 
-Time `7.9` is still the outro. Time `8` is the first instant of Hold. Time `9` is progress `0.5`, so the band sits near half of `0.85`. The two renders at time `8` are the determinism check: they match. Open the PNGs.
+Time `7.9` is still the outro. Time `8` is the first instant of Hold, still paper. Time `9` is progress `0.5`, so the gray panel covers the left half. The two renders at time `8` are the determinism check: they match. Open the PNGs.
 
 Then export the whole composition:
 

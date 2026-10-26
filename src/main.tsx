@@ -166,7 +166,7 @@ function clampCompPan(
   return { panX: clamp(panX, -maxX, maxX), panY: clamp(panY, -maxY, maxY) };
 }
 const miniButton =
-  "flex h-[22px] min-w-[22px] items-center justify-center rounded-[3px] px-[5px] text-[11px] leading-none text-[#c5c8d4] hover:bg-[#30323c] hover:text-white";
+  "flex h-[22px] min-w-[22px] items-center justify-center rounded-[3px] px-[5px] text-[11px] leading-none text-control hover:bg-accent hover:text-accent-foreground";
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const paths: Record<string, React.ReactNode> = {
     play: <path d="m8 5 11 7-11 7Z" />,
@@ -201,6 +201,13 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
       </>
     ),
     check: <path d="m5 12 4 4L19 6" />,
+    sun: (
+      <>
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+      </>
+    ),
+    moon: <path d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5Z" />,
     film: (
       <>
         <rect x="3" y="4" width="18" height="16" rx="2" />
@@ -234,8 +241,8 @@ function TrackHeader({
   onMute?: () => void;
 }) {
   return (
-    <div className={`flex h-[34px] items-center justify-between gap-[4px] border-b border-[#2a2d36] px-[6px] ${muted ? "opacity-45" : ""}`}>
-      <span className="min-w-0 truncate text-[11px] font-medium text-[#c5c8d6]">
+    <div className={`flex h-[34px] items-center justify-between gap-1 border-b border-row px-1.5 ${muted ? "opacity-45" : ""}`}>
+      <span className="min-w-0 truncate text-[11px] font-medium text-secondary-foreground">
         {label}
       </span>
       {onMute && (
@@ -244,7 +251,7 @@ function TrackHeader({
           aria-label={muted ? `Unmute ${label}` : `Mute ${label}`}
           aria-pressed={muted}
           onClick={onMute}
-          className={`flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-[3px] border text-[11px] font-semibold leading-none ${muted ? "border-[#baa5ff] bg-[#2a2438] text-[#e4d8ff]" : "border-[#3a3d49] text-[#9aa0b2]"}`}
+          className={`flex size-5 shrink-0 items-center justify-center rounded-[3px] border text-[11px] font-semibold leading-none ${muted ? "border-primary bg-muted-track text-muted-track-foreground" : "border-control-border text-meta"}`}
         >
           M
         </button>
@@ -271,25 +278,38 @@ function LaneBlock({
 }) {
   return (
     <div
-      className="absolute top-[3px] bottom-[3px] overflow-hidden rounded-[3px] border px-[6px]"
+      className="absolute top-[3px] bottom-[3px] overflow-hidden rounded-[3px] border px-1.5"
       style={{
         left: `${(start / total) * 100}%`,
         width: `${(duration / total) * 100}%`,
-        borderColor: active ? color : "#373b4a",
-        backgroundColor: `${color}12`,
+        borderColor: active ? color : "var(--clip)",
+        backgroundColor: `color-mix(in srgb, ${color} 7.0588%, transparent)`,
       }}
     >
-      <div className="truncate text-[11px] font-medium leading-[12px]" style={{ color }}>
+      <div className="truncate text-[11px] font-medium leading-3" style={{ color }}>
         {title}
       </div>
-      <p className="truncate font-mono text-[11px] leading-[12px] text-[#9aa3b5]">{detail}</p>
+      <p className="truncate font-mono text-[11px] leading-3 text-detail">{detail}</p>
     </div>
   );
 }
 const control =
-  "flex h-[28px] w-[28px] items-center justify-center rounded-[4px] text-[#b8bac6] hover:bg-[#30323c] hover:text-white disabled:opacity-40";
+  "flex size-7 items-center justify-center rounded-sm text-icon hover:bg-accent hover:text-accent-foreground disabled:opacity-40";
 function App() {
   const [state, dispatch] = useReducer(reducer, initial);
+  const [theme, setTheme] = useState<"light" | "dark">(() =>
+    document.documentElement.classList.contains("dark") ? "dark" : "light",
+  );
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("dark", theme === "dark");
+    root.style.colorScheme = theme;
+    localStorage.setItem("rimotion-theme", theme);
+    const color = getComputedStyle(root).getPropertyValue("--background").trim();
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", color);
+  }, [theme]);
   const canvas = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<Renderer | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -664,7 +684,7 @@ function App() {
     }
   }
   const active = evaluate(project, state.time).entry;
-  const colors = ["#b8a1f5", "#78cfde", "#d1a6ca"];
+  const colors = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)"];
   const compPercent =
     stageWidth > 0
       ? Math.max(
@@ -691,49 +711,59 @@ function App() {
   const actualSizeZoom =
     stageWidth > 0 ? project.resolution[0] / stageWidth : 1;
   return (
-    <div className="min-h-screen bg-[#131418] text-[#ececf2]">
-      <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-[12px] border-b border-[#2b2d35] px-[16px]">
+    <div className="min-h-screen bg-background text-foreground">
+      <header className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-rule px-4">
         <a
           href="/"
           className="flex items-center gap-[11px] text-[21px] font-semibold tracking-[-0.6px]"
         >
-          <span className="flex h-[29px] w-[29px] items-center justify-center rounded-[8px] bg-[#baa5ff] text-[#181323]">
+          <span className="flex h-[29px] w-[29px] items-center justify-center rounded-lg bg-primary text-brand-ink">
             <Icon name="film" size={19} />
           </span>
           rimotion
-          <span className="ml-[3px] rounded-[4px] border border-[#3b354c] px-[6px] py-[2px] text-[11px] font-medium tracking-[0px] text-[#c1afd8]">
+          <span className="ml-[3px] rounded-sm border border-badge px-1.5 py-0.5 text-[11px] font-medium tracking-normal text-badge-foreground">
             dev preview
           </span>
         </a>
-        <div className="flex items-center gap-[22px] text-[12px] text-[#a8abb9]">
+        <div className="flex items-center gap-[22px] text-xs/normal text-muted-foreground">
           <span className="hidden sm:inline">
             Code authored. Frame perfect.
           </span>
+          <button
+            type="button"
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            aria-pressed={theme === "dark"}
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            className="flex items-center gap-1.5 hover:text-accent-foreground"
+          >
+            <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
+            {theme === "dark" ? "Light" : "Dark"}
+          </button>
           <a
             href="https://github.com/gpuweb/gpuweb"
             target="_blank"
             rel="noreferrer"
-            className="flex items-center gap-[7px] hover:text-white"
+            className="flex items-center gap-[7px] hover:text-accent-foreground"
           >
             <Icon name="code" size={15} /> WebGPU runtime
           </a>
         </div>
       </header>
-      <main className="mx-auto max-w-[1600px] px-[12px] py-[12px]">
-        <div className="mb-[10px] flex flex-wrap items-end justify-between gap-[8px]">
+      <main className="mx-auto max-w-[1600px] px-3 py-3">
+        <div className="mb-2.5 flex flex-wrap items-end justify-between gap-2">
           <div>
-            <div className="mb-[2px] flex items-center gap-[6px] text-[11px] text-[#989cab]">
+            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] text-crumb">
               <span>Projects</span>
-              <span className="text-[#535765]">/</span>
-              <span className="text-[#d6d7e0]">Demo composition</span>
+              <span className="text-slash">/</span>
+              <span className="text-strong">Demo composition</span>
             </div>
-            <h1 className="text-[20px] font-medium leading-[1.15] tracking-[-0.4px]">
+            <h1 className="text-xl font-medium leading-[1.15] tracking-[-0.4px]">
               {project.name}
             </h1>
           </div>
-          <div className="flex items-center gap-[6px] rounded-[4px] border border-[#31333d] bg-[#1b1d23] px-[8px] py-[4px] text-[11px] text-[#b7bac8]">
+          <div className="flex items-center gap-1.5 rounded-sm border border-chip bg-card px-2 py-1 text-[11px] text-status">
             <span
-              className={`h-[6px] w-[6px] rounded-full ${state.ready ? "bg-[#86cbb5]" : "bg-[#d6b47d]"}`}
+              className={`size-1.5 rounded-full ${state.ready ? "bg-success" : "bg-warning"}`}
             />
             {state.ready
               ? "Runtime connected"
@@ -745,28 +775,28 @@ function App() {
         {state.error && (
           <div
             role="alert"
-            className="mb-[20px] rounded-[8px] border border-[#784451] bg-[#35232a] px-[18px] py-[14px] text-[13px] text-[#ffd1db]"
+            className="mb-5 rounded-lg border border-destructive-border bg-destructive px-[18px] py-3.5 text-[13px] text-destructive-foreground"
           >
             <strong className="block">Rendering or export error</strong>
-            <p className="mt-[4px] whitespace-pre-wrap">{state.error}</p>
+            <p className="mt-1 whitespace-pre-wrap">{state.error}</p>
           </div>
         )}
-        <div className="grid items-start gap-[12px] lg:grid-cols-[minmax(0,1fr)_268px]">
+        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_268px]">
           <section
             aria-label="Video preview"
-            className="min-w-0 overflow-hidden rounded-[8px] border border-[#30323c] bg-[#1b1d23]"
+            className="min-w-0 overflow-hidden rounded-lg border border-border bg-card"
           >
-            <div className="flex min-h-[32px] flex-wrap items-center justify-between gap-x-[8px] gap-y-[4px] border-b border-[#2c2f38] px-[8px] py-[4px] text-[11px]">
-              <span className="flex items-center gap-[6px] text-[#d5d8e4]">
+            <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-separator px-2 py-1 text-[11px]">
+              <span className="flex items-center gap-1.5 text-emphasis">
                 <Icon name="film" size={14} />
                 Composition
               </span>
-              <span className="text-[#9aa0b2]">
+              <span className="text-meta">
                 {project.resolution[0]}×{project.resolution[1]}
-                <span className="mx-[6px] text-[#4e5260]">·</span>
+                <span className="mx-1.5 text-dot">·</span>
                 {project.aspectRatio.join(":")}
               </span>
-              <div className="flex items-center gap-[2px]">
+              <div className="flex items-center gap-0.5">
                 <button
                   type="button"
                   className={miniButton}
@@ -783,7 +813,7 @@ function App() {
                 >
                   −
                 </button>
-                <span className="w-[46px] text-center font-mono text-[11px] tabular-nums text-[#d5d8e4]">
+                <span className="w-[46px] text-center font-mono text-[11px] tabular-nums text-emphasis">
                   {compPercent}%
                 </span>
                 <button
@@ -823,7 +853,7 @@ function App() {
             <div
               ref={stageRef}
               title="Scroll to zoom. Drag to pan."
-              className={`relative touch-none overflow-hidden bg-[#101114] ${compDragging ? "cursor-grabbing" : "cursor-grab"}`}
+              className={`relative touch-none overflow-hidden bg-canvas ${compDragging ? "cursor-grabbing" : "cursor-grab"}`}
               style={{
                 aspectRatio: project.aspectRatio[0] / project.aspectRatio[1],
               }}
@@ -883,19 +913,19 @@ function App() {
                   ref={canvas}
                   width={project.resolution[0]}
                   height={project.resolution[1]}
-                  className="block h-full w-full shadow-[0_0_0_1px_#3a3d4a]"
+                  className="block h-full w-full ring-1 ring-stage"
                   aria-label="WebGPU composition preview"
                 />
               </div>
               {!state.ready && (
-                <div className="absolute inset-0 flex items-center justify-center bg-[#0d1323]/90 p-[16px] text-center text-[13px] text-[#bac1d6]">
+                <div className="absolute inset-0 flex items-center justify-center bg-overlay/90 p-4 text-center text-[13px] text-overlay-foreground">
                   {state.error
                     ? "Preview requires an available WebGPU device."
                     : "Preparing scene pipelines…"}
                 </div>
               )}
             </div>
-            <div className="px-[8px] pb-[8px] pt-[6px]">
+            <div className="px-2 pt-1.5 pb-2">
               <input
                 aria-label="Playback scrubber"
                 type="range"
@@ -908,10 +938,10 @@ function App() {
                   seekTo(time);
                   revealTime(time);
                 }}
-                className="w-full accent-[#baa5ff]"
+                className="w-full accent-primary"
               />
-              <div className="mt-[4px] flex flex-wrap items-center justify-between gap-[6px]">
-                <div className="flex items-center gap-[4px]">
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-1.5">
+                <div className="flex items-center gap-1">
                   <button
                     className={control}
                     disabled={!state.ready}
@@ -939,7 +969,7 @@ function App() {
                     disabled={!state.ready}
                     onClick={toggle}
                     aria-label={state.playing ? "Pause" : "Play"}
-                    className="mx-[2px] flex h-[28px] w-[34px] items-center justify-center rounded-[4px] bg-[#c0adfa] text-[#1b1530] hover:bg-[#d0c0ff] disabled:opacity-40"
+                    className="mx-0.5 flex h-7 w-[34px] items-center justify-center rounded-sm bg-play text-play-foreground hover:bg-play-hover disabled:opacity-40"
                   >
                     <Icon name={state.playing ? "pause" : "play"} size={17} />
                   </button>
@@ -958,12 +988,12 @@ function App() {
                 </div>
                 <div className="font-mono text-[11px] tabular-nums">
                   <span>{clock(state.time)}</span>
-                  <span className="mx-[8px] text-[#626878]">/</span>
-                  <span className="text-[#a1a5b5]">
+                  <span className="mx-2 text-time-slash">/</span>
+                  <span className="text-time">
                     {clock(project.duration)}
                   </span>
                 </div>
-                <div className="flex items-center gap-[8px] text-[11px] text-[#a1a5b5]">
+                <div className="flex items-center gap-2 text-[11px] text-time">
                   <button
                     type="button"
                     aria-label={state.masterMuted ? "Unmute mix" : "Mute mix"}
@@ -972,7 +1002,7 @@ function App() {
                       mix().unlock();
                       dispatch({ type: "toggleMasterMute" });
                     }}
-                    className={`flex h-[22px] w-[22px] items-center justify-center rounded-[3px] border text-[11px] font-semibold ${state.masterMuted ? "border-[#baa5ff] bg-[#2a2438] text-[#e4d8ff]" : "border-[#3a3d49] text-[#b7bac8]"}`}
+                    className={`flex h-[22px] w-[22px] items-center justify-center rounded-[3px] border text-[11px] font-semibold ${state.masterMuted ? "border-primary bg-muted-track text-muted-track-foreground" : "border-control-border text-status"}`}
                   >
                     M
                   </button>
@@ -989,10 +1019,10 @@ function App() {
                         volumeDb: Number(e.target.value),
                       })
                     }
-                    className="w-[88px] accent-[#baa5ff]"
+                    className="w-[88px] accent-primary"
                   />
                 </div>
-                <span className="text-[11px] tabular-nums text-[#a1a5b5]">
+                <span className="text-[11px] tabular-nums text-time">
                   Frame{" "}
                   {Math.min(
                     Math.floor(state.time * state.fps),
@@ -1000,23 +1030,23 @@ function App() {
                   )
                     .toString()
                     .padStart(3, "0")}{" "}
-                  <span className="text-[#646a7c]">
+                  <span className="text-frame">
                     / {frameCount(project.duration, state.fps)}
                   </span>
                 </span>
               </div>
             </div>
           </section>
-          <aside className="space-y-[10px]">
-            <section className="rounded-[8px] border border-[#30323c] bg-[#1b1d23] p-[12px]">
-              <h2 className="mb-[2px] text-[13px] font-medium">Export video</h2>
-              <p className="mb-[10px] text-[11px] leading-[1.4] text-[#a8abb9]">
+          <aside className="space-y-2.5">
+            <section className="rounded-lg border border-border bg-card p-3">
+              <h2 className="mb-0.5 text-[13px] font-medium">Export video</h2>
+              <p className="mb-2.5 text-[11px] leading-[1.4] text-muted-foreground">
                 From source to a shareable MP4.
                 <br />
                 Rendered locally in your browser.
               </p>
               <label
-                className="mb-[4px] block text-[11px] text-[#c0c3d0]"
+                className="mb-1 block text-[11px] text-label"
                 htmlFor="resolution"
               >
                 Resolution
@@ -1026,14 +1056,14 @@ function App() {
                 disabled={state.exporting}
                 value={state.resolution}
                 onChange={(e) => patch({ resolution: e.target.value })}
-                className="mb-[8px] h-[30px] w-full rounded-[4px] border border-[#393c48] bg-[#23252d] px-[8px] text-[12px]"
+                className="mb-2 h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-xs/normal"
               >
                 <option value="640x360">640 × 360 · 360p</option>
                 <option value="1280x720">1280 × 720 · 720p</option>
                 <option value="1920x1080">1920 × 1080 · 1080p</option>
               </select>
               <label
-                className="mb-[4px] block text-[11px] text-[#c0c3d0]"
+                className="mb-1 block text-[11px] text-label"
                 htmlFor="fps"
               >
                 Frame rate
@@ -1043,7 +1073,7 @@ function App() {
                 disabled={state.exporting}
                 value={state.fps}
                 onChange={(e) => patch({ fps: Number(e.target.value) })}
-                className="h-[30px] w-full rounded-[4px] border border-[#393c48] bg-[#23252d] px-[8px] text-[12px]"
+                className="h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-xs/normal"
               >
                 {[24, 30, 60].map((f) => (
                   <option key={f} value={f}>
@@ -1051,9 +1081,9 @@ function App() {
                   </option>
                 ))}
               </select>
-              <div className="my-[10px] space-y-[4px] border-y border-[#30323c] py-[8px] text-[11px]">
+              <div className="my-2.5 space-y-1 border-y border-border py-2 text-[11px]">
                 <div className="flex justify-between">
-                  <span className="text-[#a8abb9]">Format</span>
+                  <span className="text-muted-foreground">Format</span>
                   <span>
                     {(project.audioTracks ?? []).length
                       ? "MP4 / H.264 / AAC"
@@ -1061,58 +1091,58 @@ function App() {
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-[#a8abb9]">Duration</span>
+                  <span className="text-muted-foreground">Duration</span>
                   <span>{project.duration} seconds</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-[#a8abb9]">Total frames</span>
+                  <span className="text-muted-foreground">Total frames</span>
                   <span>{frameCount(project.duration, state.fps)}</span>
                 </div>
               </div>
               <button
                 onClick={() => void startExport()}
                 disabled={!state.ready || state.exporting}
-                className="flex h-[32px] w-full items-center justify-center gap-[6px] rounded-[4px] bg-[#baa5ff] text-[12px] font-semibold text-[#201735] hover:bg-[#ccbaff] disabled:cursor-not-allowed disabled:opacity-45"
+                className="flex h-8 w-full items-center justify-center gap-1.5 rounded-sm bg-primary text-xs/normal font-semibold text-primary-foreground hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <Icon name="export" size={16} />
                 {state.exporting ? "Exporting…" : "Export Video"}
               </button>
               {state.exporting ? (
-                <div className="mt-[14px] text-[12px]">
+                <div className="mt-3.5 text-xs/normal">
                   <progress
                     aria-label="Export progress"
                     value={state.done}
                     max={state.total}
-                    className="h-[5px] w-full accent-[#baa5ff]"
+                    className="h-[5px] w-full accent-primary"
                   />
-                  <div className="mt-[8px] flex justify-between text-[#b5b9c8]">
+                  <div className="mt-2 flex justify-between text-progress">
                     <span>
                       {state.done} / {state.total} frames
                     </span>
                     <button
                       onClick={() => abort.current?.abort()}
-                      className="text-[#d7c8ff] hover:underline"
+                      className="text-link hover:underline"
                     >
                       Cancel
                     </button>
                   </div>
                 </div>
               ) : (
-                <p className="mt-[12px] text-center text-[11px] text-[#a8abb9]">
+                <p className="mt-3 text-center text-[11px] text-muted-foreground">
                   Local mix · No upload required
                 </p>
               )}
               {state.result && (
                 <div
                   role="status"
-                  className="mt-[16px] text-[12px] leading-[1.7] text-[#a9daca]"
+                  className="mt-4 text-xs leading-[1.7] text-success-foreground"
                 >
                   {state.result}
                   {state.download && (
                     <a
                       href={state.download}
                       download="source-to-motion.mp4"
-                      className="block text-[#d1c0ff] underline underline-offset-4"
+                      className="block text-download underline underline-offset-4"
                     >
                       Download MP4 again
                     </a>
@@ -1121,15 +1151,15 @@ function App() {
               )}
             </section>
             <section className="px-[3px]">
-              <div className="mb-[4px] flex items-center gap-[6px] text-[12px] text-[#cec4e8]">
+              <div className="mb-1 flex items-center gap-1.5 text-xs/normal text-hint">
                 <Icon name="code" size={16} />
                 <h2>Authored in code</h2>
               </div>
-              <p className="text-[11px] leading-[1.4] text-[#9da2b3]">
+              <p className="text-[11px] leading-[1.4] text-hint-foreground">
                 Scenes live in your project files. Change the source, and the
                 preview updates automatically.
               </p>
-              <div className="mt-[6px] rounded-[4px] border border-[#2d303a] bg-[#181a20] px-[8px] py-[5px] font-mono text-[11px] text-[#b2a5d1]">
+              <div className="mt-1.5 rounded-sm border border-code-border bg-secondary px-2 py-[5px] font-mono text-[11px] text-code-foreground">
                 src/project/manifest.ts
               </div>
             </section>
@@ -1137,20 +1167,20 @@ function App() {
         </div>
         <section
           aria-label="Read-only composition timeline"
-          className="mt-[12px] overflow-hidden rounded-[8px] border border-[#30323c] bg-[#1b1d23]"
+          className="mt-3 overflow-hidden rounded-lg border border-border bg-card"
         >
-          <div className="flex min-h-[32px] flex-wrap items-center justify-between gap-x-[8px] gap-y-[4px] border-b border-[#2c2f38] px-[8px] py-[4px]">
-            <div className="flex items-center gap-[8px]">
-              <h2 className="text-[12px] font-medium">Timeline</h2>
-              <span className="text-[11px] text-[#9aa0b2]">
+          <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-separator px-2 py-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-xs/normal font-medium">Timeline</h2>
+              <span className="text-[11px] text-meta">
                 V1 · {(project.audioTracks ?? []).length} audio
               </span>
-              <span className="font-mono text-[11px] tabular-nums text-[#d5d8e4]">
+              <span className="font-mono text-[11px] tabular-nums text-emphasis">
                 {clock(state.time)}
               </span>
             </div>
-            <div className="flex items-center gap-[4px]">
-              <span className="mr-[4px] hidden text-[11px] text-[#8b90a3] sm:inline">
+            <div className="flex items-center gap-1">
+              <span className="mr-1 hidden text-[11px] text-faint sm:inline">
                 Read-only
               </span>
               <button
@@ -1175,7 +1205,7 @@ function App() {
                     null,
                   )
                 }
-                className="w-[88px] accent-[#baa5ff]"
+                className="w-[88px] accent-primary"
               />
               <button
                 type="button"
@@ -1199,8 +1229,8 @@ function App() {
             </div>
           </div>
           <div className="flex min-w-0">
-            <div className="w-[92px] shrink-0 border-r border-[#2c2f38] bg-[#181a20]">
-              <div className="h-[28px] border-b border-[#2a2d36]" />
+            <div className="w-[92px] shrink-0 border-r border-separator bg-secondary">
+              <div className="h-7 border-b border-row" />
               <TrackHeader label="V1" />
               {(project.audioTracks ?? []).map((track) => (
                 <TrackHeader
@@ -1269,7 +1299,7 @@ function App() {
                   scrubId.current = null;
                 }}
               >
-                <div className="relative h-[28px] overflow-hidden border-b border-[#2a2d36] bg-[#16181e]">
+                <div className="relative h-7 overflow-hidden border-b border-row bg-muted">
                   {ruler.marks.map((mark, index) => {
                     const left = `${(mark.time / project.duration) * 100}%`;
                     const room =
@@ -1283,10 +1313,10 @@ function App() {
                         style={{ left }}
                       >
                         <div
-                          className={`w-px ${mark.major ? "h-[9px] bg-[#8b90a3]" : "h-[5px] bg-[#3c4050]"}`}
+                          className={`w-px ${mark.major ? "h-[9px] bg-faint" : "h-[5px] bg-tick"}`}
                         />
                         {mark.major && room >= 64 && (
-                          <span className="absolute bottom-[10px] left-[4px] whitespace-nowrap font-mono text-[11px] leading-[12px] text-[#9aa0b2]">
+                          <span className="absolute bottom-2.5 left-1 whitespace-nowrap font-mono text-[11px] leading-3 text-meta">
                             {label}
                           </span>
                         )}
@@ -1294,18 +1324,18 @@ function App() {
                     );
                   })}
                 </div>
-                <div className="pointer-events-none absolute bottom-0 top-[28px] left-0 right-0">
+                <div className="pointer-events-none absolute bottom-0 top-7 left-0 right-0">
                   {ruler.marks
                     .filter((mark) => mark.major)
                     .map((mark) => (
                       <div
                         key={`grid-${mark.time}`}
-                        className="absolute bottom-0 top-0 w-px bg-[#2a2d36]"
+                        className="absolute bottom-0 top-0 w-px bg-row"
                         style={{ left: `${(mark.time / project.duration) * 100}%` }}
                       />
                     ))}
                 </div>
-                <div className="relative h-[34px] border-b border-[#2a2d36]">
+                <div className="relative h-[34px] border-b border-row">
                   {project.scenes.map((scene, index) => (
                     <LaneBlock
                       key={scene.id}
@@ -1322,7 +1352,7 @@ function App() {
                 {(project.audioTracks ?? []).map((track, index) => (
                   <div
                     key={track.id}
-                    className={`relative h-[34px] border-b border-[#2a2d36] ${state.mutedTrackIds.includes(track.id) ? "opacity-45" : ""}`}
+                    className={`relative h-[34px] border-b border-row ${state.mutedTrackIds.includes(track.id) ? "opacity-45" : ""}`}
                   >
                     {track.clips.map((clip) => (
                       <LaneBlock
@@ -1338,11 +1368,11 @@ function App() {
                   </div>
                 ))}
                 <div
-                  className="pointer-events-none absolute bottom-0 top-0 z-[2] w-px bg-[#f3e8ff]"
+                  className="pointer-events-none absolute bottom-0 top-0 z-[2] w-px bg-playhead"
                   style={{ left: `${(state.time / project.duration) * 100}%` }}
                 >
                   <div
-                    className="absolute left-1/2 top-0 h-[8px] w-[9px] -translate-x-1/2 bg-[#f3e8ff]"
+                    className="absolute left-1/2 top-0 h-2 w-[9px] -translate-x-1/2 bg-playhead"
                     style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }}
                   />
                 </div>
@@ -1350,8 +1380,8 @@ function App() {
             </div>
           </div>
         </section>
-        <footer className="mt-[8px] flex flex-wrap justify-between gap-[6px] text-[11px] text-[#969cad]">
-          <span className="flex items-center gap-[6px]">
+        <footer className="mt-2 flex flex-wrap justify-between gap-1.5 text-[11px] text-footer">
+          <span className="flex items-center gap-1.5">
             <Icon name="check" size={13} /> Deterministic rendering · Same
             engine, every frame
           </span>

@@ -10,7 +10,7 @@ description: >
 
 # Rimotion
 
-You write the picture the request describes, and, when the cut needs sound, the audio tracks. A flat motion graphic and a procedural shader are both valid. Pick from the request. [references/author-a-scene.md](references/author-a-scene.md) is that choice. Scene factories, clip factories, and the manifest are the video. `render` is a pure function of the timestamp the framework passes in. Sound is scheduled on a clip, not inside `render`.
+You write the picture the request describes, and, when the cut needs sound, the audio tracks. A flat motion graphic and a procedural shader are both valid. Pick from the request. The fragment in [references/author-a-scene.md](references/author-a-scene.md) shows how a scene is wired. It is not the look to copy. Scene factories, clip factories, and the manifest are the video. `render` is a pure function of the timestamp the framework passes in. Sound is scheduled on a clip, not inside `render`.
 
 ## Which reference
 

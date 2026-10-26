@@ -4,13 +4,15 @@ The shipped composition is `src/project/manifest.ts`: intro `0–2`, main `2–6
 
 Match the picture to what was asked for. Every scene is still a WebGPU draw. `shaderScene` is only the fullscreen triangle in this repo. It is not a look.
 
-- A title, a logo, a lower third, a layout, or any clean motion graphic is a few flat marks. One paper color, one ink color, and motion of position, size, opacity, or a wipe. The example below is that.
+- A title, a logo, a lower third, a layout, or any clean motion graphic is a few flat marks. Paper, ink, and the motion come from the request. Position, size, opacity, or a wipe are enough when that is what was asked for.
 - A chart, a mesh, or a drawn shading model uses the chart, vertex, or NPR reference. Draw the marks that shot needs.
 - A procedural field is for a request that asks for a shader, a generative image, neon, a tunnel, or the shipped intro. `background()` and `orbit()` in `src/project/scenes/shaderScene.ts` are that field. Copy `src/project/scenes/intro.ts` when that is the request.
 
 `shaderScene(fragment, title, mode)` supplies the triangle and the uniform `u`. `u.time` is scene-local seconds. `u.progress` is `localTime / duration`. `u.resolution` is the target size in pixels. The bitmap font draws uppercase `A–I`, `L–P`, `R–W`, `Y`, and space. Any other character is a blank cell. `text(uv, center, height)` comes from that file's prelude.
 
 ## 1. Add the module
+
+The fragment below is an example of the factory, not a look. It exists so the frame checks in this tutorial have a picture to name. Replace the colors, the mark, the motion, and the word with the request. Ship this cream card and the word HOLD only when that is what was asked for.
 
 Create `src/project/scenes/hold.ts`:
 
@@ -37,7 +39,7 @@ export default function createHold() {
 }
 ```
 
-The panel edge is `u.progress`, so time 8.0 is paper only and time 10.0 is the full gray field. "HOLD" uses only letters in the font. Move a shape by mixing its center from a start to an end with `u.progress`. A second mark needs a reason in the request.
+In this example the panel edge is `u.progress`, so time 8.0 is paper only and time 10.0 is the full gray field. "HOLD" uses only letters in the font. Those facts describe the example. After you replace the picture, describe the frames you actually drew. Drive the motion from `u.time` or `u.progress`.
 
 A `.tsx` module uses this same factory shape. JSX in that file is not drawn. Copy `src/project/scenes/main.tsx` when you want that module shape, and keep the drawing in the WGSL string.
 
@@ -76,7 +78,7 @@ rimotion frame --time 9 -o /tmp/rimotion-mid.png --json --force
 rimotion frame --time 8 -o /tmp/rimotion-cut-again.png --json --force
 ```
 
-Time `7.9` is still the outro. Time `8` is the first instant of Hold, still paper. Time `9` is progress `0.5`, so the gray panel covers the left half. The two renders at time `8` are the determinism check: they match. Open the PNGs.
+Time `7.9` is still the outro. Time `8` is the first instant of the new scene. Time `9` is the middle of it. For the example fragment, time `8` is still paper and time `9` is a gray panel on the left half. If the picture changed, look for the motion you wrote instead. The two renders at time `8` are the determinism check: they match. Open the PNGs.
 
 Then export the whole composition:
 

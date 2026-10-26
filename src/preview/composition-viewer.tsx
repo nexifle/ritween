@@ -141,74 +141,114 @@ export function CompositionViewer({
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     >
       {gesture.hint}
-      <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-separator px-2 py-1 text-[11px]">
-        <span className="flex items-center gap-1.5 text-emphasis">
-          <Icon name={sourceOpen ? "code" : "film"} size={14} />
-          {sourceOpen ? "Source" : "Composition"}
-        </span>
-        <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            className={`${miniButton} ${sourceOpen ? "" : "bg-accent text-accent-foreground"}`}
-            aria-pressed={!sourceOpen}
-            onClick={() => {
-              if (sourceOpen) onToggleSource();
-            }}
-          >
-            Picture
-          </button>
-          <button
-            type="button"
-            className={`${miniButton} ${sourceOpen ? "bg-accent text-accent-foreground" : ""}`}
-            aria-pressed={sourceOpen}
-            onClick={() => {
-              if (!sourceOpen) onToggleSource();
-            }}
-          >
-            Code
-          </button>
+      <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-separator px-2.5 py-1 text-[11px]">
+        {/* Left: View Identity & View Switcher */}
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 font-medium text-emphasis">
+            <Icon name={sourceOpen ? "code" : "film"} size={14} />
+            <span>{sourceOpen ? "Source" : "Composition"}</span>
+          </div>
+
+          <div className="h-3.5 w-px bg-separator/60" />
+
+          {/* Segmented View Switcher: Picture | Code */}
+          <div className="flex items-center rounded-sm bg-secondary/70 p-0.5 border border-control-border/30">
+            <button
+              type="button"
+              className={`flex h-5 items-center gap-1 rounded-[2px] px-2 text-[11px] font-medium transition-colors ${
+                sourceOpen
+                  ? "text-control hover:text-foreground"
+                  : "bg-accent text-accent-foreground shadow-xs"
+              }`}
+              aria-pressed={!sourceOpen}
+              onClick={() => {
+                if (sourceOpen) onToggleSource();
+              }}
+            >
+              <Icon name="image" size={12} />
+              <span>Picture</span>
+            </button>
+            <button
+              type="button"
+              className={`flex h-5 items-center gap-1 rounded-[2px] px-2 text-[11px] font-medium transition-colors ${
+                sourceOpen
+                  ? "bg-accent text-accent-foreground shadow-xs"
+                  : "text-control hover:text-foreground"
+              }`}
+              aria-pressed={sourceOpen}
+              onClick={() => {
+                if (!sourceOpen) onToggleSource();
+              }}
+            >
+              <Icon name="code" size={12} />
+              <span>Code</span>
+            </button>
+          </div>
         </div>
-        <span className="text-meta">
-          {resolution[0]}×{resolution[1]}
-          <span className="mx-1.5 text-dot">·</span>
-          {aspectRatio.join(":")}
-        </span>
-        <div className={`items-center gap-0.5 ${sourceOpen ? "hidden" : "flex"}`}>
-          <button
-            type="button"
-            className={miniButton}
-            aria-label="Zoom composition out"
-            onClick={() => zoomFromCenter(1 / 1.2)}
+
+        {/* Right: Resolution Info & Zoom Controls */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          {/* Resolution & Aspect Ratio Spec Badge */}
+          <div className="flex items-center gap-1 font-mono text-[11px] tabular-nums text-meta bg-card/60 px-2 py-0.5 rounded border border-separator/50">
+            <span>
+              {resolution[0]}×{resolution[1]}
+            </span>
+            <span className="mx-0.5 text-[10px] text-dot">·</span>
+            <span>{aspectRatio.join(":")}</span>
+          </div>
+
+          {/* Canvas Zoom Controls (when picture is active) */}
+          <div
+            className={`items-center gap-1.5 ${sourceOpen ? "hidden" : "flex"}`}
           >
-            −
-          </button>
-          <span className="w-[46px] text-center font-mono text-[11px] tabular-nums text-emphasis">
-            {percent}%
-          </span>
-          <button
-            type="button"
-            className={miniButton}
-            aria-label="Zoom composition in"
-            onClick={() => zoomFromCenter(1.2)}
-          >
-            +
-          </button>
-          <button
-            type="button"
-            className={miniButton}
-            aria-label="Fit composition"
-            onClick={() => setZoom(1)}
-          >
-            Fit
-          </button>
-          <button
-            type="button"
-            className={miniButton}
-            aria-label="Composition actual size"
-            onClick={() => setZoom(actualSizeZoom)}
-          >
-            100%
-          </button>
+            <div className="h-3.5 w-px bg-separator/60" />
+
+            {/* Stepper Cluster: [-] [ 20% ] [+] */}
+            <div className="flex h-5 items-center rounded-sm border border-control-border/40 bg-secondary/70">
+              <button
+                type="button"
+                className="flex size-5 items-center justify-center rounded-l-[2px] text-control transition-colors hover:bg-accent hover:text-accent-foreground"
+                aria-label="Zoom composition out"
+                onClick={() => zoomFromCenter(1 / 1.2)}
+                title="Zoom Out"
+              >
+                <Icon name="minus" size={11} strokeWidth={2} />
+              </button>
+              <span className="w-10 select-none px-0.5 text-center font-mono text-[11px] font-medium tabular-nums text-emphasis">
+                {percent}%
+              </span>
+              <button
+                type="button"
+                className="flex size-5 items-center justify-center rounded-r-[2px] text-control transition-colors hover:bg-accent hover:text-accent-foreground"
+                aria-label="Zoom composition in"
+                onClick={() => zoomFromCenter(1.2)}
+                title="Zoom In"
+              >
+                <Icon name="plus" size={11} strokeWidth={2} />
+              </button>
+            </div>
+
+            {/* Presets: Fit and 100% */}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="flex h-5 items-center gap-1 rounded-[2px] border border-control-border/30 px-1.5 text-[11px] text-control transition-colors hover:bg-accent hover:text-accent-foreground"
+                aria-label="Fit composition"
+                onClick={() => setZoom(1)}
+              >
+                <Icon name="fit" size={11} />
+                <span>Fit</span>
+              </button>
+              <button
+                type="button"
+                className="flex h-5 items-center rounded-[2px] border border-control-border/30 px-1.5 font-mono text-[11px] text-control transition-colors hover:bg-accent hover:text-accent-foreground"
+                aria-label="Composition actual size"
+                onClick={() => setZoom(actualSizeZoom)}
+              >
+                100%
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       {sourceOpen && (

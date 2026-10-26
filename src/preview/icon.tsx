@@ -14,6 +14,13 @@ import {
   Sun01Icon,
   Moon02Icon,
   Film01Icon,
+  PlusSignIcon,
+  MinusSignIcon,
+  ZoomInIcon,
+  ZoomOutIcon,
+  FitToScreenIcon,
+  Image01Icon,
+  AspectRatioIcon,
 } from "@hugeicons/core-free-icons";
 
 export const icons: Record<string, IconSvgElement> = {
@@ -31,6 +38,13 @@ export const icons: Record<string, IconSvgElement> = {
   sun: Sun01Icon,
   moon: Moon02Icon,
   film: Film01Icon,
+  plus: PlusSignIcon,
+  minus: MinusSignIcon,
+  "zoom-in": ZoomInIcon,
+  "zoom-out": ZoomOutIcon,
+  fit: FitToScreenIcon,
+  image: Image01Icon,
+  "aspect-ratio": AspectRatioIcon,
 };
 
 export function Icon({

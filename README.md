@@ -40,21 +40,27 @@ Built for developers and workflows where external AI coding agents author scene 
 - A current Chrome or Edge with **WebGPU**, **WebCodecs H.264 encoding**, and GPU acceleration. Audio export also requires AAC encoding support.
 - **HTTPS or localhost** for WebGPU. The CLI requires a separately installed compatible browser; it does not download one.
 
-From a checkout of this repository:
+### Install
+
+Install Ritween globally from npm:
 
 ```sh
-npm ci
-npm run dev
+npm install -g ritween
 ```
 
-Open [localhost:5173](http://localhost:5173). Vite reloads changes to scenes and the manifest.
-
-To create and serve a production build:
+Open the bundled demo in the browser studio:
 
 ```sh
-npm run build
-npm run preview
+ritween preview --demo --open
 ```
+
+Preview your own project by pointing Ritween to its directory or manifest:
+
+```sh
+ritween preview --project /path/to/project --open
+```
+
+The CLI prints the local studio URL. Source changes reload automatically.
 
 Visit **[ritween.nexifle.com](https://ritween.nexifle.com)** for the Ritween website.
 
@@ -112,28 +118,21 @@ Theme, timeline zoom, preview volume, and panel layout are stored locally in the
 
 ## CLI
 
-Run directly from the checkout:
+After installing with `npm install -g ritween`:
 
 ```sh
-# Open the studio
-npm run cli -- preview --open
+# Open the bundled demo
+ritween preview --demo --open
 
-# Render a frame at 5.2 seconds
-npm run cli -- frame --time 5.2 -o artifacts/frame.png
+# Render a demo frame at 5.2 seconds
+ritween frame --demo --time 5.2 -o artifacts/frame.png
 
-# Export the composition
-npm run cli -- export -o artifacts/video.mp4
-```
+# Export the complete demo
+ritween export --demo -o artifacts/video.mp4
 
-Or install the checkout as a global command:
-
-```sh
-npm install -g .
-ritween preview --open
+# Export your own project with machine-readable output
 ritween export --project /path/to/project -o video.mp4 --json
 ```
-
-Once the package is published to npm, it can also be installed with `npm install -g ritween`.
 
 Use `--demo` for the bundled example, `--project` for another project or manifest, and `--force` to replace an existing output. See the [CLI guide](CLI.md) for browser selection, encoding controls, output formats, and automation.
 
@@ -159,11 +158,25 @@ const result = await exportMp4(project, {
 
 ## Development
 
+To work on Ritween itself, clone the repository and start the development studio:
+
 ```sh
+git clone https://github.com/nexifle/ritween.git
+cd ritween
 npm ci
+npm run dev
+```
+
+Open [localhost:5173](http://localhost:5173). Vite reloads changes to scenes and the manifest.
+
+Run tests and create a production build:
+
+```sh
 npm test
 npm run build
 ```
+
+Use `npm run preview` to serve the production build. From this checkout, `npm run cli -- <arguments>` runs the CLI without a global install, and `npm install -g .` installs the local checkout as the `ritween` command.
 
 Additional validation is available for the studio and native browser pipeline:
 

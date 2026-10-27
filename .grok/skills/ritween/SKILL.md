@@ -17,6 +17,7 @@ You write the picture the request describes, and, when the cut needs sound, the 
 Read the one that matches the task and follow it. Use a second reference when the task crosses it.
 
 - Add or change a scene in this repository: [references/author-a-scene.md](references/author-a-scene.md)
+- Choose VO/BGM/SFX levels, duck music, match scene loudness, or check a final master: [references/audio-balance.md](references/audio-balance.md)
 - Add or move sound: [references/audio.md](references/audio.md)
 - Shape a tone, a drum, a filter, or a sample: [references/audio-voices.md](references/audio-voices.md)
 - Mix a grid, a room, a bus, or a placed sound, and match the picture to it: [references/audio-mix.md](references/audio-mix.md)
@@ -32,6 +33,8 @@ Read the one that matches the task and follow it. Use a second reference when th
 - Move a chart across the shot: [references/chart-motion.md](references/chart-motion.md)
 
 Audio schedules run through Ritween's managed graph compiler for preview and export. Use the supported API and resource limits in [references/audio.md](references/audio.md); do not add project-level lazy scheduling, `host.defer`, custom export loops, or separate audio contexts. Fix rejected schedules within that contract. Performance scheduling belongs in the engine.
+
+For speech-led audio, use VO as the anchor and read [references/audio-balance.md](references/audio-balance.md) before choosing gains. Select the delivery target, measure matched speech-active intervals, automate music through pauses, and check the decoded export. Distinguish published specifications from practical starting values; neither a fixed `0.2` gain nor the engine compressor guarantees balance or final true peak. Keep audio continuity across visual cuts unless the story calls for a change.
 
 Types are `src/engine/types.ts`. Timeline checks are `src/engine/timeline.ts`. Flags are `ritween --help` and `CLI.md`.
 

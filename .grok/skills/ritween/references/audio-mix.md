@@ -4,6 +4,8 @@ Several voices become one clip graph. The clip still ends at `host.destination`.
 
 Schedule every event from a time you computed, then pass it through `host.at`. Do not wake a timer to play the next note.
 
+For VO/BGM/SFX level references, ducking envelopes, scene continuity, and final loudness checks, read [audio-balance.md](audio-balance.md).
+
 ## A beat grid
 
 For a drum machine that is not a tracker, one step is a fraction of a beat:
@@ -25,9 +27,9 @@ A closed hat cuts an open hat by ramping that voice's gain to 0 at the closed ha
 
 A manifest track is one mute switch for every clip on it. A bus is a `GainNode` inside a clip: drums into one gain, music into another, both into `host.destination`. Use a bus when one fader should move a group and the group should not be a separate mute row. Use a second manifest track when the preview's M button must drop that group from the file.
 
-The engine already limits the sum at about −1 dB. A compressor on a bus is extra. Threshold and ratio are in dB and a ratio. Above the threshold, output is `threshold + (input - threshold) / ratio`. Ratio 20 is another limiter. Attack around 10 to 30 ms lets a drum transient through. A very fast attack, and a release under about 50 ms, pumps. Makeup gain after the compressor puts the average back. Do not stack makeup so high that the master limiter is always in reduction.
+The engine processes the sum through a compressor with a −1 dB threshold; it is not a verified true-peak ceiling (see [audio-balance.md](audio-balance.md)). A compressor on a bus is extra. Threshold and ratio are in dB and a ratio. Above the threshold, output is `threshold + (input - threshold) / ratio`. Ratio 20 is another limiter. Attack around 10 to 30 ms lets a drum transient through. A very fast attack, and a release under about 50 ms, pumps. Makeup gain after the compressor puts the average back. Do not stack makeup so high that the master limiter is always in reduction.
 
-Equal-power is the crossfade that holds energy. A linear fade of two gains through 0.5 dips to half energy, about −3 dB.
+For uncorrelated sources, an equal-power crossfade holds expected energy; a complementary linear fade dips about 3 dB at its midpoint. Coherent sources behave differently: identical in-phase material rises with equal-power gains, so use complementary linear gains when appropriate and check the overlap.
 
 ```ts
 export const equalPower = (x: number) => ({
@@ -38,7 +40,7 @@ export const equalPower = (x: number) => ({
 
 Layers of one piece of music (pad, bass, drums) can all be scheduled for the whole clip, each into its own gain. The story only changes those gains. Start the change on a bar boundary when the edit should sound intentional. One bar at 120 BPM is 2 seconds. Write the curve with `setValueCurveAtTime` from the equal-power fade. The layers stay in phase because they never stop.
 
-Duck music under a line you already placed. At the line's `host.at`, ramp the music bus down, hold, and ramp back. You know the time, so you do not need a sidechain. `DynamicsCompressorNode` has no sidechain input.
+Duck music under a line you already placed. Finish the music fade-down by the first syllable, hold through short pauses, and recover smoothly; schedule all envelope points through `host.at`. Merge overlapping duck windows as described in [audio-balance.md](audio-balance.md). You know the time, so you do not need a sidechain. `DynamicsCompressorNode` has no sidechain input.
 
 ## Effects
 

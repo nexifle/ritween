@@ -44,7 +44,7 @@ Ritween records this schedule as data, groups independent voices and creates nat
 
 The implementation in `src/engine/live-mix.ts` (`AUDIO_LIMITS`) is authoritative. Unsupported API calls and resource-limit violations fail with a diagnostic instead of silently falling back to an unbounded native graph. `PannerNode`, listener control, custom worklets, and IIR filters are outside this contract; use supported nodes or generate a deterministic PCM sample. Do not merely increase a timeout to conceal an error. General JavaScript is not sandboxed: keep loops finite and asset requests bounded.
 
-Keep each voice near `0.2`. The mix sums tracks and then limits at −1 dB. A jump in gain clicks, so open and close with `linearRampToValueAtTime` or `setTargetAtTime`.
+The example gain `0.2` is an initial synthesis headroom choice, not a universal level for VO, music, or SFX. Choose measured balance, ducking, and delivery targets using [audio-balance.md](audio-balance.md). The mix sums tracks through a compressor with a −1 dB threshold; this does not guarantee a −1 dBTP ceiling or normalize loudness. A jump in gain clicks, so open and close with `linearRampToValueAtTime` or `setTargetAtTime`.
 
 One factory can be placed on many clips. Pass pitch, buffer, or notes into the factory. Do not close over a manifest `start`.
 

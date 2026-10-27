@@ -190,14 +190,6 @@ scripts/       Browser validation and benchmarks
 
 See the [preview organization guide](src/preview/README.md) before adding studio features.
 
-## CI and npm releases
-
-GitHub Actions runs unit tests, a production build, and a package dry run on pushes and pull requests across Node.js 20.19, 22, and 24.
-
-Publishing a GitHub Release triggers the npm workflow. It validates the release tag against the package version, repeats validation, and publishes using npm Trusted Publishing with provenance. Stable releases use `latest`; prereleases use `next`.
-
-See [Publishing to npm](docs/publishing.md) for the one-time npm setup and release procedure.
-
 ## Current scope
 
 Ritween currently supports sequential, gapless scenes with hard cuts. Overlapping transitions, clip dragging, microphone input, and HTML/DOM rasterization are not implemented.

@@ -1,0 +1,33 @@
+{
+  "skill_name": "ritween",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Create a standalone Ritween project: a 2-second 320x180 video with a blue background that smoothly brightens over time. Write runnable source and render PNGs at 0.25 and 1.5 seconds. Do not rely on framework demo modules.",
+      "expected_output": "Standalone manifest and deterministic scene, two inspected PNGs or explicit browser blocker.",
+      "files": [],
+      "expectations": ["Manifest passes validateProject", "Scene renders deterministically without internal framework imports", "Two requested PNGs are rendered successfully"]
+    },
+    {
+      "id": 2,
+      "prompt": "Create a standalone Ritween video with two consecutive scenes, red then blue. Originally each lasts one second; make the first last 1.5 seconds and keep the second at one second. Add a runnable check for the exact cut and for seeking to the same time after seeking backward. Do not use overlapping transitions.",
+      "expected_output": "Valid 2.5-second project, second start 1.5, executable timing and seek checks.",
+      "files": [],
+      "expectations": ["Manifest passes validateProject with duration 2.5 and second scene start 1.5", "Exact cut selects the second scene", "Runnable backward-seek determinism check passes"]
+    },
+    {
+      "id": 3,
+      "prompt": "Create a standalone 2-second 320x180 Ritween video with a green background and a quiet 440 Hz tone with a short fade in and fade out. Export an MP4 at 30 fps. Check the exported dimensions, duration, and audio presence; report unavailable checks honestly.",
+      "expected_output": "Runnable project with scheduled audio, MP4 and validation evidence or explicit environment blocker.",
+      "files": [],
+      "expectations": ["Manifest and clip boundaries are valid", "Audio is scheduled using clip-local mapping with ordered fades", "MP4 export succeeds with 60 frames", "Exported dimensions and audio presence are verified"]
+    },
+    {
+      "id": 4,
+      "prompt": "Create a 15-second dynamic motion video that showcases your strength as a motion designer. It is for a neighborhood library's evening reading event. Keep it clean, with large readable text and subtle original procedural sound. Use these exact lines: 'Make room for a story', 'Evening reading at your library', 'Thursday, 7 pm'. I want expressive connected animation, not slides with fade-in/fade-out. Avoid psychedelic shader effects and do not copy the bundled motion-study video's theme, wording, or sequence. Export at 640x360 and 30 fps.",
+      "expected_output": "A library-specific direction and 15-second rendered film with readable supplied copy, connected purposeful motion, and audible procedural sound, plus honest visual/playback validation. Human review assesses communication and choreography; technical checks alone do not prove visual quality.",
+      "files": [],
+      "expectations": ["Project duration is 15 seconds and export is 640x360 at 30 fps with 450 frames", "All three supplied lines are implemented as rendered text and keyframes are provided for legibility review", "Export contains a decoded non-silent audio track", "The direction and source use the library brief rather than copying the bundled study's wording or sequence", "A beat sheet describes evolving visual relationships and handoffs beyond opacity entrances" ]
+    }
+  ]
+}

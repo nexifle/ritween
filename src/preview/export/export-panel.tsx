@@ -65,11 +65,6 @@ export function ExportPanel({
       onToggleCollapse={onToggleCollapse}
       contentClassName="p-3"
     >
-      <p className="mb-2.5 text-[11px] leading-[1.4] text-muted-foreground">
-        From source to a shareable MP4.
-        <br />
-        Rendered locally in your browser.
-      </p>
       <label className="mb-1 block text-[11px] text-label" htmlFor="resolution">
         Resolution
       </label>
@@ -206,7 +201,7 @@ export function ExportPanel({
         <Icon name="export" size={16} />
         {exporting ? "Exporting…" : "Export Video"}
       </button>
-      {exporting ? (
+      {exporting && (
         <div className="mt-3.5 text-[11px]">
           <p role="status" className="mb-2 text-muted-foreground">
             {stage}
@@ -226,10 +221,6 @@ export function ExportPanel({
             </button>
           </div>
         </div>
-      ) : (
-        <p className="mt-3 text-center text-[11px] text-muted-foreground">
-          Local mix · No upload required
-        </p>
       )}
       {result && (
         <div

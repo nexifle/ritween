@@ -220,7 +220,7 @@ Start near `0.01` to `0.03` meters. A large offset deletes internal lines and al
 
 After the meshes are drawn, one fullscreen pass can ink every object, including where one mesh passes through another. The mesh shader writes color and a world normal. Store linear view depth in meters in another target. A hardware depth value is not linear: a small step near the camera is a large step far away, so compare meters.
 
-In Rimotion that is two passes inside `render`. The first writes the textures you created in `setup`. The second reads them and writes `target`. Do not filter the depth or normal sample. A blend of a surface and the background is a distance in mid-air. Treat a stored normal of length near zero as background, and substitute the center pixel's normal so the sky is not a crease. The silhouette against the sky comes from depth.
+In Ritween that is two passes inside `render`. The first writes the textures you created in `setup`. The second reads them and writes `target`. Do not filter the depth or normal sample. A blend of a surface and the background is a distance in mid-air. Treat a stored normal of length near zero as background, and substitute the center pixel's normal so the sky is not a crease. The silhouette against the sky comes from depth.
 
 A silhouette is a jump between a pixel and its neighbors. A threshold in meters marks distant surfaces, because a pixel covers more meters as distance grows, and it misses small gaps up close. Divide the jump by the pixel's own distance:
 

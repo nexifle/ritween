@@ -40,7 +40,7 @@ The research sample baseline was all-intra and about 51 Mbps actual; this does n
 ## Usage
 
 ```bash
-node bin/rimotion.mjs export ../video9 \
+node bin/ritween.mjs export ../video9 \
   --resolution 1080x1920 --fps 60 \
   --bitrate 6000000 --keyframe-interval 2 --latency-mode quality \
   -o video.mp4

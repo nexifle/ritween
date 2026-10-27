@@ -23,14 +23,14 @@ function ffmpeg(args) {
 const results = [];
 try {
   const page = await browser.newPage({ acceptDownloads: true });
-  await page.goto(`${url}/__rimotion/render`);
-  await page.waitForFunction(() => !!window.rimotion);
+  await page.goto(`${url}/__ritween/render`);
+  await page.waitForFunction(() => !!window.ritween);
   for (const fps of [24, 30, 60]) {
     const file = `${directory}/pulse-${fps}.mp4`;
     const [download, output] = await Promise.all([
       page.waitForEvent("download"),
       page.evaluate(async (fps) => {
-        const { project: demo } = await import("/@id/__x00__rimotion-project");
+        const { project: demo } = await import("/@id/__x00__ritween-project");
         const { exportVideo } = await import("/src/engine/export.ts");
         const { renderAudio } = await import("/src/engine/audio.ts");
         const project = {

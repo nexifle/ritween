@@ -66,7 +66,7 @@ test("CLI discovers a project and reports absent manifests", async () => {
   const found = await resolveProject(root, false, root);
   assert.ok(found.manifest.endsWith("src/project/manifest.ts"));
   await assert.rejects(
-    resolveProject("/nonexistent/rimotion-project", false, root),
+    resolveProject("/nonexistent/ritween-project", false, root),
   );
 });
 test("scene source reads files next to the manifest and rejects paths that leave it", () => {

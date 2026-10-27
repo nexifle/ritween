@@ -1,4 +1,4 @@
-# Rimotion
+# Ritween
 
 A code-first video framework. External AI agents write scene modules and register them in a manifest; the browser evaluates, previews and exports the composition. No chatbot, backend, DOM capture, or multimedia dependencies.
 
@@ -18,10 +18,10 @@ Open http://localhost:5173. WebGPU needs localhost or HTTPS. Vite hot reloads sc
 Install the Node executable, then run it from any directory. Node.js 22.12+ (or 20.19+) stays on the machine; Chrome stays external.
 
 ```sh
-npm install -g rimotion
-rimotion preview --open
-rimotion frame --time 5.2 -o artifacts/frame.png
-rimotion export -o artifacts/video.mp4
+npm install -g ritween
+ritween preview --open
+ritween frame --time 5.2 -o artifacts/frame.png
+ritween export -o artifacts/video.mp4
 ```
 
 From this checkout, `npm install -g .` installs the same command. `npm run cli -- <arguments>` runs it without a global install. Pass `--project /path/to/project` to render another codebase or `--demo` for the bundled example. See [CLI commands and automation](CLI.md).
@@ -79,7 +79,7 @@ Audio and video export run concurrently by default. See the [pipeline benchmark]
 ### Export encoding controls
 
 ```ts
-import { exportVideo, type ExportOptions } from "rimotion";
+import { exportVideo, type ExportOptions } from "ritween";
 
 const result = await exportVideo(project, {
   width: 1080, height: 1920, fps: 60,

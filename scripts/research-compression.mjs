@@ -28,8 +28,8 @@ const report = {
 };
 try {
   const page = await browser.newPage();
-  await page.goto(`${url}/__rimotion/render`);
-  await page.waitForFunction(() => !!window.rimotion);
+  await page.goto(`${url}/__ritween/render`);
+  await page.waitForFunction(() => !!window.ritween);
   const cases = [
     {
       id: "all-intra-27m",

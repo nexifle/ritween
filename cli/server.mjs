@@ -7,7 +7,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { projectPlugin } from "./project.mjs";
 export async function startServer({ runtimeRoot, project, port = 0 }) {
-  const cache = await mkdtemp(join(tmpdir(), "rimotion-vite-"));
+  const cache = await mkdtemp(join(tmpdir(), "ritween-vite-"));
   let server;
   try {
     server = await createServer({
@@ -23,16 +23,16 @@ export async function startServer({ runtimeRoot, project, port = 0 }) {
         react(),
         tailwindcss(),
         {
-          name: "rimotion-render-shell",
+          name: "ritween-render-shell",
           configureServer(server) {
             server.middlewares.use(
-              "/__rimotion/render",
+              "/__ritween/render",
               async (req, res, next) => {
                 if (req.method !== "GET") return next();
                 try {
                   const html = await server.transformIndexHtml(
-                    "/__rimotion/render",
-                    '<!doctype html><html><head><meta charset="utf-8"><title>Rimotion renderer</title></head><body><script type="module" src="/src/cli-browser.ts"></script></body></html>',
+                    "/__ritween/render",
+                    '<!doctype html><html><head><meta charset="utf-8"><title>Ritween renderer</title></head><body><script type="module" src="/src/cli-browser.ts"></script></body></html>',
                   );
                   res.setHeader("Content-Type", "text/html");
                   res.end(html);
@@ -47,7 +47,7 @@ export async function startServer({ runtimeRoot, project, port = 0 }) {
       resolve: {
         alias: [
           {
-            find: /^rimotion$/,
+            find: /^ritween$/,
             replacement: resolve(runtimeRoot, "src/index.ts"),
           },
         ],

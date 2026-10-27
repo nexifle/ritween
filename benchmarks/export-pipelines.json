@@ -1920,7 +1920,7 @@
       "outputs": [
         {
           "pipeline": "sequential",
-          "file": "/Users/satria/projects/me/rimotion/artifacts/pipeline-benchmark/demo-sequential.mp4",
+          "file": "/Users/satria/projects/me/ritween/artifacts/pipeline-benchmark/demo-sequential.mp4",
           "media": {
             "programs": [],
             "stream_groups": [],
@@ -1949,7 +1949,7 @@
         },
         {
           "pipeline": "parallel",
-          "file": "/Users/satria/projects/me/rimotion/artifacts/pipeline-benchmark/demo-parallel.mp4",
+          "file": "/Users/satria/projects/me/ritween/artifacts/pipeline-benchmark/demo-parallel.mp4",
           "media": {
             "programs": [],
             "stream_groups": [],
@@ -1996,7 +1996,7 @@
       "outputs": [
         {
           "pipeline": "sequential",
-          "file": "/Users/satria/projects/me/rimotion/artifacts/pipeline-benchmark/video9-sequential.mp4",
+          "file": "/Users/satria/projects/me/ritween/artifacts/pipeline-benchmark/video9-sequential.mp4",
           "media": {
             "programs": [],
             "stream_groups": [],
@@ -2025,7 +2025,7 @@
         },
         {
           "pipeline": "parallel",
-          "file": "/Users/satria/projects/me/rimotion/artifacts/pipeline-benchmark/video9-parallel.mp4",
+          "file": "/Users/satria/projects/me/ritween/artifacts/pipeline-benchmark/video9-parallel.mp4",
           "media": {
             "programs": [],
             "stream_groups": [],

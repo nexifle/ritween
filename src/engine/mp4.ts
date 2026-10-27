@@ -271,7 +271,7 @@ export class MP4Muxer {
       u32(0),
       str("vide"),
       zeros(12),
-      str("Rimotion Video\0"),
+      str("Ritween Video\0"),
     );
     const avc1 = box(
       "avc1",
@@ -336,7 +336,7 @@ export class MP4Muxer {
       u32(0),
       str("soun"),
       zeros(12),
-      str("Rimotion Audio\0"),
+      str("Ritween Audio\0"),
     );
     const mp4a = box(
       "mp4a",

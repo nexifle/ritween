@@ -6,7 +6,7 @@ A directory is a project when it contains one of these, first match wins:
 
 `src/project/manifest.ts`, `.tsx`, `.js`, then `project/manifest.ts` or `.js`, then `manifest.ts`, `.tsx`, `.js`, or `.mjs`.
 
-A file argument is used as the manifest when it ends in `.ts`, `.tsx`, `.js`, `.jsx`, or `.mjs`. The module exports `project` or a default `Project`. Import types from `rimotion`. The CLI resolves that name to its engine. Other package imports must be installed in the external project. `shaderScene` is not part of that public entry. Build the pipeline in the scene, or copy the helper into the project.
+A file argument is used as the manifest when it ends in `.ts`, `.tsx`, `.js`, `.jsx`, or `.mjs`. The module exports `project` or a default `Project`. Import types from `ritween`. The CLI resolves that name to its engine. Other package imports must be installed in the external project. `shaderScene` is not part of that public entry. Build the pipeline in the scene, or copy the helper into the project.
 
 ## Layout
 
@@ -19,7 +19,7 @@ my-video/
 `my-video/scenes/wash.ts`:
 
 ```ts
-import type { Scene } from "rimotion";
+import type { Scene } from "ritween";
 
 export default function createWash(): Scene {
   let pipeline: GPURenderPipeline;
@@ -98,7 +98,7 @@ export default function createWash(): Scene {
 `my-video/manifest.ts`:
 
 ```ts
-import type { Project } from "rimotion";
+import type { Project } from "ritween";
 import createWash from "./scenes/wash";
 
 export const project: Project = {
@@ -120,7 +120,7 @@ export const project: Project = {
 };
 ```
 
-`resolution / aspect` must match within `0.001`. `1280/720` and `16/9` do. That pair is the 16:9 example. When the request names another frame, set both fields to that frame. Export sizes are in [command-sessions.md](command-sessions.md). Sound, when this project has any, is `audioTracks` on that same object. Follow [audio.md](audio.md). Import `AudioClipSource` from `rimotion`.
+`resolution / aspect` must match within `0.001`. `1280/720` and `16/9` do. That pair is the 16:9 example. When the request names another frame, set both fields to that frame. Export sizes are in [command-sessions.md](command-sessions.md). Sound, when this project has any, is `audioTracks` on that same object. Follow [audio.md](audio.md). Import `AudioClipSource` from `ritween`.
 
 The fragment above divides by `1280` because this manifest's base width is 1280. Export presets change the target size. Prefer `resolution` from the render context, written into the uniform, whenever the same scene is exported at more than one preset. The in-repo helper already does that with `u.resolution`.
 
@@ -129,9 +129,9 @@ The fragment above divides by `1280` because this manifest's base width is 1280.
 ## Run it
 
 ```sh
-rimotion preview /path/to/my-video --open
-rimotion frame --project /path/to/my-video --time 2 -o /tmp/wash.png --json
-rimotion export --project /path/to/my-video/manifest.ts -o /tmp/wash.mp4 --json
+ritween preview /path/to/my-video --open
+ritween frame --project /path/to/my-video --time 2 -o /tmp/wash.png --json
+ritween export --project /path/to/my-video/manifest.ts -o /tmp/wash.mp4 --json
 ```
 
 At 30 FPS the export reports `frames: 120` and `duration: 4`. Time `2` is progress `0.5`.

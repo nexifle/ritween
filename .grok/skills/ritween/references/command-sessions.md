@@ -1,13 +1,13 @@
 # Guide: preview, frame, and export
 
-Run `rimotion`. Install puts that command on `PATH` (npm, or a curl install into a directory such as `~/.local/bin`). Chrome with WebGPU is required. `--json` prints one success object on stdout. Progress and errors go to stderr.
+Run `ritween`. Install puts that command on `PATH` (npm, or a curl install into a directory such as `~/.local/bin`). Chrome with WebGPU is required. `--json` prints one success object on stdout. Progress and errors go to stderr.
 
 `preview` with `--time`, `--frame`, or `-o` becomes a frame render and exits. It does not leave the server up.
 
 ## Web preview
 
 ```sh
-rimotion preview --open --json
+ritween preview --open --json
 ```
 
 Stdout:
@@ -23,7 +23,7 @@ The process stays up until Ctrl+C, which exits `0`. Port `5173` is the default. 
 ## One PNG
 
 ```sh
-rimotion frame --time 5.2 -o /tmp/frame.png --json
+ritween frame --time 5.2 -o /tmp/frame.png --json
 ```
 
 Stdout on success:
@@ -46,7 +46,7 @@ Stdout on success:
 Frame index `156` at 30 FPS is time `5.2`:
 
 ```sh
-rimotion frame --frame 156 --fps 30 -o /tmp/frame.png --json --force
+ritween frame --frame 156 --fps 30 -o /tmp/frame.png --json --force
 ```
 
 `--time` and `--frame` together are rejected. The default time is `0`. An existing output path fails until you pass `--force`. A failed run does not replace that file.
@@ -68,7 +68,7 @@ Omitting `--resolution` exports the short-side 720 step. That is 1280×720 on 16
 The bundled demo is 16:9, so its full-HD export is `1080p` and its default export is `720p`:
 
 ```sh
-rimotion export -o /tmp/video.mp4 --resolution 720p --fps 30 --json
+ritween export -o /tmp/video.mp4 --resolution 720p --fps 30 --json
 ```
 
 Stderr grows in steps of 10 percent:

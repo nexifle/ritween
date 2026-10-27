@@ -61,8 +61,8 @@ try {
   await page.getByRole("button", { name: "Pause", exact: true }).click();
 
   // Exercise the compiler independently of React using real native DSP/output.
-  await page.goto(`${url}/__rimotion/render`);
-  await page.waitForFunction(() => !!window.rimotion);
+  await page.goto(`${url}/__ritween/render`);
+  await page.waitForFunction(() => !!window.ritween);
   await page.evaluate(() => {
     const button = document.createElement("button");
     button.textContent = "Validate audio";
@@ -71,7 +71,7 @@ try {
         const { LiveMix } = await import("/src/engine/live-mix.ts");
         const { PreviewAudio } = await import("/src/engine/audio.ts");
         const { project: original } =
-          await import("/@id/virtual:rimotion-project");
+          await import("/@id/virtual:ritween-project");
         const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const ctx = new AudioContext({
           sampleRate: 48000,

@@ -16,8 +16,8 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const executable = process.env.CLI_BINARY
   ? resolve(process.env.CLI_BINARY)
   : process.execPath;
-const prefix = process.env.CLI_BINARY ? [] : [join(root, "bin/rimotion.mjs")];
-const directory = await mkdtemp(join(tmpdir(), "rimotion-cli-test-"));
+const prefix = process.env.CLI_BINARY ? [] : [join(root, "bin/ritween.mjs")];
+const directory = await mkdtemp(join(tmpdir(), "ritween-cli-test-"));
 const artifacts = join(root, "artifacts/cli");
 await mkdir(artifacts, { recursive: true });
 function run(args, { cwd = directory, expected = 0 } = {}) {
@@ -48,7 +48,7 @@ const png = async (path) => {
 };
 try {
   const help = await run(["--help"]);
-  assert.match(help.stdout, /rimotion frame/);
+  assert.match(help.stdout, /ritween frame/);
   const frame = join(artifacts, "frame.png");
   await rm(frame, { force: true });
   const result = JSON.parse(
@@ -100,7 +100,7 @@ try {
   );
   await writeFile(
     join(directory, "manifest.tsx"),
-    `import type { Project } from 'rimotion'; import create from './scene.js'; export default {name:'External fixture',resolution:[320,180],aspectRatio:[16,9],duration:1,scenes:[{id:'external',name:'External',source:'scene.js',start:0,duration:1,create,transition:{type:'cut'}}]} satisfies Project;`,
+    `import type { Project } from 'ritween'; import create from './scene.js'; export default {name:'External fixture',resolution:[320,180],aspectRatio:[16,9],duration:1,scenes:[{id:'external',name:'External',source:'scene.js',start:0,duration:1,create,transition:{type:'cut'}}]} satisfies Project;`,
   );
   await writeFile(
     join(directory, "scene.js"),

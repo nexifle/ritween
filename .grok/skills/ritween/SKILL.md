@@ -1,14 +1,14 @@
 ---
-name: rimotion
+name: ritween
 description: >
-  Author a Rimotion video by writing seekable WebGPU scene modules, audio
+  Author a Ritween video by writing seekable WebGPU scene modules, audio
   tracks, and a project manifest, then preview, render a PNG frame, and
-  export MP4 with the rimotion CLI. Use when the user wants a Rimotion video,
+  export MP4 with the ritween CLI. Use when the user wants a Ritween video,
   a new scene, a minimalist clean motion graphic, a shader scene, a chart in a video, sound, music, an audio
-  track, a tracker pattern, a still frame, an MP4 export, or runs /rimotion.
+  track, a tracker pattern, a still frame, an MP4 export, or runs /ritween.
 ---
 
-# Rimotion
+# Ritween
 
 You write the picture the request describes, and, when the cut needs sound, the audio tracks. A flat motion graphic and a procedural shader are both valid. Pick from the request. The fragment in [references/author-a-scene.md](references/author-a-scene.md) shows how a scene is wired. It is not the look to copy. Scene factories, clip factories, and the manifest are the video. `render` is a pure function of the timestamp the framework passes in. Sound is scheduled on a clip, not inside `render`.
 
@@ -31,9 +31,9 @@ Read the one that matches the task and follow it. Use a second reference when th
 - Stroke a thick series, reduce a long series, or show density: [references/chart-series.md](references/chart-series.md)
 - Move a chart across the shot: [references/chart-motion.md](references/chart-motion.md)
 
-Audio schedules run through Rimotion's managed graph compiler for preview and export. Use the supported API and resource limits in [references/audio.md](references/audio.md); do not add project-level lazy scheduling, `host.defer`, custom export loops, or separate audio contexts. Fix rejected schedules within that contract. Performance scheduling belongs in the engine.
+Audio schedules run through Ritween's managed graph compiler for preview and export. Use the supported API and resource limits in [references/audio.md](references/audio.md); do not add project-level lazy scheduling, `host.defer`, custom export loops, or separate audio contexts. Fix rejected schedules within that contract. Performance scheduling belongs in the engine.
 
-Types are `src/engine/types.ts`. Timeline checks are `src/engine/timeline.ts`. Flags are `rimotion --help` and `CLI.md`.
+Types are `src/engine/types.ts`. Timeline checks are `src/engine/timeline.ts`. Flags are `ritween --help` and `CLI.md`.
 
 ## Loop
 

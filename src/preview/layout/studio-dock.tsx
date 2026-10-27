@@ -27,22 +27,22 @@ export function StudioDock({
 }) {
   const stacked = useMediaQuery("(max-width: 1023px)");
   const stack = useDefaultLayout({
-    id: "rimotion-stack",
+    id: "ritween-stack",
     onlySaveAfterUserInteractions: true,
   });
   const rows = useDefaultLayout({
-    id: "rimotion-rows",
+    id: "ritween-rows",
     onlySaveAfterUserInteractions: true,
   });
   const columns = useDefaultLayout({
-    id: "rimotion-columns",
+    id: "ritween-columns",
     onlySaveAfterUserInteractions: true,
   });
 
   if (stacked) {
     return (
       <ResizablePanelGroup
-        id="rimotion-stack"
+        id="ritween-stack"
         orientation="vertical"
         defaultLayout={stack.defaultLayout}
         onLayoutChanged={stack.onLayoutChanged}
@@ -79,7 +79,7 @@ export function StudioDock({
 
   return (
     <ResizablePanelGroup
-      id="rimotion-rows"
+      id="ritween-rows"
       orientation="vertical"
       defaultLayout={rows.defaultLayout}
       onLayoutChanged={rows.onLayoutChanged}
@@ -92,7 +92,7 @@ export function StudioDock({
       >
         <Fill>
           <ResizablePanelGroup
-            id="rimotion-columns"
+            id="ritween-columns"
             className="min-h-0 flex-1"
             orientation="horizontal"
             defaultLayout={columns.defaultLayout}

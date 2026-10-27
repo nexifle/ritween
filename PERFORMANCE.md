@@ -13,7 +13,7 @@ Their future automation makes this workload much more expensive than the small
 eight-second demo. Audio mixing and AAC also preceded the first video progress
 update, making a busy audio renderer look like a stalled export.
 
-The optimization now belongs entirely to Rimotion. The earlier project-specific
+The optimization now belongs entirely to Ritween. The earlier project-specific
 `host.defer` change was reverted in video9, and that optional API was removed.
 Ordinary existing schedules are automatically compiled for preview and export.
 
@@ -49,7 +49,7 @@ identifier, rather than falling back to an unbounded native renderer.
 
 ## Contract and limits
 
-The authoring contract is in [.grok/skills/rimotion/references/audio.md](.grok/skills/rimotion/references/audio.md).
+The authoring contract is in [.grok/skills/ritween/references/audio.md](.grok/skills/ritween/references/audio.md).
 `AUDIO_LIMITS` in `src/engine/live-mix.ts` is authoritative.
 
 | Resource | Limit |
@@ -126,7 +126,7 @@ prove bitwise identity for every browser, possible graph, or the full video9 PCM
 ```sh
 node scripts/diagnose-export.mjs ../video9
 node scripts/diagnose-export.mjs ../video9 bgm 8 --compare
-node bin/rimotion.mjs export ../video9 --resolution 720x1280 --fps 30 -o /tmp/video9.mp4
+node bin/ritween.mjs export ../video9 --resolution 720x1280 --fps 30 -o /tmp/video9.mp4
 npm test
 # With a demo preview server on localhost:5173:
 npm run test:browser

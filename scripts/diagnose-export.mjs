@@ -18,14 +18,14 @@ const browser = await chromium.launch({
 });
 try {
   const page = await browser.newPage();
-  await page.goto(`${url}/__rimotion/render`);
-  await page.waitForFunction(() => !!window.rimotion);
+  await page.goto(`${url}/__ritween/render`);
+  await page.waitForFunction(() => !!window.ritween);
   await page.exposeFunction("report", (value) =>
     console.log(JSON.stringify(value)),
   );
   await page.evaluate(
     async ({ track, seconds, compare }) => {
-      const { project } = await import("/@id/virtual:rimotion-project");
+      const { project } = await import("/@id/virtual:ritween-project");
       const { renderAudio } = await import("/src/engine/audio.ts");
       const { encodeAac } = await import("/src/engine/export.ts");
       const { Renderer } = await import("/src/engine/renderer.ts");

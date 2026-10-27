@@ -18,13 +18,13 @@ try {
     args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage();
-  await page.goto(`${url}/__rimotion/render`);
-  await page.waitForFunction(() => !!window.rimotion);
+  await page.goto(`${url}/__ritween/render`);
+  await page.waitForFunction(() => !!window.ritween);
   await page.exposeFunction("audioReport", (r) =>
     console.log(JSON.stringify(r)),
   );
   const results = await page.evaluate(async () => {
-    const { project } = await import("/@id/virtual:rimotion-project");
+    const { project } = await import("/@id/virtual:ritween-project");
     const { exportVideo } = await import("/src/engine/export.ts");
     const OriginalData = globalThis.AudioData,
       OriginalEncoder = globalThis.AudioEncoder;

@@ -1,4 +1,4 @@
-# Riset kompresi export Rimotion
+# Riset kompresi export Ritween
 
 Catatan: audit dan benchmark di bawah merekam baseline sebelum perubahan produksi. Implementasi GOP beserta validasinya dijelaskan dalam [EXPORT_COMPRESSION_IMPLEMENTATION.md](EXPORT_COMPRESSION_IMPLEMENTATION.md).
 
@@ -145,7 +145,7 @@ Mediabunny mencatat dukungan container dan codec, tetapi encoder aktual tetap be
 
 Pengelola `mp4-muxer` lama telah mendeprekasinya dan menyarankan Mediabunny. Jadi jangan menambah dependency lama itu untuk pekerjaan baru. [Repository resmi mp4-muxer](https://github.com/Vanilagy/mp4-muxer).
 
-Benchmark resmi ffmpeg.wasm memperlihatkan native FFmpeg 5,2 detik versus WASM single-thread 128,8 detik dan multi-thread 60,4 detik pada workload mereka. Angka tersebut **bukan benchmark Rimotion** atau rasio universal; cukup menjadi alasan menghindari migrasi WASM tanpa bukti lokal. [Benchmark resmi ffmpeg.wasm](https://ffmpegwasm.netlify.app/docs/performance/).
+Benchmark resmi ffmpeg.wasm memperlihatkan native FFmpeg 5,2 detik versus WASM single-thread 128,8 detik dan multi-thread 60,4 detik pada workload mereka. Angka tersebut **bukan benchmark Ritween** atau rasio universal; cukup menjadi alasan menghindari migrasi WASM tanpa bukti lokal. [Benchmark resmi ffmpeg.wasm](https://ffmpegwasm.netlify.app/docs/performance/).
 
 ## Kecepatan dan penggunaan memori
 

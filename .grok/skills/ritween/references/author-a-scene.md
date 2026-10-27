@@ -72,10 +72,10 @@ Each `start` equals the previous scene's end. The last end equals `project.durat
 From the repo:
 
 ```sh
-rimotion frame --time 7.9 -o /tmp/rimotion-before.png --json --force
-rimotion frame --time 8 -o /tmp/rimotion-cut.png --json --force
-rimotion frame --time 9 -o /tmp/rimotion-mid.png --json --force
-rimotion frame --time 8 -o /tmp/rimotion-cut-again.png --json --force
+ritween frame --time 7.9 -o /tmp/ritween-before.png --json --force
+ritween frame --time 8 -o /tmp/ritween-cut.png --json --force
+ritween frame --time 9 -o /tmp/ritween-mid.png --json --force
+ritween frame --time 8 -o /tmp/ritween-cut-again.png --json --force
 ```
 
 Time `7.9` is still the outro. Time `8` is the first instant of the new scene. Time `9` is the middle of it. For the example fragment, time `8` is still paper and time `9` is a gray panel on the left half. If the picture changed, look for the motion you wrote instead. The two renders at time `8` are the determinism check: they match. Open the PNGs.
@@ -83,7 +83,7 @@ Time `7.9` is still the outro. Time `8` is the first instant of the new scene. T
 Then export the whole composition:
 
 ```sh
-rimotion export -o /tmp/rimotion-hold.mp4 --json --force
+ritween export -o /tmp/ritween-hold.mp4 --json --force
 ```
 
 `frames` is `ceil(10 * 30) = 300` at the default 30 FPS. `duration` in the result is `10`.

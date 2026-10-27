@@ -16,8 +16,8 @@ const browser = await chromium.launch({
 const times = [0.5, 27.5, 42.5, 56.5, 73.5, 85.5];
 try {
   const page = await browser.newPage();
-  await page.goto(`${url}/__rimotion/render`);
-  await page.waitForFunction(() => !!window.rimotion);
+  await page.goto(`${url}/__ritween/render`);
+  await page.waitForFunction(() => !!window.ritween);
   const images = await page.evaluate(
     async ({ times, projectModule }) => {
       const { Renderer } = await import("/src/engine/renderer.ts");

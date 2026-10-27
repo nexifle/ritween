@@ -15,10 +15,10 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(`${url}/__rimotion/render`);
-  await page.waitForFunction(() => !!window.rimotion);
+  await page.goto(`${url}/__ritween/render`);
+  await page.waitForFunction(() => !!window.ritween);
   const report = await page.evaluate(async () => {
-    const { project: demo } = await import("/@id/virtual:rimotion-project");
+    const { project: demo } = await import("/@id/virtual:ritween-project");
     const { exportVideo } = await import("/src/engine/export.ts");
     const { Renderer } = await import("/src/engine/renderer.ts");
     const { MP4Muxer } = await import("/src/engine/mp4.ts");

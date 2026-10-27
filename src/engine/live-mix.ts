@@ -644,7 +644,7 @@ function installRecorder(
       );
     },
     set() {
-      throw Error("The audio context is managed by Rimotion.");
+      throw Error("The audio context is managed by Ritween.");
     },
   });
   for (const name of [
@@ -835,7 +835,7 @@ async function recordClip(
       );
     },
     set() {
-      throw Error("host.destination is managed by Rimotion.");
+      throw Error("host.destination is managed by Ritween.");
     },
   });
   budget.destinations.set(destination, bus);

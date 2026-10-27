@@ -32,7 +32,7 @@ export function tone(frequency: number): () => AudioClipSource {
 
 `schedule` may return a promise for fetching and `decodeAudioData`. It must finish scheduling within 30 seconds. Do not register timers, retain the host for later scheduling, create a second audio context, start an offline render, or use `audioWorklet`, `getUserMedia`, `MediaRecorder`, or analyser-driven timing.
 
-Rimotion records this schedule as data, groups independent voices and creates native nodes automatically near their start times. Shared effects retain their state. Write ordinary loops over all notes; no `host.defer`, manual chunking, project-specific scheduler, or export workaround is required.
+Ritween records this schedule as data, groups independent voices and creates native nodes automatically near their start times. Shared effects retain their state. Write ordinary loops over all notes; no `host.defer`, manual chunking, project-specific scheduler, or export workaround is required.
 
 ### Supported API and enforced limits
 
@@ -88,7 +88,7 @@ Gaps on a track are silent. Clips do not move when a scene cut moves. Lengthenin
 
 The timeline draws V1, then one row per audio track. M on a row drops that track from the mix you hear and from the next export. The transport speaker and its volume are preview only. They are not in the file.
 
-`rimotion frame` is a silent PNG. `rimotion export` mixes every unmuted track with `OfflineAudioContext` at 48 kHz and muxes AAC next to the H.264 track. Play the MP4 and seek it. A green `npm test` does not prove the mix.
+`ritween frame` is a silent PNG. `ritween export` mixes every unmuted track with `OfflineAudioContext` at 48 kHz and muxes AAC next to the H.264 track. Play the MP4 and seek it. A green `npm test` does not prove the mix.
 
 ## Sound beyond a phrase
 

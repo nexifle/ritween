@@ -87,7 +87,7 @@ export async function main(argv = process.argv.slice(2)) {
         console.log(
           options.json
             ? JSON.stringify(result)
-            : `Rimotion preview: ${serving.url}\nProject: ${project.manifest}\nSource changes reload automatically. Press Ctrl+C to stop.`,
+            : `Ritween preview: ${serving.url}\nProject: ${project.manifest}\nSource changes reload automatically. Press Ctrl+C to stop.`,
         );
         if (options.open) {
           const command =
@@ -135,7 +135,7 @@ export async function main(argv = process.argv.slice(2)) {
       void initializationFailure.catch(() => {});
       const failures = [];
       page.on("pageerror", (error) => failures.push(error.message));
-      await page.exposeFunction("rimotionStage", (stage) => {
+      await page.exposeFunction("ritweenStage", (stage) => {
         console.error(
           options.json
             ? JSON.stringify({ event: "stage", stage })
@@ -143,7 +143,7 @@ export async function main(argv = process.argv.slice(2)) {
         );
       });
       let lastPercent = -1;
-      await page.exposeFunction("rimotionProgress", ({ done, total }) => {
+      await page.exposeFunction("ritweenProgress", ({ done, total }) => {
         const percent = Math.floor((done / total) * 10) * 10;
         if (percent !== lastPercent) {
           lastPercent = percent;
@@ -154,13 +154,13 @@ export async function main(argv = process.argv.slice(2)) {
           );
         }
       });
-      await page.goto(`${serving.url}/__rimotion/render`);
+      await page.goto(`${serving.url}/__ritween/render`);
       try {
         await Promise.race([
           initializationFailure,
           page.waitForFunction(
             () =>
-              !!window.rimotion ||
+              !!window.ritween ||
               !!document.querySelector("vite-error-overlay"),
           ),
         ]);
@@ -180,7 +180,7 @@ export async function main(argv = process.argv.slice(2)) {
             ),
         );
       if (failures.length) throw Error(failures.join("\n"));
-      const metadata = await page.evaluate(() => window.rimotion.metadata());
+      const metadata = await page.evaluate(() => window.ritween.metadata());
       if (options.command === "frame" && options.time > metadata.duration)
         throw Error(
           `Frame time ${options.time}s exceeds composition duration ${metadata.duration}s.`,
@@ -198,12 +198,12 @@ export async function main(argv = process.argv.slice(2)) {
         page.evaluate(
           async (options) =>
             options.command === "frame"
-              ? window.rimotion.frame({
+              ? window.ritween.frame({
                   time: options.time,
                   width: options.width,
                   height: options.height,
                 })
-              : window.rimotion.export({
+              : window.ritween.export({
                   width: options.width,
                   height: options.height,
                   fps: options.fps,
@@ -254,7 +254,7 @@ export async function main(argv = process.argv.slice(2)) {
     console.error(
       options?.json || argv.includes("--json")
         ? JSON.stringify({ event: "error", message })
-        : `Rimotion: ${message}`,
+        : `Ritween: ${message}`,
     );
     process.exitCode = interrupted ? 130 : 1;
   } finally {

@@ -1,5 +1,5 @@
 /** Headless command bridge. Uses the same engine as the web interface. */
-import { project } from "virtual:rimotion-project";
+import { project } from "virtual:ritween-project";
 import { Renderer } from "./engine/renderer";
 import { exportVideo, type ExportOptions } from "./engine/export";
 import { defaultExportSize } from "./engine/export-size";
@@ -87,10 +87,10 @@ const api = {
       width,
       height,
       onStage: (stage) => {
-        void window.rimotionStage?.(stage);
+        void window.ritweenStage?.(stage);
       },
       onProgress: (done, total) => {
-        void window.rimotionProgress?.({ done, total });
+        void window.ritweenProgress?.({ done, total });
       },
     });
     download(result.blob, "video.mp4");
@@ -109,12 +109,12 @@ const api = {
 };
 declare global {
   interface Window {
-    rimotion: typeof api;
-    rimotionStage?: (stage: string) => Promise<void>;
-    rimotionProgress?: (progress: {
+    ritween: typeof api;
+    ritweenStage?: (stage: string) => Promise<void>;
+    ritweenProgress?: (progress: {
       done: number;
       total: number;
     }) => Promise<void>;
   }
 }
-window.rimotion = api;
+window.ritween = api;

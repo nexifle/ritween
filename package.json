@@ -1,5 +1,5 @@
 {
-  "name": "rimotion",
+  "name": "ritween",
   "version": "0.1.0",
   "description": "Code-first WebGPU video framework. Preview, render a PNG frame, and export H.264 MP4 from a project manifest.",
   "type": "module",
@@ -15,7 +15,7 @@
     "test:preview": "node scripts/validate-preview.mjs",
     "benchmark:preview": "node scripts/diagnose-preview.mjs",
     "benchmark:export": "node scripts/benchmark-export.mjs",
-    "cli": "node bin/rimotion.mjs",
+    "cli": "node bin/ritween.mjs",
     "test:cli": "node scripts/validate-cli.mjs",
     "benchmark:pipelines": "node scripts/benchmark-pipelines.mjs",
     "test:export": "node scripts/validate-export-pipeline.mjs",
@@ -45,7 +45,7 @@
     "typescript": "~5.9.3"
   },
   "bin": {
-    "rimotion": "bin/rimotion.mjs"
+    "ritween": "bin/ritween.mjs"
   },
   "exports": {
     ".": {

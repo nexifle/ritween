@@ -1,13 +1,13 @@
 import { parseArgs } from "node:util";
-export const help = `Rimotion — code-first WebGPU video rendering
+export const help = `Ritween — code-first WebGPU video rendering
 
 Usage:
-  rimotion preview [project]                  Serve live web preview
-  rimotion --demo --open                      Preview the bundled example
-  rimotion preview [project] --time 5.2 -o frame.png
-  rimotion frame [project] --time 5.2 -o frame.png
-  rimotion frame [project] --frame 156 --fps 30 -o frame.png
-  rimotion export [project] -o video.mp4       Export composition to MP4
+  ritween preview [project]                  Serve live web preview
+  ritween --demo --open                      Preview the bundled example
+  ritween preview [project] --time 5.2 -o frame.png
+  ritween frame [project] --time 5.2 -o frame.png
+  ritween frame [project] --frame 156 --fps 30 -o frame.png
+  ritween export [project] -o video.mp4       Export composition to MP4
 
 Project is a directory or manifest module (default: current directory).
 Manifests export a named project or default Project; TS, TSX and JS work.

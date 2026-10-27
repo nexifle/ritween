@@ -81,7 +81,7 @@ audioTracks: [
 
 `phrase` is one factory used with different pitches. Placement stays on the clip. The preview timeline draws these rows under V1. The M button on a row omits that track from preview and from the next export. Preview volume does not enter the file. Keep peaks modest; the mix runs through a limiter at −1 dB. Schedule on the audio clock (`start(time)`, ramps). Do not trigger notes from `setTimeout`.
 
-Write the complete deterministic audio schedule using supported Web Audio nodes and `host.at`. Rimotion compiles the graph and creates native voices near their start automatically; no project-level `host.defer` or custom scheduler is needed. Use the managed subset and enforced resource limits in [.grok/skills/rimotion/references/audio.md](.grok/skills/rimotion/references/audio.md). Unsupported APIs fail explicitly. Fetch/decode may be awaited during scheduling; timers, retained hosts and separate audio contexts are outside the contract. See [export audio performance](PERFORMANCE.md) for implementation details.
+Write the complete deterministic audio schedule using supported Web Audio nodes and `host.at`. Ritween compiles the graph and creates native voices near their start automatically; no project-level `host.defer` or custom scheduler is needed. Use the managed subset and enforced resource limits in [.grok/skills/ritween/references/audio.md](.grok/skills/ritween/references/audio.md). Unsupported APIs fail explicitly. Fetch/decode may be awaited during scheduling; timers, retained hosts and separate audio contexts are outside the contract. See [export audio performance](PERFORMANCE.md) for implementation details.
 
 ## Determinism rules
 
@@ -97,4 +97,4 @@ Run `npm test` and `npm run build`. Preview each cut and seek in a nonsequential
 
 ## Terminal workflow for agents
 
-Use `rimotion preview --project /path/to/project` for live browser review, `rimotion frame --project /path/to/project --time 5.2 -o frame.png --json` to inspect one GPU-rendered PNG, and `rimotion export --project /path/to/project -o video.mp4 --json` for the full composition. The same commands run from source through `node /path/to/rimotion/bin/rimotion.mjs`. Pass `--force` explicitly to replace files. Read [CLI.md](CLI.md) for install, errors, and all options.
+Use `ritween preview --project /path/to/project` for live browser review, `ritween frame --project /path/to/project --time 5.2 -o frame.png --json` to inspect one GPU-rendered PNG, and `ritween export --project /path/to/project -o video.mp4 --json` for the full composition. The same commands run from source through `node /path/to/ritween/bin/ritween.mjs`. Pass `--force` explicitly to replace files. Read [CLI.md](CLI.md) for install, errors, and all options.

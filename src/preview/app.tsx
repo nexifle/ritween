@@ -11,8 +11,8 @@ import { PreviewAudio } from "../engine/audio";
 import { exportSizes } from "../engine/export-size";
 import { Renderer } from "../engine/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
-import { project } from "virtual:rimotion-project";
-import { sources } from "virtual:rimotion-sources";
+import { project } from "virtual:ritween-project";
+import { sources } from "virtual:ritween-sources";
 import { CompositionViewer } from "./composition/composition-viewer";
 import { ErrorBanner } from "./components/error-banner";
 import { ExportPanel } from "./export/export-panel";
@@ -43,7 +43,7 @@ export function App() {
   const timeRef = useRef(0);
   const timelineRef = useRef<TimelineHandle>(null);
   const inspectorLayout = useDefaultLayout({
-    id: "rimotion-inspector",
+    id: "ritween-inspector",
     onlySaveAfterUserInteractions: true,
   });
   const patch = (value: Partial<typeof state>) =>
@@ -408,7 +408,7 @@ export function App() {
   } else {
     inspectorContent = (
       <ResizablePanelGroup
-        id="rimotion-inspector"
+        id="ritween-inspector"
         orientation="vertical"
         defaultLayout={inspectorLayout.defaultLayout}
         onLayoutChanged={inspectorLayout.onLayoutChanged}

@@ -16,10 +16,10 @@ const browser = await chromium.launch({
 });
 try {
   const page = await browser.newPage();
-  await page.goto(`${url}/__rimotion/render`);
-  await page.waitForFunction(() => !!window.rimotion);
+  await page.goto(`${url}/__ritween/render`);
+  await page.waitForFunction(() => !!window.ritween);
   const report = await page.evaluate(async () => {
-    const { project } = await import("/@id/virtual:rimotion-project");
+    const { project } = await import("/@id/virtual:ritween-project");
     const { PreviewAudio } = await import("/src/engine/audio.ts");
     let schedules = 0;
     const clips = [];
@@ -85,7 +85,7 @@ try {
   report.first = await page.evaluate(() => window.probeResult);
   report.repeat = await page.evaluate(() => window.previewProbe.play());
   report.muted = await page.evaluate(async () => {
-    const { project } = await import("/@id/virtual:rimotion-project");
+    const { project } = await import("/@id/virtual:ritween-project");
     return window.previewProbe.play(
       [project.audioTracks?.[0]?.id].filter(Boolean),
     );

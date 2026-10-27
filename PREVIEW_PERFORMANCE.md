@@ -24,7 +24,7 @@ The course's [one-shot](https://bsw.kadcom.dev/webaudio/sampel/one-shot/) and
 expensive buffers once when opening the demo, then reuse them for cheap triggers.
 Its [lookahead scheduler](https://bsw.kadcom.dev/webaudio/penjadwalan-waktu/penjadwal-lookahead/)
 separates filling the native audio schedule from visual updates. These patterns
-apply directly to Rimotion's existing graph compiler.
+apply directly to Ritween's existing graph compiler.
 
 ## Implemented behavior
 

@@ -9,7 +9,7 @@ export function StudioHeader() {
     const root = document.documentElement;
     root.classList.toggle("dark", theme === "dark");
     root.style.colorScheme = theme;
-    localStorage.setItem("rimotion-theme", theme);
+    localStorage.setItem("ritween-theme", theme);
     const color = getComputedStyle(root)
       .getPropertyValue("--background")
       .trim();
@@ -26,7 +26,7 @@ export function StudioHeader() {
         <span className="flex h-[29px] w-[29px] items-center justify-center rounded-lg bg-primary text-brand-ink">
           <Icon name="film" size={19} />
         </span>
-        rimotion
+        ritween
         <span className="ml-[3px] rounded-sm border border-badge px-1.5 py-0.5 text-[11px] font-medium tracking-normal text-badge-foreground">
           dev preview
         </span>

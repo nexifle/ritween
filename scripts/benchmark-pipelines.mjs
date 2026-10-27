@@ -97,9 +97,9 @@ try {
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     try {
-      await page.goto(`${url}/__rimotion/render`);
-      await page.waitForFunction(() => !!window.rimotion);
-      const metadata = await page.evaluate(() => window.rimotion.metadata());
+      await page.goto(`${url}/__ritween/render`);
+      await page.waitForFunction(() => !!window.ritween);
+      const metadata = await page.evaluate(() => window.ritween.metadata());
       const session = await page.context().newCDPSession(page);
       const run = async (pipeline, cache) => {
         await page.evaluate(() => {
@@ -108,7 +108,7 @@ try {
         await session.send("HeapProfiler.collectGarbage");
         const result = await page.evaluate(
           async ({ pipeline, cache, width, height }) => {
-            const { project } = await import("/@id/virtual:rimotion-project");
+            const { project } = await import("/@id/virtual:ritween-project");
             const { exportVideo } = await import("/src/engine/export.ts");
             const { renderAudio } = await import("/src/engine/audio.ts");
             // A new weak-cache key every run, including warm runs. No old PCM survives GC.

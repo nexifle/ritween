@@ -109,15 +109,15 @@ export function sceneSources(manifest) {
 }
 export function projectPlugin(manifest) {
   return {
-    name: "rimotion-project",
+    name: "ritween-project",
     resolveId(id) {
-      if (id === "virtual:rimotion-project") return "\0rimotion-project";
-      if (id === "virtual:rimotion-sources") return "\0rimotion-sources";
+      if (id === "virtual:ritween-project") return "\0ritween-project";
+      if (id === "virtual:ritween-sources") return "\0ritween-sources";
     },
     load(id) {
-      if (id === "\0rimotion-project")
+      if (id === "\0ritween-project")
         return `import * as module from ${JSON.stringify(manifest)}; export const project = Object.assign({}, module).project ?? Object.assign({}, module).default; if (!project) throw new Error('Manifest must export project or a default Project.');`;
-      if (id === "\0rimotion-sources") {
+      if (id === "\0ritween-sources") {
         const found = sceneSources(manifest);
         this.addWatchFile(manifest);
         for (const file of found.files) this.addWatchFile(file);

@@ -1,6 +1,6 @@
-# Rimotion CLI
+# Ritween CLI
 
-Rimotion serves source-authored video projects, renders a timestamp to PNG, and exports an entire composition to H.264 MP4. There is no remote service or LLM integration. Rendering remains native browser WebGPU; video encoding and MP4 muxing use the same engine as the web interface.
+Ritween serves source-authored video projects, renders a timestamp to PNG, and exports an entire composition to H.264 MP4. There is no remote service or LLM integration. Rendering remains native browser WebGPU; video encoding and MP4 muxing use the same engine as the web interface.
 
 ## Run from source
 
@@ -8,54 +8,54 @@ Requires Node.js 22.12+ (or 20.19+) and an installed Chrome. Run `npm install`, 
 
 ```sh
 # Serve the current project, with live source reload
-node bin/rimotion.mjs preview --open
+node bin/ritween.mjs preview --open
 
 # PNG at an absolute timeline timestamp
-node bin/rimotion.mjs frame --time 5.2 -o artifacts/frame.png
+node bin/ritween.mjs frame --time 5.2 -o artifacts/frame.png
 
 # Equivalent preview-to-image command
-node bin/rimotion.mjs preview --time 5.2 -o artifacts/frame.png
+node bin/ritween.mjs preview --time 5.2 -o artifacts/frame.png
 
 # Zero-based frame 156 at 30 FPS = 5.2 seconds
-node bin/rimotion.mjs frame --frame 156 --fps 30 -o artifacts/frame.png --force
+node bin/ritween.mjs frame --frame 156 --fps 30 -o artifacts/frame.png --force
 
 # MP4 of the complete project
-node bin/rimotion.mjs export -o artifacts/video.mp4 --resolution 1080p --fps 60
+node bin/ritween.mjs export -o artifacts/video.mp4 --resolution 1080p --fps 60
 ```
 
 `npm run cli -- <arguments>` is equivalent. No command automatically installs a browser.
 
 ## Install the command
 
-The published package is a Node program. `npm install -g` links `rimotion` to `bin/rimotion.mjs`, which runs on the Node.js already on the machine. npm installs the runtime dependencies for that platform, including Vite, React, Tailwind, and Playwright Core. It does not download a browser and it does not embed a second JavaScript runtime.
+The published package is a Node program. `npm install -g` links `ritween` to `bin/ritween.mjs`, which runs on the Node.js already on the machine. npm installs the runtime dependencies for that platform, including Vite, React, Tailwind, and Playwright Core. It does not download a browser and it does not embed a second JavaScript runtime.
 
 ```sh
-npm install -g rimotion
-rimotion --help
-rimotion --demo --open
-rimotion frame --demo --time 5.2 -o frame.png
-rimotion export --demo -o video.mp4
+npm install -g ritween
+ritween --help
+ritween --demo --open
+ritween frame --demo --time 5.2 -o frame.png
+ritween export --demo -o video.mp4
 ```
 
-`--demo` and `--open` start a web preview when no command is given. `rimotion preview --demo --open` is the same command.
+`--demo` and `--open` start a web preview when no command is given. `ritween preview --demo --open` is the same command.
 
-From a checkout of this repository, `npm install -g .` installs the working tree the same way. `npm pack --pack-destination release` writes `release/rimotion-0.1.0.tgz`; `npm install -g ./release/rimotion-0.1.0.tgz` installs that tarball. Chrome/Chromium and a working GPU driver remain external requirements.
+From a checkout of this repository, `npm install -g .` installs the working tree the same way. `npm pack --pack-destination release` writes `release/ritween-0.1.0.tgz`; `npm install -g ./release/ritween-0.1.0.tgz` installs that tarball. Chrome/Chromium and a working GPU driver remain external requirements.
 
 ## Render another codebase
 
 ```sh
-rimotion preview /path/to/video-project --open
-rimotion frame --project /path/to/video-project --time 1.25 -o still.png --json
-rimotion export --project /path/to/video-project -o final.mp4 --resolution 720p --fps 30 --json
-rimotion export --project /path/to/manifest.ts -o final.mp4
+ritween preview /path/to/video-project --open
+ritween frame --project /path/to/video-project --time 1.25 -o still.png --json
+ritween export --project /path/to/video-project -o final.mp4 --resolution 720p --fps 30 --json
+ritween export --project /path/to/manifest.ts -o final.mp4
 ```
 
 A project is either a manifest module, or a directory containing `src/project/manifest.ts`, `.tsx` or `.js`, `project/manifest.ts` or `.js`, or `manifest.ts`, `.tsx`, `.js` or `.mjs`. It exports a named `project` or a default Project object implementing the existing scene interface. Use `--demo` to render the bundled example from any directory. The CLI does not silently substitute the demo when a project is absent.
 
-External scenes can import the public engine API and types from `rimotion`; the CLI resolves that name to its own engine during browser compilation. Relative scene imports and Vite resource imports such as `./effect.wgsl?raw` work. Project `public/` assets are served when selecting a project directory. Package imports used by a project's scenes must be installed in that project; the CLI does not install arbitrary dependencies. Source code is executed as trusted application code. The CLI supplies its own Vite configuration and does not load a project's Vite plugins/configuration.
+External scenes can import the public engine API and types from `ritween`; the CLI resolves that name to its own engine during browser compilation. Relative scene imports and Vite resource imports such as `./effect.wgsl?raw` work. Project `public/` assets are served when selecting a project directory. Package imports used by a project's scenes must be installed in that project; the CLI does not install arbitrary dependencies. Source code is executed as trusted application code. The CLI supplies its own Vite configuration and does not load a project's Vite plugins/configuration.
 
 ```ts
-import type { Project, Scene } from "rimotion";
+import type { Project, Scene } from "ritween";
 // Create your scene factories and export a Project; see AI_AUTHORING.md.
 ```
 
@@ -79,14 +79,14 @@ npm run build
 npm run test:cli
 ```
 
-`CLI_BINARY=/path/to/rimotion npm run test:cli` runs the same suite against an installed `rimotion` command instead of `node bin/rimotion.mjs`.
+`CLI_BINARY=/path/to/ritween npm run test:cli` runs the same suite against an installed `ritween` command instead of `node bin/ritween.mjs`.
 
 The CLI integration suite invokes commands from outside the repository, checks PNG dimensions and deterministic frame equivalence, renders an independent external TSX manifest with a JS scene, checks invalid timestamps and overwrite protection, tests timeout cleanup and web preview shutdown, and exports an eight-second 240-frame MP4 that is opened and sought using native Chrome playback. It writes artifacts under `artifacts/cli/`. The browser engine validation (`npm run test:browser` with Vite running) additionally decodes all 240 frames.
 
 ## Export compression
 
 ```bash
-rimotion export ../video9 --resolution 1080x1920 --fps 60 \
+ritween export ../video9 --resolution 1080x1920 --fps 60 \
   --bitrate 6000000 --keyframe-interval 2 --latency-mode quality \
   -o video.mp4
 ```

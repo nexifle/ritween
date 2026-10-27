@@ -319,7 +319,7 @@ export function App() {
     />
   );
 
-  const renderExport = (collapsed: boolean) => (
+  const renderExport = (collapsed: boolean, borderTop = false) => (
     <ExportPanel
       ready={state.ready}
       exporting={state.exporting}
@@ -341,6 +341,7 @@ export function App() {
       result={state.result}
       download={state.download}
       collapsed={collapsed}
+      borderTop={borderTop}
       onToggleCollapse={(next) => setExportCollapsed(next)}
       onResolution={(resolution) => patch({ resolution })}
       onFps={(fps) => patch({ fps })}
@@ -349,12 +350,13 @@ export function App() {
     />
   );
 
-  const renderSource = (collapsed: boolean) =>
+  const renderSource = (collapsed: boolean, borderTop = false) =>
     state.sourceOpen ? (
       <SidebarPanel
         icon="code"
         title="Scene source"
         collapsed={collapsed}
+        borderTop={borderTop}
         onToggleCollapse={(next) => setSourceCollapsed(next)}
         contentClassName="p-3"
       >
@@ -371,6 +373,7 @@ export function App() {
         pinnedId={state.pinnedSourceId}
         expanded={state.sourceOpen}
         collapsed={collapsed}
+        borderTop={borderTop}
         onToggleCollapse={(next) => setSourceCollapsed(next)}
         onPin={pinSource}
         onFollow={followSource}
@@ -402,7 +405,7 @@ export function App() {
         <div className="flex flex-1 min-h-0 flex-col">
           {renderExport(false)}
         </div>
-        <div className="h-8 shrink-0">{renderSource(true)}</div>
+        <div className="h-8 shrink-0">{renderSource(true, true)}</div>
       </div>
     );
   } else {

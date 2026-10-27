@@ -11,6 +11,7 @@ export interface SidebarPanelProps
   defaultCollapsed?: boolean;
   collapsed?: boolean;
   onToggleCollapse?: (collapsed: boolean) => void;
+  borderTop?: boolean;
   headerClassName?: string;
   contentClassName?: string;
   children: ReactNode;
@@ -25,6 +26,7 @@ export function SidebarPanel({
   defaultCollapsed = false,
   collapsed: controlledCollapsed,
   onToggleCollapse,
+  borderTop = false,
   className = "",
   headerClassName = "",
   contentClassName = "",
@@ -52,7 +54,9 @@ export function SidebarPanel({
     >
       {/* Header Sidebar: Seragam antar sidebar item */}
       <div
-        className={`flex h-8 shrink-0 select-none items-center justify-between border-b border-separator px-2.5 py-1 text-[11px] ${headerClassName}`}
+        className={`flex h-8 shrink-0 select-none items-center justify-between border-b border-separator px-2.5 py-1 text-[11px] ${
+          borderTop ? "border-t border-separator" : ""
+        } ${headerClassName}`}
       >
         {/* Left: Icon, Title, and optional Subtitle */}
         <div

@@ -25,6 +25,7 @@ export const SceneSource = memo(function SceneSource({
   expanded = false,
   collapsed,
   onToggleCollapse,
+  borderTop,
 }: {
   scenes: readonly SceneEntry[];
   sources: Record<string, string | null>;
@@ -36,6 +37,7 @@ export const SceneSource = memo(function SceneSource({
   expanded?: boolean;
   collapsed?: boolean;
   onToggleCollapse?: (collapsed: boolean) => void;
+  borderTop?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const shownId =
@@ -71,6 +73,7 @@ export const SceneSource = memo(function SceneSource({
       subtitle={scene.name}
       collapsed={collapsed}
       onToggleCollapse={onToggleCollapse}
+      borderTop={borderTop}
       actions={
         <>
           {pinnedId && (

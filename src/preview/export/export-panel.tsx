@@ -30,6 +30,7 @@ export function ExportPanel({
   onFps,
   onExport,
   onCancel,
+  borderTop,
 }: {
   ready: boolean;
   exporting: boolean;
@@ -56,9 +57,11 @@ export function ExportPanel({
   onFps: (fps: number) => void;
   onExport: () => void;
   onCancel: () => void;
+  borderTop?: boolean;
 }) {
   return (
     <SidebarPanel
+      borderTop={borderTop}
       icon="export"
       title="Export video"
       collapsed={collapsed}

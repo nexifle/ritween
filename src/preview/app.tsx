@@ -14,7 +14,7 @@ import { exportSizes } from "../engine/export/formats/mp4/sizes";
 import { Renderer } from "../engine/render/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
 import {
-  project as sourceProject,
+  project as authoredProject,
   authoredSettings,
   savedSettings,
 } from "virtual:ritween-project";
@@ -39,11 +39,17 @@ import { StudioHeader } from "./layout/studio-header";
 import { Timeline, type TimelineHandle } from "./timeline/timeline";
 import { Transport } from "./playback/transport";
 
+import { resolveMediaProject } from "../engine/media/project";
+
+const sourceProject = resolveMediaProject(authoredProject);
+
 export function App() {
   const {
     project,
     mutedTrackIds,
+    mutedClipIds,
     toggleTrackMute,
+    toggleClipMute,
     updateExportSettings,
     saving: savingSettings,
     error: settingsError,
@@ -75,6 +81,11 @@ export function App() {
   const alive = useRef(true);
   const audio = useRef<PreviewAudio | null>(null);
   const timeRef = useRef(0);
+  const previewRequest = useRef<number | null>(null);
+  const previewAbort = useRef<AbortController | null>(null);
+  const previewActiveTime = useRef<number | null>(null);
+  const previewRunning = useRef(false);
+  const renderedPreviewTime = useRef<number | null>(null);
   const timelineRef = useRef<TimelineHandle>(null);
   const inspectorLayout = usePersistentLayout("ritween-inspector", [
     "export",
@@ -103,6 +114,65 @@ export function App() {
     if (!audio.current) audio.current = new PreviewAudio();
     return audio.current;
   };
+  const requestPreviewFrame = (time: number) => {
+    if (
+      previewActiveTime.current === time &&
+      !previewAbort.current?.signal.aborted
+    ) {
+      previewRequest.current = null;
+      return;
+    }
+    previewRequest.current = time;
+    if (previewRunning.current) return;
+
+    previewRunning.current = true;
+    const renderLatest = async () => {
+      try {
+        while (previewRequest.current !== null && alive.current) {
+          const next = previewRequest.current;
+          previewRequest.current = null;
+          const controller = new AbortController();
+          previewAbort.current = controller;
+          previewActiveTime.current = next;
+          try {
+            const activeRenderer = renderer.current;
+            if (!activeRenderer) break;
+            await activeRenderer.renderAsync(next, controller.signal);
+            if (!controller.signal.aborted && timeRef.current === next)
+              renderedPreviewTime.current = next;
+          } catch (error) {
+            const isAbort =
+              controller.signal.aborted ||
+              (error as { name?: string } | null)?.name === "AbortError";
+            if (!isAbort && alive.current)
+              patch({
+                error: error instanceof Error ? error.message : String(error),
+                playing: false,
+                ready: false,
+              });
+          } finally {
+            if (previewAbort.current === controller)
+              previewAbort.current = null;
+            if (previewActiveTime.current === next)
+              previewActiveTime.current = null;
+          }
+        }
+      } finally {
+        previewRunning.current = false;
+      }
+    };
+    void renderLatest().catch((error) => {
+      if (
+        alive.current &&
+        (error as { name?: string } | null)?.name !== "AbortError"
+      )
+        patch({
+          error: error instanceof Error ? error.message : String(error),
+          playing: false,
+          ready: false,
+        });
+    });
+  };
   timeRef.current = state.time;
   useEffect(() => {
     alive.current = true;
@@ -116,13 +186,14 @@ export function App() {
         if (!cancelled) patch({ error, playing: false, ready: false });
       },
       initialization.signal,
-    ).then((r) => {
+    ).then(async (r) => {
       if (cancelled) {
         r.dispose();
         return;
       }
       renderer.current = r;
-      r.render(0);
+      await r.renderAsync(0, initialization.signal);
+      renderedPreviewTime.current = 0;
     });
     // Download/decode and record the score alongside GPU setup. Once the
     // transport is enabled, first Play has the same prepared score as replay.
@@ -144,6 +215,9 @@ export function App() {
       alive.current = false;
       cancelled = true;
       initialization.abort();
+      previewRequest.current = null;
+      previewAbort.current?.abort();
+      previewAbort.current = null;
       abort.current?.abort();
       renderer.current?.dispose();
       renderer.current = null;
@@ -153,16 +227,24 @@ export function App() {
     };
   }, []);
   useEffect(() => {
-    if (!state.ready) return;
-    try {
-      renderer.current?.render(state.time);
-    } catch (e) {
-      patch({ error: String(e), playing: false, ready: false });
+    if (!state.ready) {
+      previewRequest.current = null;
+      previewAbort.current?.abort();
+      return;
     }
+    if (renderedPreviewTime.current !== state.time || previewRunning.current)
+      requestPreviewFrame(state.time);
   }, [state.time, state.ready]);
-  const mutedKey = mutedTrackIds.join("\0");
+  const mutedKey = JSON.stringify([mutedTrackIds, mutedClipIds]);
   useEffect(() => {
-    audio.current?.setMuted(mutedTrackIds);
+    void audio.current?.setMuted(mutedTrackIds, mutedClipIds).catch((error) => {
+      const isAbort =
+        (error as { name?: string } | null)?.name === "AbortError";
+      if (alive.current && !isAbort)
+        patch({
+          error: error instanceof Error ? error.message : String(error),
+        });
+    });
   }, [mutedKey]);
   useEffect(() => {
     const player = audio.current;
@@ -177,13 +259,15 @@ export function App() {
     const player = mix();
     player.setMonitor(state.volumeDb, state.masterMuted);
     let cancelled = false;
-    void player.play(timeRef.current, project, mutedTrackIds).catch((e) => {
-      if (!cancelled)
-        patch({
-          error: e instanceof Error ? e.message : String(e),
-          playing: false,
-        });
-    });
+    void player
+      .play(timeRef.current, project, mutedTrackIds, mutedClipIds)
+      .catch((e) => {
+        if (!cancelled)
+          patch({
+            error: e instanceof Error ? e.message : String(e),
+            playing: false,
+          });
+      });
     let id = 0;
     let last = performance.now();
     const tick = (now: number) => {
@@ -222,9 +306,20 @@ export function App() {
     dispatch({ type: "toggle" });
   };
   const seekTo = (time: number) => {
+    const target = Math.max(0, Math.min(project.duration, time));
+    timeRef.current = target;
+    if (
+      previewActiveTime.current === target &&
+      !previewAbort.current?.signal.aborted
+    )
+      previewRequest.current = null;
+    else {
+      previewAbort.current?.abort();
+      previewRequest.current = null;
+      if (state.ready) requestPreviewFrame(target);
+    }
     dispatch({ type: "seek", time });
-    if (state.playing)
-      audio.current?.seek(Math.max(0, Math.min(project.duration, time)));
+    if (state.playing) audio.current?.seek(target);
   };
   const seekAndReveal = (time: number) => {
     seekTo(time);
@@ -399,7 +494,9 @@ export function App() {
         void updateExportSettings({ keyFrameInterval })
       }
       duration={project.duration}
-      hasAudio={audibleAudioTracks(project).length > 0}
+      hasAudio={audibleAudioTracks(project).some((track) =>
+        track.clips.some((clip) => !mutedClipIds.includes(clip.id)),
+      )}
       done={state.done}
       total={state.total}
       result={state.result}
@@ -579,9 +676,11 @@ export function App() {
               audioTracks={project.audioTracks ?? []}
               activeSceneId={active.id}
               mutedTrackIds={mutedTrackIds}
+              mutedClipIds={mutedClipIds}
               onZoom={(zoom) => dispatch({ type: "tlZoom", zoom })}
               onSeek={seekTo}
               onToggleMute={toggleTrackMute}
+              onToggleClipMute={toggleClipMute}
               savingSettings={savingSettings}
               onOpenSource={pinSource}
             />

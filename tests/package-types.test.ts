@@ -28,7 +28,18 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
   };
   try {
     const packed = JSON.parse(
-      run("npm", ["pack", "--json", "--pack-destination", temporary], root),
+      run(
+        process.execPath,
+        [
+          process.env.npm_execpath ??
+            join(process.execPath, "..", "node_modules/npm/bin/npm-cli.js"),
+          "pack",
+          "--json",
+          "--pack-destination",
+          temporary,
+        ],
+        root,
+      ),
     );
     const consumer = join(temporary, "consumer");
     const modules = join(consumer, "node_modules");
@@ -59,7 +70,7 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
     symlinkSync(
       join(root, "node_modules/@webgpu/types"),
       join(modules, "@webgpu/types"),
-      "dir",
+      process.platform === "win32" ? "junction" : "dir",
     );
     writeFileSync(
       join(consumer, "package.json"),
@@ -84,7 +95,7 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
     );
     writeFileSync(
       join(consumer, "consumer.ts"),
-      `import { parseProjectSettings, mergeProjectSettings, validateProject } from "ritween";
+      `import { parseProjectSettings, mergeProjectSettings, validateProject, videoClip, imageScene, audioFile, videoResource, loadVideoTexture, loadImageTexture } from "ritween";
 import type { Project, ProjectSettings } from "ritween";
 const settings: ProjectSettings = mergeProjectSettings(undefined, parseProjectSettings({ version: 1 }));
 const version: 1 = settings.version;
@@ -99,7 +110,15 @@ const project: Project = {
     create: () => ({ setup() {}, render() {}, dispose() {} }) }],
 };
 validateProject(project);
-void version;
+const footage = videoResource({ id: "footage", name: "Footage", url: "/shot.mp4", start: 0, duration: 1 });
+project.mediaClips = [footage];
+project.scenes = [videoClip({ id: "video", name: "Video", source: "manifest.ts", url: "/shot.mp4", start: 0,
+  trim: { in: 0, out: 1 }, audio: { muted: false } })];
+const still = imageScene({ id: "image", name: "Image", source: "manifest.ts", url: "/logo.png", start: 0, duration: 1,
+  transform: ({ localTime }) => ({ opacity: localTime, rotation: 0 }) });
+const music = audioFile({ url: "/bgm.wav", volume: 0.2, loop: true });
+project.settings = { version: 1, audioClips: { footage: { muted: false } } };
+void [version, still, music, loadVideoTexture, loadImageTexture];
 `,
     );
     run(

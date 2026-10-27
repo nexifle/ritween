@@ -7,6 +7,7 @@ import {
   parseProjectSettings,
   mergeProjectSettings,
   audibleAudioTracks,
+  mutedAudioClipIds,
 } from "../src/engine/project-settings";
 import { renderAudio } from "../src/engine/audio";
 import type { Project } from "../src/engine/types";
@@ -57,10 +58,16 @@ test("entity settings override authored defaults per property and keep stable ID
     {
       version: 1,
       audioTracks: { voice: { muted: true }, music: { muted: true } },
+      audioClips: { voice: { muted: true }, music: { muted: true } },
     },
-    { version: 1, audioTracks: { voice: { muted: false } } },
+    {
+      version: 1,
+      audioTracks: { voice: { muted: false } },
+      audioClips: { voice: { muted: false } },
+    },
   );
   const effective = { ...project, settings };
+  assert.deepEqual(mutedAudioClipIds(effective), ["music"]);
   assert.deepEqual(
     audibleAudioTracks(effective).map((track) => track.id),
     ["voice"],
@@ -79,6 +86,42 @@ test("entity settings override authored defaults per property and keep stable ID
   );
 });
 
+test("clip mute resolves saved settings over authored defaults while track mute gates every clip", () => {
+  const source = project.audioTracks![0].clips[0];
+  const clips = [
+    { ...source, id: "authored-muted", muted: true },
+    { ...source, id: "saved-muted", muted: false },
+    { ...source, id: "saved-unmuted", muted: true },
+  ];
+  const effective = {
+    ...project,
+    audioTracks: [{ id: "footage", name: "Footage", clips }],
+    settings: {
+      version: 1 as const,
+      audioTracks: { footage: { muted: true } },
+      audioClips: {
+        "saved-muted": { muted: true },
+        "saved-unmuted": { muted: false },
+      },
+    },
+  };
+  assert.deepEqual(mutedAudioClipIds(effective), [
+    "authored-muted",
+    "saved-muted",
+  ]);
+  assert.deepEqual(audibleAudioTracks(effective), []);
+  assert.deepEqual(
+    audibleAudioTracks({
+      ...effective,
+      settings: {
+        ...effective.settings,
+        audioTracks: { footage: { muted: false } },
+      },
+    }).map((track) => track.id),
+    ["footage"],
+  );
+});
+
 test("all-muted exports omit the soundtrack without constructing audio sources or a context", async () => {
   const muted = {
     ...project,
@@ -88,6 +131,44 @@ test("all-muted exports omit the soundtrack without constructing audio sources o
     },
   };
   assert.equal(await renderAudio(muted, [], 30), null);
+  assert.equal(
+    await renderAudio(
+      {
+        ...project,
+        settings: {
+          version: 1,
+          audioClips: {
+            voice: { muted: true },
+            music: { muted: true },
+          },
+        },
+      },
+      [],
+      30,
+    ),
+    null,
+  );
+  assert.equal(
+    await renderAudio(
+      {
+        ...project,
+        audioTracks: [],
+        mediaClips: [
+          {
+            id: "footage",
+            name: "Footage",
+            url: "./footage.mp4",
+            start: 0,
+            duration: 1,
+            muted: true,
+          },
+        ],
+      },
+      [],
+      30,
+    ),
+    null,
+  );
 });
 
 test("schema rejects malformed or unsupported data and commands", () => {
@@ -97,12 +178,16 @@ test("schema rejects malformed or unsupported data and commands", () => {
     { version: 2 },
     { version: 1, audioTracks: [] },
     { version: 1, audioTracks: { voice: { muted: "yes" } } },
+    { version: 1, audioClips: [] },
+    { version: 1, audioClips: { voice: { muted: "yes" } } },
   ])
     assert.throws(() => parseProjectSettings(value));
   for (const value of [
     {},
     { type: "set-audio-track-muted", id: "", muted: true },
     { type: "set-audio-track-muted", id: "a", muted: 1 },
+    { type: "set-audio-clip-muted", id: "", muted: true },
+    { type: "set-audio-clip-muted", id: "clip", muted: 1 },
   ])
     assert.throws(() => parseSettingsCommand(value));
 });
@@ -119,6 +204,7 @@ test("save and reload preserve unrelated fields, explicit unmute and authored so
         version: 1,
         scenes: { intro: { visible: false } },
         audioTracks: { music: { muted: true, gain: 0.5 } },
+        audioClips: { footage: { muted: false, note: "preserve" } },
       }),
     );
     await writeSettingsCommand(manifest, {
@@ -131,14 +217,23 @@ test("save and reload preserve unrelated fields, explicit unmute and authored so
       id: "voice",
       muted: false,
     });
+    await writeSettingsCommand(manifest, {
+      type: "set-audio-clip-muted",
+      id: "footage",
+      muted: true,
+    });
     const data = JSON.parse(await readFile(settingsPath(manifest), "utf8"));
     assert.deepEqual(data.audioTracks, {
       music: { muted: true, gain: 0.5 },
       voice: { muted: false },
     });
+    assert.deepEqual(data.audioClips, {
+      footage: { muted: true, note: "preserve" },
+    });
     assert.deepEqual(data.scenes, { intro: { visible: false } });
     assert.equal(await readFile(manifest, "utf8"), "export default {};\n");
     assert.equal(readProjectSettings(manifest).audioTracks?.voice.muted, false);
+    assert.equal(readProjectSettings(manifest).audioClips?.footage.muted, true);
     await writeFile(settingsPath(manifest), '{"version":1}');
     await writeSettingsCommand(manifest, {
       type: "set-audio-track-muted",
@@ -160,13 +255,25 @@ test("save and reload preserve unrelated fields, explicit unmute and authored so
   }
 });
 
-test("settings writes cannot follow a symlink to a different file", async () => {
+test("settings writes cannot follow a symlink to a different file", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ritween-settings-"));
   try {
     const manifest = join(directory, "manifest.ts");
     const outside = join(directory, "other.json");
     await writeFile(outside, '{"version":1}');
-    await symlink(outside, settingsPath(manifest));
+    try {
+      await symlink(outside, settingsPath(manifest));
+    } catch (error) {
+      if (
+        process.platform !== "win32" ||
+        (error as NodeJS.ErrnoException).code !== "EPERM"
+      )
+        throw error;
+      t.skip(
+        "File symlinks require Windows Developer Mode or elevated privileges.",
+      );
+      return;
+    }
     await assert.rejects(
       writeSettingsCommand(manifest, {
         type: "set-audio-track-muted",

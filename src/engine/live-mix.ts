@@ -1,4 +1,8 @@
-import { audibleAudioTracks, mutedAudioTrackIds } from "./project-settings";
+import {
+  audibleAudioTracks,
+  mutedAudioClipIds,
+  mutedAudioTrackIds,
+} from "./project-settings";
 import { validateProject } from "./timeline";
 import type { AudioClip, Project } from "./types";
 
@@ -242,6 +246,19 @@ export function valueAt(
   return value;
 }
 
+/** Advance a buffer offset using native loop playback's first pass and loop range. */
+export function offsetAfterElapsed(
+  offset: number,
+  elapsed: number,
+  loopStart: number,
+  loopEnd: number,
+) {
+  const advanced = offset + Math.max(0, elapsed);
+  const loopDuration = loopEnd - loopStart;
+  if (loopDuration <= 0 || advanced < loopEnd) return advanced;
+  return loopStart + ((advanced - loopEnd) % loopDuration);
+}
+
 export type MixNode = {
   id: number;
   kind: string;
@@ -367,7 +384,7 @@ class Recorded {
   playDuration: number | null = null;
   readonly outs: Edge[] = [];
   constructor(
-    readonly id: number,
+    public id: number,
     readonly kind: string,
     readonly options: Record<string, unknown>,
     private readonly budget?: Budget,
@@ -692,6 +709,7 @@ type Voice = { ids: number[]; start: number; stop: number };
 
 type ClipBus = {
   trackId: string;
+  clipId: string;
   mute: GainNode;
   gain: AudioParam;
   start: number;
@@ -706,6 +724,10 @@ type Score = {
   shared: number[];
   buses: ClipBus[];
 };
+
+function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>) {
+  return left.size === right.size && [...left].every((item) => right.has(item));
+}
 
 function toMixNode(node: Recorded): MixNode {
   return {
@@ -738,9 +760,13 @@ async function recordScoreUnlocked(
   project: Project,
   mutedTrackIds: readonly string[],
   signal?: AbortSignal,
+  mutedClipIds: readonly string[] = [],
 ) {
   signal?.throwIfAborted();
-  const tracks = audibleAudioTracks(project, mutedTrackIds);
+  const mutedClips = new Set(mutedClipIds);
+  const tracks = audibleAudioTracks(project, mutedTrackIds).filter((track) =>
+    track.clips.some((clip) => !mutedClips.has(clip.id)),
+  );
   const nodes: Recorded[] = [];
   const buses: ClipBus[] = [];
   if (!tracks.length)
@@ -765,7 +791,8 @@ async function recordScoreUnlocked(
   const recorder = installRecorder(ctx, nodes, budget);
   try {
     for (const track of tracks) {
-      for (const clip of track.clips)
+      for (const clip of track.clips) {
+        if (mutedClips.has(clip.id)) continue;
         await recordClip(
           ctx,
           recorder.context,
@@ -778,6 +805,7 @@ async function recordScoreUnlocked(
           budget,
           signal,
         );
+      }
     }
     const grouped = groupVoices(nodes.map(toMixNode));
     return {
@@ -819,6 +847,7 @@ async function recordClip(
   bus.connect(mute).connect(sum);
   buses.push({
     trackId,
+    clipId: clip.id,
     mute,
     gain: bus.gain,
     start: clip.start,
@@ -851,6 +880,7 @@ async function recordClip(
     await Promise.race([
       clip.create().schedule({
         context: authorContext,
+        signal,
         destination,
         start: clip.start,
         duration: clip.duration,
@@ -1001,9 +1031,17 @@ export async function prepareOfflineAudio(
   project: Project,
   mutedTrackIds: readonly string[],
   signal?: AbortSignal,
+  mutedClipIds: readonly string[] = [],
 ) {
   signal?.throwIfAborted();
-  const score = await recordScore(ctx, sum, project, mutedTrackIds, signal);
+  const score = await recordScore(
+    ctx,
+    sum,
+    project,
+    mutedTrackIds,
+    signal,
+    mutedClipIds,
+  );
   signal?.throwIfAborted();
   const live = new Map<number, AudioNode>();
   const materialize = (ids: readonly number[]) => {
@@ -1088,7 +1126,9 @@ export class LiveMix {
   private preparation: Promise<boolean> | null = null;
   private preparationAbort: AbortController | null = null;
   private disposed = false;
-  private muted = new Set<string>();
+  private preparedClipIds = new Set<string>();
+  private mutedTracks = new Set<string>();
+  private mutedClips = new Set<string>();
   private origin = 0;
   private startOffset = 0;
   private nextVoice = 0;
@@ -1114,28 +1154,100 @@ export class LiveMix {
     this.sum.connect(this.limiter).connect(monitor);
   }
 
-  prepare(project: Project, mutedTrackIds: readonly string[]) {
+  prepare(
+    project: Project,
+    mutedTrackIds: readonly string[],
+    mutedClipIds: readonly string[] = [],
+  ) {
     if (this.disposed)
       return Promise.reject(Error("Preview audio is disposed."));
     validateProject(project);
-    this.setMuted([...mutedAudioTrackIds(project), ...mutedTrackIds]);
-    if (this.project === project) {
-      if (this.score) return Promise.resolve(this.score.audible);
-      if (this.preparation) return this.preparation;
+    const sameAudio =
+      this.project?.audioTracks === project.audioTracks &&
+      this.project?.duration === project.duration;
+    const nextMutedTracks = new Set([
+      ...mutedAudioTrackIds(project),
+      ...mutedTrackIds,
+    ]);
+    const nextMutedClips = new Set([
+      ...mutedAudioClipIds(project),
+      ...mutedClipIds,
+    ]);
+    const sameMuteState =
+      sameSet(this.mutedTracks, nextMutedTracks) &&
+      sameSet(this.mutedClips, nextMutedClips);
+    if (!sameAudio) {
+      this.stop();
+      this.preparationAbort?.abort();
+      this.preparation = null;
+      this.dropBuses();
+      this.score = null;
+      this.preparedClipIds.clear();
+      this.project = project;
+      this.preparationAbort = new AbortController();
+    } else {
+      this.project = project;
     }
-    this.stop();
-    this.preparationAbort?.abort();
-    this.dropBuses();
-    this.score = null;
-    this.project = project;
-    const controller = new AbortController();
-    this.preparationAbort = controller;
-    // Compile all tracks once. Muting controls a separate gain, preserving the
-    // score, decoded buffers, routing and effect state across monitor changes.
+    this.applyMuteState([...nextMutedTracks], [...nextMutedClips]);
+    // Preserve promise identity for callers racing the same preparation. A later
+    // unmute starts a separate lazy batch, so its errors do not block picture setup.
+    if (sameAudio) {
+      if (this.preparation && sameMuteState) return this.preparation;
+      return this.ensurePrepared();
+    }
+    return this.prepareMissingBatch();
+  }
+
+  setMuted(trackIds: readonly string[], clipIds: readonly string[] = []) {
+    this.applyMuteState(trackIds, clipIds);
+    return this.ensurePrepared().then(() => {});
+  }
+
+  private applyMuteState(
+    trackIds: readonly string[],
+    clipIds: readonly string[],
+  ) {
+    this.mutedTracks = new Set(trackIds);
+    this.mutedClips = new Set(clipIds);
+    for (const bus of this.score?.buses ?? []) {
+      const value =
+        this.mutedTracks.has(bus.trackId) || this.mutedClips.has(bus.clipId)
+          ? 0
+          : 1;
+      bus.mute.gain.setTargetAtTime(value, this.ctx.currentTime, 0.005);
+    }
+  }
+
+  private ensurePrepared(): Promise<boolean> {
+    if (this.disposed)
+      return Promise.reject(Error("Preview audio is disposed."));
+    if (this.preparation)
+      return this.preparation.then(() => this.ensurePrepared());
+    return this.prepareMissingBatch();
+  }
+
+  private prepareMissingBatch(): Promise<boolean> {
+    const project = this.project;
+    const controller = this.preparationAbort;
+    if (!project || !controller) return Promise.resolve(false);
+    const selected = new Set<string>();
+    for (const track of project.audioTracks ?? []) {
+      if (this.mutedTracks.has(track.id)) continue;
+      for (const clip of track.clips)
+        if (!this.mutedClips.has(clip.id) && !this.preparedClipIds.has(clip.id))
+          selected.add(clip.id);
+    }
+    if (!selected.size) return Promise.resolve(this.score?.audible ?? false);
+
+    const audioTracks = (project.audioTracks ?? []).flatMap((track) => {
+      const clips = track.clips.filter((clip) => selected.has(clip.id));
+      return clips.length ? [{ ...track, clips }] : [];
+    });
+    const batchProject = { ...project, settings: undefined, audioTracks };
     const pending = recordScore(
       this.ctx,
       this.sum,
-      { ...project, settings: undefined },
+      batchProject,
       [],
       controller.signal,
     )
@@ -1147,10 +1259,16 @@ export class LiveMix {
           }
           controller.signal.throwIfAborted();
         }
-        score.voices.sort((a, b) => a.start - b.start);
-        this.score = score;
-        this.setMuted([...this.muted]);
-        return score.audible;
+        for (const clipId of selected) this.preparedClipIds.add(clipId);
+        this.appendScore(score);
+        if (this.playing && score.audible) {
+          const now = Math.max(
+            this.startOffset,
+            this.ctx.currentTime - this.origin,
+          );
+          this.rebuild(now);
+        }
+        return this.score?.audible ?? false;
       })
       .finally(() => {
         if (this.preparation === pending) this.preparation = null;
@@ -1159,12 +1277,29 @@ export class LiveMix {
     return pending;
   }
 
-  setMuted(trackIds: readonly string[]) {
-    this.muted = new Set(trackIds);
-    for (const bus of this.score?.buses ?? []) {
-      const value = this.muted.has(bus.trackId) ? 0 : 1;
-      bus.mute.gain.setTargetAtTime(value, this.ctx.currentTime, 0.005);
-    }
+  private appendScore(incoming: Score) {
+    const current =
+      this.score ??
+      ({
+        audible: false,
+        nodes: [],
+        voices: [],
+        shared: [],
+        buses: [],
+      } satisfies Score);
+    const offset = current.nodes.length;
+    for (let index = 0; index < incoming.nodes.length; index++)
+      incoming.nodes[index].id = offset + index;
+    const nodes = [...current.nodes, ...incoming.nodes];
+    const grouped = groupVoices(nodes.map(toMixNode));
+    this.score = {
+      audible: current.audible || incoming.audible,
+      nodes,
+      voices: grouped.voices.sort((a, b) => a.start - b.start),
+      shared: grouped.shared,
+      buses: [...current.buses, ...incoming.buses],
+    };
+    this.applyMuteState([...this.mutedTracks], [...this.mutedClips]);
   }
 
   get audible() {
@@ -1321,8 +1456,12 @@ export class LiveMix {
           node.playDuration == null
             ? undefined
             : Math.max(0.01, node.playDuration - late);
-        if (duration == null) source.start(when, node.offset + late);
-        else source.start(when, node.offset + late, duration);
+        const loopEnd = source.loopEnd || source.buffer?.duration || 0;
+        const offset = source.loop
+          ? offsetAfterElapsed(node.offset, late, source.loopStart, loopEnd)
+          : node.offset + late;
+        if (duration == null) source.start(when, offset);
+        else source.start(when, offset, duration);
       } else source.start(when);
       source.stop(Math.max(end, when + 0.01));
     } catch {

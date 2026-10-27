@@ -12,6 +12,7 @@ const directory = await mkdtemp(join(tmpdir(), "ritween-settings-browser-"));
 const manifest = join(directory, "manifest.js");
 let server;
 let browser;
+let page;
 try {
   await writeFile(
     manifest,
@@ -39,24 +40,31 @@ try {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--autoplay-policy=user-gesture-required"],
   });
-  const page = await browser.newPage({
+  page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
   });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(running.url);
   await page.getByText("Runtime connected", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Mute voice", exact: true }).click();
   await page
+    .getByTestId("track-names")
+    .getByRole("button", { name: "Mute voice", exact: true })
+    .click();
+  await page
+    .getByTestId("track-names")
     .getByRole("button", { name: "Unmute voice", exact: true })
     .waitFor();
-  const unmute = page.getByRole("button", {
+  const unmute = page.getByTestId("track-names").getByRole("button", {
     name: "Unmute voice",
     exact: true,
   });
   assert.equal(await unmute.getAttribute("aria-pressed"), "true");
   await unmute.click();
-  await page.getByRole("button", { name: "Mute voice", exact: true }).waitFor();
+  await page
+    .getByTestId("track-names")
+    .getByRole("button", { name: "Mute voice", exact: true })
+    .waitFor();
   assert.equal(
     JSON.parse(await readFile(settingsPath(manifest), "utf8")).audioTracks.voice
       .muted,
@@ -64,8 +72,12 @@ try {
   );
   await page.reload();
   await page.getByText("Runtime connected", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Mute voice", exact: true }).click();
   await page
+    .getByTestId("track-names")
+    .getByRole("button", { name: "Mute voice", exact: true })
+    .click();
+  await page
+    .getByTestId("track-names")
     .getByRole("button", { name: "Unmute voice", exact: true })
     .waitFor();
   // A failed filesystem update must leave the last saved mute in effect.
@@ -76,12 +88,16 @@ try {
       body: JSON.stringify({ error: "fixture disk failure" }),
     }),
   );
-  await page.getByRole("button", { name: "Unmute voice", exact: true }).click();
+  await page
+    .getByTestId("track-names")
+    .getByRole("button", { name: "Unmute voice", exact: true })
+    .click();
   await page
     .getByText("Mute was not saved: fixture disk failure", { exact: true })
     .waitFor();
   assert.equal(
     await page
+      .getByTestId("track-names")
       .getByRole("button", { name: "Unmute voice", exact: true })
       .getAttribute("aria-pressed"),
     "true",
@@ -233,6 +249,9 @@ try {
   console.log(
     "PASS: persisted mute and export controls, reload, save failures, CLI defaults and explicit overrides, excluded audio sources and video-only MP4.",
   );
+} catch (error) {
+  if (page) console.error(await page.locator("body").innerText());
+  throw error;
 } finally {
   await browser?.close();
   await server?.close();

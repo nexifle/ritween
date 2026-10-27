@@ -12,11 +12,13 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
+import { nodeCli } from "./node-cli.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
-const executable = process.env.CLI_BINARY
-  ? resolve(process.env.CLI_BINARY)
-  : process.execPath;
-const prefix = process.env.CLI_BINARY ? [] : [join(root, "bin/ritween.mjs")];
+const cli = process.env.CLI_BINARY
+  ? nodeCli(resolve(process.env.CLI_BINARY))
+  : { command: process.execPath, args: [join(root, "bin/ritween.mjs")] };
+const executable = cli.command;
+const prefix = cli.args;
 const directory = await mkdtemp(join(tmpdir(), "ritween-cli-test-"));
 const artifacts = join(root, "artifacts/cli");
 await mkdir(artifacts, { recursive: true });
@@ -251,7 +253,8 @@ try {
     }
     const closed = new Promise((resolve) => preview.on("exit", resolve));
     preview.kill("SIGINT");
-    assert.equal(await closed, 0);
+    // Windows terminates the process instead of delivering POSIX SIGINT.
+    assert.equal(await closed, process.platform === "win32" ? null : 0);
   } finally {
     if (preview.exitCode === null) preview.kill("SIGTERM");
   }

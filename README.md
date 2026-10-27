@@ -151,6 +151,29 @@ This is a lifecycle outline; use the bundled scenes for complete rendering imple
 
 Scene modules execute as application code. Use trusted source modules. TSX files are supported as modules; JSX is not automatically converted into GPU graphics.
 
+## Aset media lokal
+
+Ritween menyediakan helper `audioFile`, `imageScene`, dan `videoClip`, serta `loadImageTexture`, `videoResource`, dan `loadVideoTexture` untuk custom scene WebGPU. Letakkan file dalam `public/` proyek: `public/media/shot.mp4` diakses sebagai `/media/shot.mp4`.
+
+```ts
+videoClip({
+  id: "opening",
+  name: "Opening",
+  source: "manifest.ts",
+  url: "/media/shot.mp4",
+  start: 0,
+  trim: { in: 2, out: 7 },
+  fit: "cover",
+  audio: { muted: false },
+});
+```
+
+Helper tersebut menghasilkan scene lima detik dan audio footage terkait. Mute per clip dapat diatur melalui kode dan studio; override `settings.audioClips[id].muted` tersimpan pada sidecar serta digunakan saat export. Gambar tetap tampil saat audio di-mute.
+
+Untuk beberapa gambar/video, posisi 2D/3D, mask, atau shader khusus, gunakan resource texture dalam scene sendiri. Daftarkan descriptor video di `project.mediaClips` atau `scene.mediaClips` untuk audio terkait. Scene dengan `prepareFrame` asinkron menggunakan `Renderer.renderAsync`; `render` tetap sinkron.
+
+Input video memakai pembaca MP4 internal dan WebCodecs browser, tanpa dependency media pihak ketiga baru. Cakupan awal adalah MP4 non-fragmented H.264/AAC dengan batas memori; format/struktur yang tidak didukung ditolak eksplisit. Lihat [panduan aset media](skills/ritween/references/media-assets.md) untuk contoh lengkap dan batas validasi.
+
 ## Use the studio
 
 1. Edit the manifest and scene modules.
@@ -162,7 +185,7 @@ Export sizes preserve the project aspect ratio, using an even frame size with a 
 
 ### Project settings and browser preferences
 
-Track mutes and export options are saved beside the manifest in `manifest.settings.json`. Commit this sidecar with your project so preview, CLI export, and production builds use the same settings. Saving requires a development or CLI preview server; a static deployment cannot write source files.
+Mute track/clip dan opsi export disimpan di sebelah manifest dalam `manifest.settings.json`. Sertakan sidecar ini dalam version control agar preview, CLI export, dan production build memakai setting yang sama. Penyimpanan membutuhkan server development atau CLI preview; deployment statis tidak dapat menulis file sumber.
 
 CLI export resolves settings in this order: **explicit flags → saved project settings → framework defaults**. Muted tracks are excluded from exported audio; preview volume and master mute only affect listening.
 

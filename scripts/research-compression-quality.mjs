@@ -43,7 +43,7 @@ try {
       }
       return images;
     },
-    { times, projectModule: "/@fs" + project.manifest },
+    { times, projectModule: "/@id/virtual:ritween-project" },
   );
   for (let i = 0; i < images.length; i++)
     await writeFile(

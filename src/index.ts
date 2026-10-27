@@ -2,6 +2,8 @@
 export type {
   Scene,
   SceneEntry,
+  FramePreparationContext,
+  MediaClip,
   Project,
   SetupContext,
   RenderContext,
@@ -15,6 +17,22 @@ export type {
   ProjectExportSettings,
 } from "./engine/types";
 export { Renderer } from "./engine/render/renderer";
+export { audioFile } from "./engine/media/audio-file";
+export type { AudioFileOptions } from "./engine/media/audio-file";
+export {
+  imageScene,
+  videoClip,
+  videoResource,
+  loadImageTexture,
+  loadVideoTexture,
+} from "./engine/media/visual";
+export type {
+  ImageTexture,
+  VideoTexture,
+  MediaTransform,
+  VisualOptions,
+} from "./engine/media/visual";
+export { resolveMediaProject } from "./engine/media/project";
 export { exportVideo, exportMp4 } from "./engine/export";
 export type { ExportOptions, ExportStage } from "./engine/export";
 export type { EncodingOptions } from "./engine/export/settings";
@@ -32,6 +50,8 @@ export type { FrameSourceOptions } from "./engine/render/frame-source";
 export {
   audibleAudioTracks,
   mutedAudioTrackIds,
+  mutedAudioClipIds,
+  isAudioClipMuted,
   mergeProjectSettings,
   parseProjectSettings,
 } from "./engine/project-settings";

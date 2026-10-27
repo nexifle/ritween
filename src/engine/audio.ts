@@ -1,5 +1,10 @@
-import { audibleAudioTracks, mutedAudioTrackIds } from "./project-settings";
+import {
+  audibleAudioTracks,
+  mutedAudioClipIds,
+  mutedAudioTrackIds,
+} from "./project-settings";
 import { LiveMix, prepareOfflineAudio, AUDIO_LIMITS } from "./live-mix";
+import { resolveMediaProject } from "./media/project";
 import { frameCount, validateProject } from "./timeline";
 import type { Project } from "./types";
 
@@ -35,16 +40,25 @@ export async function renderAudio(
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
+  project = resolveMediaProject(project);
   validateProject(project);
+  const mutedClips = mutedAudioClipIds(project);
   const key = JSON.stringify([
     fps,
     project.duration,
     [...new Set([...mutedAudioTrackIds(project), ...mutedTrackIds])].sort(),
+    [...mutedClips].sort(),
   ]);
   const cached = exportMixes.get(project);
   if (cached?.key === key) return cached.buffer;
   const tracks = audibleAudioTracks(project, mutedTrackIds);
-  if (!tracks.length) return null;
+  const mutedClipIds = new Set(mutedClips);
+  if (
+    !tracks.some((track) =>
+      track.clips.some((clip) => !mutedClipIds.has(clip.id)),
+    )
+  )
+    return null;
   if (typeof OfflineAudioContext === "undefined")
     throw Error(
       "OfflineAudioContext is unavailable. Use a current Chrome or Edge browser.",
@@ -70,6 +84,7 @@ export async function renderAudio(
     project,
     mutedTrackIds,
     signal,
+    [...mutedClipIds],
   );
   signal?.throwIfAborted();
   // Populate independent voices just before they are needed. Shared buses and
@@ -132,6 +147,7 @@ export class PreviewAudio {
   private suspension: Promise<void> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private mutedTrackIds: readonly string[] = [];
+  private mutedClipIds: readonly string[] = [];
 
   private createContext() {
     if (this.disposed) throw Error("Preview audio is disposed.");
@@ -157,12 +173,13 @@ export class PreviewAudio {
 
   /** No resume here: assets/score can be prepared before the first gesture. */
   async prepare(project: Project) {
+    project = resolveMediaProject(project);
     if (!(project.audioTracks ?? []).some((track) => track.clips.length))
       return false;
     this.createContext();
     // Also suspend on browsers that allow autoplay, avoiding idle device work.
     if (!this.playing && this.ctx!.state === "running") this.suspend();
-    return this.mix!.prepare(project, this.mutedTrackIds);
+    return this.mix!.prepare(project, this.mutedTrackIds, this.mutedClipIds);
   }
 
   unlock() {
@@ -175,9 +192,22 @@ export class PreviewAudio {
     }
   }
 
-  setMuted(trackIds: readonly string[]) {
+  setMuted(trackIds: readonly string[], clipIds: readonly string[] = []) {
     this.mutedTrackIds = [...trackIds];
-    this.mix?.setMuted(trackIds);
+    this.mutedClipIds = [...clipIds];
+    return (this.mix?.setMuted(trackIds, clipIds) ?? Promise.resolve()).then(
+      () => {
+        if (
+          this.playing &&
+          !this.blocking &&
+          !this.armed &&
+          this.mix?.audible
+        ) {
+          this.mix.start(this.pendingOffset);
+          this.armed = true;
+        }
+      },
+    );
   }
 
   setMonitor(volumeDb: number, masterMuted: boolean) {
@@ -198,7 +228,13 @@ export class PreviewAudio {
     return this.mix.heard(delay);
   }
 
-  async play(from: number, project: Project, mutedTrackIds: readonly string[]) {
+  async play(
+    from: number,
+    project: Project,
+    mutedTrackIds: readonly string[],
+    mutedClipIds: readonly string[] = [],
+  ) {
+    project = resolveMediaProject(project);
     if (!(project.audioTracks ?? []).some((track) => track.clips.length)) {
       this.stop();
       return;
@@ -212,7 +248,7 @@ export class PreviewAudio {
     let audible: boolean;
     try {
       [audible] = await Promise.all([
-        this.mix!.prepare(project, mutedTrackIds),
+        this.mix!.prepare(project, mutedTrackIds, mutedClipIds),
         this.resuming,
       ]);
     } catch (error) {
@@ -221,6 +257,7 @@ export class PreviewAudio {
     }
     if (!this.playing || generation !== this.generation) return;
     this.blocking = false;
+    audible ||= this.mix!.audible;
     if (!audible) return;
     this.mix!.start(this.pendingOffset);
     this.armed = true;

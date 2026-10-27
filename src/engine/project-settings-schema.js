@@ -67,6 +67,8 @@ export function parseProjectSettings(value) {
     throw Error("Unsupported project settings version (expected 1).");
   if (value.audioTracks !== undefined && !record(value.audioTracks))
     throw Error("audioTracks settings must be an object keyed by track ID.");
+  if (value.audioClips !== undefined && !record(value.audioClips))
+    throw Error("audioClips settings must be an object keyed by clip ID.");
   /** @type {Record<string, import("./types").AudioTrackSettings>} */
   const audioTracks = Object.create(null);
   for (const [id, settings] of Object.entries(value.audioTracks ?? {})) {
@@ -78,10 +80,22 @@ export function parseProjectSettings(value) {
       throw Error(`Invalid audio track settings: ${id}`);
     audioTracks[id] = { ...settings };
   }
+  /** @type {Record<string, { muted?: boolean }>} */
+  const audioClips = Object.create(null);
+  for (const [id, settings] of Object.entries(value.audioClips ?? {})) {
+    if (
+      !id ||
+      !record(settings) ||
+      (settings.muted !== undefined && typeof settings.muted !== "boolean")
+    )
+      throw Error(`Invalid audio clip settings: ${id}`);
+    audioClips[id] = { ...settings };
+  }
   return {
     ...value,
     version: 1,
     audioTracks,
+    audioClips,
     ...(value.export !== undefined
       ? { export: parseExportSettings(value.export) }
       : {}),
@@ -100,11 +114,16 @@ export function mergeProjectSettings(authored, saved) {
   for (const [id, settings] of Object.entries(overrides.audioTracks ?? {})) {
     audioTracks[id] = { ...audioTracks[id], ...settings };
   }
+  const audioClips = Object.assign(Object.create(null), base.audioClips);
+  for (const [id, settings] of Object.entries(overrides.audioClips ?? {})) {
+    audioClips[id] = { ...audioClips[id], ...settings };
+  }
   return {
     ...base,
     ...overrides,
     version: 1,
     audioTracks,
+    audioClips,
     ...(base.export || overrides.export
       ? { export: { ...base.export, ...overrides.export } }
       : {}),

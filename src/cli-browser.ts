@@ -1,5 +1,6 @@
 /** Headless command bridge. Uses the same engine as the web interface. */
-import { project } from "virtual:ritween-project";
+import { project as sourceProject } from "virtual:ritween-project";
+import { resolveMediaProject } from "./engine/media/project";
 import { Renderer } from "./engine/render/renderer";
 import { exportVideo } from "./engine/export";
 import {
@@ -7,6 +8,7 @@ import {
   type ExportOverrides,
 } from "./engine/export/project-settings";
 import { validateProject } from "./engine/timeline";
+const project = resolveMediaProject(sourceProject);
 validateProject(project);
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
@@ -52,7 +54,7 @@ const api = {
       failure = Error(message);
     });
     try {
-      renderer.render(time);
+      await renderer.renderAsync(time);
       await renderer.device.queue.onSubmittedWorkDone();
       if (failure) throw failure;
       const blob = await canvas.convertToBlob({ type: "image/png" });

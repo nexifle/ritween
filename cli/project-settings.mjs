@@ -42,14 +42,14 @@ export function parseSettingsCommand(value) {
   }
   if (
     !value ||
-    value.type !== "set-audio-track-muted" ||
+    !["set-audio-track-muted", "set-audio-clip-muted"].includes(value.type) ||
     typeof value.id !== "string" ||
     !value.id ||
     value.id.length > 512 ||
     typeof value.muted !== "boolean"
   ) {
     throw Error(
-      "Expected a set-audio-track-muted command with a track ID and boolean muted.",
+      "Expected a set-audio-track-muted or set-audio-clip-muted command with an ID and boolean muted.",
     );
   }
   return { type: value.type, id: value.id, muted: value.muted };
@@ -76,16 +76,27 @@ export async function writeSettingsCommand(manifest, input) {
   const next =
     command.type === "update-export-settings"
       ? { ...settings, export: { ...settings.export, ...command.patch } }
-      : {
-          ...settings,
-          audioTracks: {
-            ...settings.audioTracks,
-            [command.id]: {
-              ...settings.audioTracks?.[command.id],
-              muted: command.muted,
+      : command.type === "set-audio-track-muted"
+        ? {
+            ...settings,
+            audioTracks: {
+              ...settings.audioTracks,
+              [command.id]: {
+                ...settings.audioTracks?.[command.id],
+                muted: command.muted,
+              },
             },
-          },
-        };
+          }
+        : {
+            ...settings,
+            audioClips: {
+              ...settings.audioClips,
+              [command.id]: {
+                ...settings.audioClips?.[command.id],
+                muted: command.muted,
+              },
+            },
+          };
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, JSON.stringify(next, null, 2) + "\n", {

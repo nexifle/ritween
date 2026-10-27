@@ -6,7 +6,7 @@
 
 A code-first video framework powered by WebGPU and native browser codecs.
 
-[Website](https://ritween.nexifle.com) · [Quick start](#quick-start) · [CLI guide](CLI.md) · [Technical guide](docs/technical-guide.md)
+[Website](https://ritween.nexifle.com) · [Quick start](#quick-start) · [AI skill](#ai-coding-skill) · [CLI guide](CLI.md) · [Technical guide](docs/technical-guide.md)
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -63,6 +63,58 @@ ritween preview --project /path/to/project --open
 The CLI prints the local studio URL. Source changes reload automatically.
 
 Visit **[ritween.nexifle.com](https://ritween.nexifle.com)** for the Ritween website.
+
+## AI coding skill
+
+The optional [Ritween skill](skills/ritween/SKILL.md) teaches compatible coding agents to author videos using the public Ritween API and CLI. It covers brief development, art direction, storyboard and motion choreography, WebGPU scenes, audio, preview checks, and export. Specialized references are loaded only when needed.
+
+### Install the skill
+
+Install the Ritween CLI separately if you have not already:
+
+```sh
+npm install -g ritween
+```
+
+Then run the [Skills CLI](https://github.com/vercel-labs/skills) from your video project's directory:
+
+```sh
+npx skills add nexifle/ritween --skill ritween
+```
+
+Choose your coding agent when prompted. Installation is project-scoped by default. Add `-g` to make the skill available across projects:
+
+```sh
+npx skills add nexifle/ritween --skill ritween -g
+```
+
+The Skills CLI has its own Node.js requirement; its current documentation requires **Node.js 22.20+**. Installing the skill supplies agent instructions, not the Ritween executable, a browser, or a video project. You do not need a Ritween framework checkout. For agents with manual skill installation, copy the complete [`skills/ritween/`](skills/ritween/) directory—including `references/` and `assets/`—into the agent's documented skill location.
+
+### Use the skill
+
+Open your video project in the agent where you installed the skill. Mention Ritween and describe the message, audience, duration, format, visual direction, and audio requirements. Agents that support automatic skill selection can load it from that context; otherwise explicitly ask the agent to use the `ritween` skill. Invocation syntax varies by agent.
+
+For example:
+
+```text
+Use the ritween skill to create a 15-second, 16:9 motion-graphics video
+introducing a task-planning app. Use clean typography, coordinated shape
+animation, and readable text—not a slideshow or shader showcase. Include
+subtle procedural sound effects, no voiceover. Develop a short beat sheet,
+create the runnable project, inspect preview playback and seeking, and
+export to artifacts/task-planner.mp4. Report any checks you could not run.
+```
+
+For an existing project:
+
+```text
+Use the ritween skill to improve the motion in ./manifest.ts. Preserve the
+copy, palette, and duration. Make the transitions feel connected without
+adding overlapping scene entries. Check backward seeking and export to
+a fresh output path without replacing existing files.
+```
+
+The skill guides the agent; it does not render video by itself. Preview and export still require the [browser and GPU capabilities](#requirements) listed above. Review generated code and output, and distinguish inspected still frames from verified playback and audio. The skill is for creating videos, not developing Ritween's framework internals.
 
 ## Author a composition
 

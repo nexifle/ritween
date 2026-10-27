@@ -1,8 +1,8 @@
 /** Headless command bridge. Uses the same engine as the web interface. */
 import { project } from "virtual:ritween-project";
-import { Renderer } from "./engine/renderer";
+import { Renderer } from "./engine/render/renderer";
 import { exportVideo, type ExportOptions } from "./engine/export";
-import { defaultExportSize } from "./engine/export-size";
+import { defaultExportSize } from "./engine/export/formats/mp4/sizes";
 import { validateProject } from "./engine/timeline";
 validateProject(project);
 function download(blob: Blob, name: string) {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runExportPipelines } from "../src/engine/export-pipeline";
+import { runExportPipelines } from "../src/engine/export/pipeline";
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {

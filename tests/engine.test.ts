@@ -11,8 +11,8 @@ import {
   assertExportSize,
   defaultExportSize,
   exportSizes,
-} from "../src/engine/export-size";
-import { MP4Muxer } from "../src/engine/mp4";
+} from "../src/engine/export/formats/mp4/sizes";
+import { MP4Muxer } from "../src/engine/export/formats/mp4/muxer";
 import { project } from "../src/project/manifest";
 
 test("export sizes keep any project aspect inside H.264 Level 4.2", () => {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { waitForEncoderCapacity } from "../src/engine/encoder-queue";
+import { waitForEncoderCapacity } from "../src/engine/export/encoder-queue";
 
 class Encoder extends EventTarget {
   encodeQueueSize = 4;

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { resolveEncodingOptions } from "../../engine/export-settings";
-import type { ExportSize } from "../../engine/export-size";
+import { resolveEncodingOptions } from "../../engine/export/settings";
+import type { ExportSize } from "../../engine/export/formats/mp4/sizes";
 import { frameCount } from "../../engine/timeline";
 import { Icon } from "../components/icon";
 import { SidebarPanel } from "../components/sidebar-panel";

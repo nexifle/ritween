@@ -8,8 +8,8 @@ import {
 } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { PreviewAudio } from "../engine/audio";
-import { exportSizes } from "../engine/export-size";
-import { Renderer } from "../engine/renderer";
+import { exportSizes } from "../engine/export/formats/mp4/sizes";
+import { Renderer } from "../engine/render/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
 import { project } from "virtual:ritween-project";
 import { sources } from "virtual:ritween-sources";

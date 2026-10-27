@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveEncodingOptions } from "../src/engine/export-settings";
+import { resolveEncodingOptions } from "../src/engine/export/settings";
 
 test("export defaults scale bitrate by pixels and FPS with matching portrait behavior", () => {
   assert.deepEqual(resolveEncodingOptions(1920, 1080, 60), {

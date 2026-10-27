@@ -29,6 +29,9 @@ Options:
                            short-side 720 step, not full HD.
                            Frame defaults to the project resolution.
   --fps N                  24, 30 or 60 (default: 30)
+  --bitrate BPS            Video target in bits/second (auto: 6 Mbps at 1080p60)
+  --latency-mode MODE      quality (default) or realtime
+  --keyframe-interval SEC  Keyframe spacing in seconds (default: 2; max: 60)
   --port N                 Preview port (default: 5173; next free if busy)
   --open                   Open the web preview in your default browser
   --channel NAME           Browser channel (default: chrome; msedge/chromium)
@@ -55,6 +58,9 @@ export function parseOptions(argv) {
       frame: { type: "string" },
       resolution: { type: "string" },
       fps: { type: "string" },
+      bitrate: { type: "string" },
+      "latency-mode": { type: "string" },
+      "keyframe-interval": { type: "string" },
       port: { type: "string" },
       open: { type: "boolean" },
       channel: { type: "string" },
@@ -100,6 +106,34 @@ export function parseOptions(argv) {
     throw Error("Pass --time or --frame, not both.");
   const fps = Number(values.fps ?? 30);
   if (![24, 30, 60].includes(fps)) throw Error("--fps must be 24, 30 or 60.");
+  const bitrate =
+    values.bitrate === undefined ? undefined : Number(values.bitrate);
+  if (
+    bitrate !== undefined &&
+    (!Number.isSafeInteger(bitrate) || bitrate < 1 || bitrate > 100_000_000)
+  )
+    throw Error(
+      "--bitrate must be an integer between 1 and 100000000 bits/second.",
+    );
+  const latencyMode = values["latency-mode"] ?? "quality";
+  if (!["quality", "realtime"].includes(latencyMode))
+    throw Error("--latency-mode must be quality or realtime.");
+  const keyFrameInterval = Number(values["keyframe-interval"] ?? 2);
+  if (
+    !Number.isFinite(keyFrameInterval) ||
+    keyFrameInterval <= 0 ||
+    keyFrameInterval > 60
+  )
+    throw Error(
+      "--keyframe-interval must be greater than 0 and at most 60 seconds.",
+    );
+  if (
+    command !== "export" &&
+    ["bitrate", "latency-mode", "keyframe-interval"].some(
+      (key) => values[key] !== undefined,
+    )
+  )
+    throw Error("Encoding options apply to export only.");
   const frame = values.frame === undefined ? undefined : Number(values.frame);
   if (frame !== undefined && (!Number.isInteger(frame) || frame < 0))
     throw Error("--frame must be a nonnegative integer.");
@@ -147,6 +181,9 @@ export function parseOptions(argv) {
     command,
     project: values.project ?? positionalProject ?? ".",
     fps,
+    bitrate,
+    latencyMode,
+    keyFrameInterval,
     time,
     frame,
     port,

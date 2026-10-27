@@ -1,3 +1,4 @@
+import { resolveEncodingOptions } from "../engine/export-settings";
 import type { ExportSize } from "../engine/export-size";
 import { frameCount } from "../engine/timeline";
 import { Icon } from "./icon";
@@ -11,6 +12,12 @@ export function ExportPanel({
   sizes,
   aspectRatio,
   fps,
+  bitrate,
+  latencyMode,
+  keyFrameInterval,
+  onBitrate,
+  onLatencyMode,
+  onKeyFrameInterval,
   duration,
   hasAudio,
   done,
@@ -31,6 +38,12 @@ export function ExportPanel({
   sizes: readonly ExportSize[];
   aspectRatio: readonly [number, number];
   fps: number;
+  bitrate: number;
+  latencyMode: "quality" | "realtime";
+  keyFrameInterval: number;
+  onBitrate: (bitrate: number) => void;
+  onLatencyMode: (mode: "quality" | "realtime") => void;
+  onKeyFrameInterval: (seconds: number) => void;
   duration: number;
   hasAudio: boolean;
   done: number;
@@ -99,6 +112,71 @@ export function ExportPanel({
         {[24, 30, 60].map((f) => (
           <option key={f} value={f}>
             {f} FPS
+          </option>
+        ))}
+      </select>
+      <label
+        className="mb-1 mt-2 block text-[11px] text-label"
+        htmlFor="video-bitrate"
+      >
+        Video bitrate
+      </label>
+      <select
+        id="video-bitrate"
+        disabled={exporting}
+        value={bitrate}
+        onChange={(e) => onBitrate(Number(e.target.value))}
+        className="h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-[11px]"
+      >
+        <option value={0}>
+          Auto
+          {resolution
+            ? ` · ${(resolveEncodingOptions(Number(resolution.split("x")[0]), Number(resolution.split("x")[1]), fps).bitrate / 1e6).toFixed(1)} Mbps`
+            : ""}
+        </option>
+        {[2, 4, 6, 8, 12, 20].map((mbps) => (
+          <option key={mbps} value={mbps * 1e6}>
+            {mbps} Mbps
+          </option>
+        ))}
+      </select>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        Higher bitrate keeps more detail and increases file size.
+      </p>
+      <label
+        className="mb-1 mt-2 block text-[11px] text-label"
+        htmlFor="encoding-mode"
+      >
+        Encoding mode
+      </label>
+      <select
+        id="encoding-mode"
+        disabled={exporting}
+        value={latencyMode}
+        onChange={(e) =>
+          onLatencyMode(e.target.value as "quality" | "realtime")
+        }
+        className="h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-[11px]"
+      >
+        <option value="quality">Quality · recommended</option>
+        <option value="realtime">Low latency</option>
+      </select>
+      <label
+        className="mb-1 mt-2 block text-[11px] text-label"
+        htmlFor="keyframe-interval"
+      >
+        Keyframe interval
+      </label>
+      <select
+        id="keyframe-interval"
+        disabled={exporting}
+        value={keyFrameInterval}
+        onChange={(e) => onKeyFrameInterval(Number(e.target.value))}
+        className="h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-[11px]"
+      >
+        {[1, 2, 4].map((seconds) => (
+          <option key={seconds} value={seconds}>
+            {seconds} seconds{seconds === 2 ? " · recommended" : ""}
           </option>
         ))}
       </select>

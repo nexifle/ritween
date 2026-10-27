@@ -101,6 +101,9 @@ const api = {
       width,
       height,
       fps: options.fps,
+      bitrate: result.bitrate,
+      latencyMode: result.latencyMode,
+      keyFrameInterval: result.keyFrameInterval,
     };
   },
 };

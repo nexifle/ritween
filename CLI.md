@@ -82,3 +82,15 @@ npm run test:cli
 `CLI_BINARY=/path/to/rimotion npm run test:cli` runs the same suite against an installed `rimotion` command instead of `node bin/rimotion.mjs`.
 
 The CLI integration suite invokes commands from outside the repository, checks PNG dimensions and deterministic frame equivalence, renders an independent external TSX manifest with a JS scene, checks invalid timestamps and overwrite protection, tests timeout cleanup and web preview shutdown, and exports an eight-second 240-frame MP4 that is opened and sought using native Chrome playback. It writes artifacts under `artifacts/cli/`. The browser engine validation (`npm run test:browser` with Vite running) additionally decodes all 240 frames.
+
+## Export compression
+
+```bash
+rimotion export ../video9 --resolution 1080x1920 --fps 60 \
+  --bitrate 6000000 --keyframe-interval 2 --latency-mode quality \
+  -o video.mp4
+```
+
+Exports default to quality-mode variable bitrate and two-second GOPs, with keyframes also requested at scene cuts. Automatic bitrate scales with pixels and FPS: 6 Mbps at Full HD 60 FPS, 3 Mbps at Full HD 30 FPS, minimum 500 kbps. Omit `--bitrate` to use Auto. The value is integer bits/second, not Mbps or a hard file-size limit. `--latency-mode realtime` explicitly prioritizes low latency; it does not guarantee faster total export. `--keyframe-interval` accepts positive seconds up to 60; actual requests are rounded down to whole frames (minimum one frame). These flags apply to `export` only. JSON results include the resolved encoding settings.
+
+MP4 contains Baseline H.264 I/P frames and optional AAC, with actual sync samples and fast-start metadata. The exporter validates sample order and count, and rejects missing/reordered frames instead of silently producing an invalid timeline.

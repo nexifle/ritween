@@ -18,7 +18,8 @@
     "cli": "node bin/rimotion.mjs",
     "test:cli": "node scripts/validate-cli.mjs",
     "benchmark:pipelines": "node scripts/benchmark-pipelines.mjs",
-    "test:export": "node scripts/validate-export-pipeline.mjs"
+    "test:export": "node scripts/validate-export-pipeline.mjs",
+    "test:compression": "node scripts/validate-compressed-export.mjs"
   },
   "dependencies": {
     "@hugeicons/core-free-icons": "^4.3.5",

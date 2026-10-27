@@ -55,8 +55,14 @@ test("export sizes keep any project aspect inside H.264 Level 4.2", () => {
   assert.equal(defaultExportSize([1080, 1920])?.width, 720);
   assert.equal(defaultExportSize([1280, 720])?.name, "720p");
   assert.equal(defaultExportSize([8000, 100]), undefined);
-  const landscape = { resolution: [1280, 720] as const, aspectRatio: [16, 9] as const };
-  const portrait = { resolution: [1080, 1920] as const, aspectRatio: [9, 16] as const };
+  const landscape = {
+    resolution: [1280, 720] as const,
+    aspectRatio: [16, 9] as const,
+  };
+  const portrait = {
+    resolution: [1080, 1920] as const,
+    aspectRatio: [9, 16] as const,
+  };
   assert.doesNotThrow(() => assertExportSize(landscape, 1920, 1080));
   assert.throws(() => assertExportSize(landscape, 1080, 1920), /16:9/);
   assert.throws(() => assertExportSize(landscape, 800, 600), /16:9/);
@@ -98,7 +104,8 @@ test("manifest spans eight seconds with exact hard cuts and seekable local time"
   );
 });
 test("audio sample count matches every supported frame rate and clips stay on their own tracks", () => {
-  for (const fps of [24, 30, 60]) assert.equal(audioSampleCount(8, fps), 384000);
+  for (const fps of [24, 30, 60])
+    assert.equal(audioSampleCount(8, fps), 384000);
   assert.equal(project.audioTracks?.length, 2);
   assert.throws(() => audioSampleCount(8, 7));
   assert.throws(() =>
@@ -123,8 +130,18 @@ test("audio sample count matches every supported frame rate and clips stay on th
           id: "a1",
           name: "A1",
           clips: [
-            { ...project.audioTracks![0].clips[0], id: "one", start: 0, duration: 3 },
-            { ...project.audioTracks![0].clips[0], id: "two", start: 2, duration: 2 },
+            {
+              ...project.audioTracks![0].clips[0],
+              id: "one",
+              start: 0,
+              duration: 3,
+            },
+            {
+              ...project.audioTracks![0].clips[0],
+              id: "two",
+              start: 2,
+              duration: 2,
+            },
           ],
         },
       ],
@@ -137,14 +154,24 @@ test("audio sample count matches every supported frame rate and clips stay on th
         id: "a1",
         name: "A1",
         clips: [
-          { ...project.audioTracks![0].clips[0], id: "one", start: 0, duration: 2 },
+          {
+            ...project.audioTracks![0].clips[0],
+            id: "one",
+            start: 0,
+            duration: 2,
+          },
         ],
       },
       {
         id: "a2",
         name: "A2",
         clips: [
-          { ...project.audioTracks![0].clips[0], id: "two", start: 1, duration: 2 },
+          {
+            ...project.audioTracks![0].clips[0],
+            id: "two",
+            start: 1,
+            duration: 2,
+          },
         ],
       },
     ],
@@ -190,7 +217,7 @@ test("MP4 tables contain 240 sync samples, exact duration and valid media offset
   const top = boxes(data);
   assert.deepEqual(
     top.map((b) => b.type),
-    ["ftyp", "mdat", "moov"],
+    ["ftyp", "moov", "mdat"],
   );
   const view = new DataView(data.buffer);
   const find = (type: string) => {
@@ -212,7 +239,7 @@ test("MP4 tables contain 240 sync samples, exact duration and valid media offset
   assert.equal(view.getUint32(find("mdhd") + 24), 240);
   assert.equal(view.getUint32(find("stsz") + 16), 240);
   assert.equal(view.getUint32(find("stss") + 12), 240);
-  assert.equal(view.getUint32(find("stco") + 16), top[1].start + 8);
+  assert.equal(view.getUint32(find("stco") + 16), top[2].start + 8);
   assert.equal(view.getUint32(find("stts") + 16), 240);
   assert.equal(view.getUint32(find("stts") + 20), 1);
   const sizes = Array.from({ length: 240 }, (_, i) =>
@@ -220,21 +247,25 @@ test("MP4 tables contain 240 sync samples, exact duration and valid media offset
   );
   assert.equal(
     sizes.reduce((a, b) => a + b, 0),
-    top[1].size - 8,
+    top[2].size - 8,
   );
 });
 test("MP4 audio track carries AAC tables without replacing the video track", async () => {
   const mux = new MP4Muxer(1280, 720, 30);
   const asc = new Uint8Array([0x11, 0x90]);
   mux.setAudioPriming(2112);
-  mux.add(new Uint8Array([0, 0, 0, 2, 0x65]), true, new Uint8Array([1, 2, 3, 4]));
+  mux.add(
+    new Uint8Array([0, 0, 0, 2, 0x65]),
+    true,
+    new Uint8Array([1, 2, 3, 4]),
+  );
   mux.addAudio(new Uint8Array([0xaa, 0xbb]), asc, 48000, 1024, 128000);
   mux.addAudio(new Uint8Array([0xcc]), asc, 48000, 1024, 128000);
   const data = new Uint8Array(await mux.finalize().arrayBuffer());
   const view = new DataView(data.buffer);
   const traks: number[] = [];
   const walk = (start: number, end: number) => {
-    for (let pos = start; pos + 8 <= end; ) {
+    for (let pos = start; pos + 8 <= end;) {
       const size = view.getUint32(pos);
       const type = String.fromCharCode(...data.subarray(pos + 4, pos + 8));
       if (type === "trak") traks.push(pos);
@@ -252,7 +283,7 @@ test("MP4 audio track carries AAC tables without replacing the video track", asy
   let audioMdhd = -1;
   let mediaTime = -1;
   const scan = (start: number, end: number) => {
-    for (let pos = start; pos + 8 <= end; ) {
+    for (let pos = start; pos + 8 <= end;) {
       const size = view.getUint32(pos);
       const type = String.fromCharCode(...data.subarray(pos + 4, pos + 8));
       if (type === "mdhd" && pos > traks[1]) audioMdhd = pos;
@@ -266,8 +297,12 @@ test("MP4 audio track carries AAC tables without replacing the video track", asy
   assert.equal(view.getUint32(audioMdhd + 24), 2048);
   assert.equal(mediaTime, 2112);
   const muxSilent = new MP4Muxer(640, 360, 24);
-  assert.throws(() => muxSilent.addAudio(new Uint8Array([1]), new Uint8Array(), 0, 1024, 128000));
-  assert.throws(() => muxSilent.addAudio(new Uint8Array([1]), asc, 0, 1024, 128000));
+  assert.throws(() =>
+    muxSilent.addAudio(new Uint8Array([1]), new Uint8Array(), 0, 1024, 128000),
+  );
+  assert.throws(() =>
+    muxSilent.addAudio(new Uint8Array([1]), asc, 0, 1024, 128000),
+  );
 });
 test("muxer rejects missing config, non-sync samples and changing AVC config", () => {
   const mux = new MP4Muxer(640, 360, 30);
@@ -276,5 +311,58 @@ test("muxer rejects missing config, non-sync samples and changing AVC config", (
   mux.add(new Uint8Array([1]), true, new Uint8Array([1, 2]));
   assert.throws(() =>
     mux.add(new Uint8Array([1]), true, new Uint8Array([1, 3])),
+  );
+});
+
+test("GOP muxing writes only actual sync samples and rejects broken frame order", async () => {
+  const mux = new MP4Muxer(640, 360, 30);
+  const config = new Uint8Array([1, 66, 0, 42]);
+  const sample = new Uint8Array([0, 0, 0, 1, 0x65]);
+  mux.add(sample, true, config, 0);
+  sample[4] = 0;
+  mux.add(new Uint8Array([0, 0, 0, 1, 0x41]), false, undefined, 33333);
+  assert.throws(
+    () => mux.add(sample, false, undefined, 33333),
+    /presentation order/,
+  );
+  assert.throws(
+    () => mux.add(sample, false, undefined, 100000),
+    /presentation order/,
+  );
+  mux.add(sample, true, undefined, 66667);
+  const data = new Uint8Array(await mux.finalize().arrayBuffer());
+  const view = new DataView(data.buffer);
+  const tables = new Map<string, number>();
+  const walk = (start: number, end: number) => {
+    for (const b of boxes(data, start, end)) {
+      tables.set(b.type, b.start);
+      if (["moov", "trak", "mdia", "minf", "stbl"].includes(b.type))
+        walk(b.start + 8, b.start + b.size);
+    }
+  };
+  walk(0, data.length);
+  const stss = tables.get("stss")!;
+  assert.equal(view.getUint32(stss + 12), 2);
+  assert.equal(view.getUint32(stss + 16), 1);
+  assert.equal(view.getUint32(stss + 20), 3);
+  const media = tables.get("mdat")! + 8;
+  assert.equal(view.getUint32(tables.get("stco")! + 16), media);
+  assert.equal(
+    data[media + 4],
+    0x65,
+    "default ownership protects samples from caller mutations",
+  );
+});
+
+test("owned muxer samples preserve subarray byte ranges in the final Blob", async () => {
+  const mux = new MP4Muxer(640, 360, 30, { copySamples: false });
+  const buffer = new Uint8Array([99, 0, 0, 0, 1, 0x65, 99]);
+  mux.add(buffer.subarray(1, 6), true, new Uint8Array([1, 66, 0, 42]), 0);
+  const data = new Uint8Array(await mux.finalize().arrayBuffer());
+  const media = boxes(data).find((box) => box.type === "mdat")!;
+  assert.equal(media.size, 13);
+  assert.deepEqual(
+    data.slice(media.start + 8),
+    new Uint8Array([0, 0, 0, 1, 0x65]),
   );
 });

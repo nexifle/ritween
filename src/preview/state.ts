@@ -15,6 +15,9 @@ export type State = {
   total: number;
   resolution: string;
   fps: number;
+  bitrate: number;
+  latencyMode: "quality" | "realtime";
+  keyFrameInterval: number;
   result: string;
   download: string;
   mutedTrackIds: string[];
@@ -42,6 +45,9 @@ export const initial: State = {
     return size ? `${size.width}x${size.height}` : "";
   })(),
   fps: 30,
+  bitrate: 0, // Auto, scaled to resolution and FPS.
+  latencyMode: "quality",
+  keyFrameInterval: 2,
   result: "",
   download: "",
   mutedTrackIds: [],

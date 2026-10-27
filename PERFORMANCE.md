@@ -74,8 +74,12 @@ deterministic scheduling and bounded asset work.
 PCM remains a full 48 kHz stereo Float32 buffer: about 33 MiB for 90 seconds.
 The muxer retains compressed chunks until finalization. Export is memory-based,
 but not constant-memory streaming. Very long compositions require an incremental
-PCM API and streaming muxer/file sink. H.264 currently uses all keyframes, which
-also produces relatively large files.
+PCM API and streaming muxer/file sink. H.264 now uses GOP compression (two-second
+keyframe interval plus scene cuts) and quality-mode VBR. The export path hands
+owned encoded buffers to the muxer without a second sample copy. Metadata
+precedes media for progressive playback. These changes reduce output size and
+copy overhead but do not make output constant-memory. Historical benchmark
+measurements below predate this encoding change.
 
 ## Validation and measurements
 

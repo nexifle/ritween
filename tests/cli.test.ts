@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseOptions } from "../cli/options.mjs";
-import { resolveProject, resolveSceneSource, sceneSources } from "../cli/project.mjs";
+import {
+  resolveProject,
+  resolveSceneSource,
+  sceneSources,
+} from "../cli/project.mjs";
 import { fileURLToPath } from "node:url";
 test("CLI resolves web preview, PNG preview alias, frame indices and export presets", () => {
   assert.equal(parseOptions(["preview"]).command, "preview");
@@ -29,7 +33,10 @@ test("CLI resolves web preview, PNG preview alias, frame indices and export pres
   assert.equal(video.height, 1080);
   assert.equal(video.fps, 60);
   assert.equal(parseOptions(["export"]).width, undefined);
-  assert.equal(parseOptions(["export", "--resolution", "1080x1920"]).height, 1920);
+  assert.equal(
+    parseOptions(["export", "--resolution", "1080x1920"]).height,
+    1920,
+  );
   assert.equal(parseOptions(["export", "--resolution", "800x600"]).width, 800);
   assert.equal(parseOptions(["frame", "--resolution", "256x144"]).width, 256);
   const demo = parseOptions(["--demo", "--open"]);
@@ -74,4 +81,34 @@ test("scene source reads files next to the manifest and rejects paths that leave
   assert.equal(resolveSceneSource(manifest, "/etc/passwd"), null);
   assert.equal(resolveSceneSource(manifest, "scenes/missing.ts"), null);
   assert.equal(resolveSceneSource(manifest, "scenes/intro.ts?raw"), null);
+});
+
+test("CLI exposes encoding controls and rejects invalid or misplaced export settings", () => {
+  const defaults = parseOptions(["export"]);
+  assert.equal(defaults.bitrate, undefined);
+  assert.equal(defaults.latencyMode, "quality");
+  assert.equal(defaults.keyFrameInterval, 2);
+  const custom = parseOptions([
+    "export",
+    "--bitrate",
+    "8000000",
+    "--latency-mode",
+    "realtime",
+    "--keyframe-interval",
+    ".5",
+  ]);
+  assert.equal(custom.bitrate, 8_000_000);
+  assert.equal(custom.latencyMode, "realtime");
+  assert.equal(custom.keyFrameInterval, 0.5);
+  for (const args of [
+    ["export", "--bitrate", "0"],
+    ["export", "--bitrate", "6M"],
+    ["export", "--bitrate", "Infinity"],
+    ["export", "--bitrate", "1.5"],
+    ["export", "--latency-mode", "fast"],
+    ["export", "--keyframe-interval", "0"],
+    ["export", "--keyframe-interval", "61"],
+    ["frame", "--bitrate", "1000000"],
+  ])
+    assert.throws(() => parseOptions(args));
 });

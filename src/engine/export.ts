@@ -1,6 +1,10 @@
 import { runExportPipelines, type ExportPipeline } from "./export-pipeline";
 import { waitForEncoderCapacity } from "./encoder-queue";
 import { renderAudio, SAMPLE_RATE } from "./audio";
+import {
+  resolveEncodingOptions,
+  type EncodingOptions,
+} from "./export-settings";
 import { assertExportSize } from "./export-size";
 import { Renderer } from "./renderer";
 import { MP4Muxer } from "./mp4";
@@ -19,7 +23,7 @@ export const AAC_PRIMING_SAMPLES = 2112;
 
 export type ExportStage =
   "audio-mix" | "audio-encode" | "scene-setup" | "video-encode" | "mux";
-export interface ExportOptions {
+export interface ExportOptions extends EncodingOptions {
   width: number;
   height: number;
   fps: number;
@@ -142,13 +146,15 @@ export async function exportVideo(project: Project, options: ExportOptions) {
     throw Error(
       "WebCodecs or OffscreenCanvas unavailable. Use a current Chrome or Edge browser.",
     );
+  const encoding = resolveEncodingOptions(width, height, fps, options);
   const config: VideoEncoderConfig = {
     codec: "avc1.42002a",
     width,
     height,
     framerate: fps,
-    bitrate: Math.round(width * height * fps * 0.22),
-    latencyMode: "realtime",
+    bitrate: encoding.bitrate,
+    bitrateMode: "variable",
+    latencyMode: encoding.latencyMode,
     avc: { format: "avc" },
   };
   const support = await VideoEncoder.isConfigSupported(config);
@@ -160,7 +166,7 @@ export async function exportVideo(project: Project, options: ExportOptions) {
   onProgress?.(0, frameCount(project.duration, fps));
   // Paint the initial status before author-supplied audio/scene setup starts.
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const muxer = new MP4Muxer(width, height, fps);
+  const muxer = new MP4Muxer(width, height, fps, { copySamples: false });
   const [aac, encoded] = await runExportPipelines(
     options.pipeline ?? "parallel",
     signal,
@@ -199,7 +205,7 @@ export async function exportVideo(project: Project, options: ExportOptions) {
       );
   }
   const blob = await exportStage(options, "mux", async () => muxer.finalize());
-  return { blob, frames: encoded, duration: encoded / fps };
+  return { blob, frames: encoded, duration: encoded / fps, ...encoding };
 }
 
 async function encodeVideoTrack(
@@ -222,6 +228,7 @@ async function encodeVideoTrack(
           data,
           chunk.type === "key",
           metadata?.decoderConfig?.description,
+          chunk.timestamp,
         );
         encoded++;
       } catch (error) {
@@ -250,6 +257,17 @@ async function encodeVideoTrack(
       ),
     );
     const total = frameCount(project.duration, fps);
+    const { keyFrameInterval } = resolveEncodingOptions(
+      width,
+      height,
+      fps,
+      options,
+    );
+    const intervalFrames = Math.max(1, Math.floor(keyFrameInterval * fps));
+    const cuts = new Set(
+      project.scenes.map((scene) => Math.ceil(scene.start * fps)),
+    );
+    let lastKeyRequest = -intervalFrames;
     const activeRenderer = renderer;
     await exportStage(options, "video-encode", async () => {
       for (let i = 0; i < total; i++) {
@@ -259,7 +277,9 @@ async function encodeVideoTrack(
         await activeRenderer.device.queue.onSubmittedWorkDone();
         const frame = new VideoFrame(canvas, frameTiming(i, fps));
         try {
-          encoder.encode(frame, { keyFrame: true });
+          const keyFrame = i - lastKeyRequest >= intervalFrames || cuts.has(i);
+          if (keyFrame) lastKeyRequest = i;
+          encoder.encode(frame, { keyFrame });
         } finally {
           frame.close();
         }

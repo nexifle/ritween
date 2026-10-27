@@ -1,5 +1,7 @@
 # Export benchmark
 
+Historical measurements: these runs predate GOP/quality-mode export defaults. Re-run before comparing encoding size or timing with the current exporter.
+
 Measured 2026-10-25T12:29:11.195Z on Apple M1, 16 GiB RAM, darwin 27.0.0, Chrome 155.0.8059.86.
 
 Headless Chrome, WebGPU enabled; preview initialized and paused; exports run sequentially. First 720p30 warm-up: 4.352 seconds (excluded from medians); 3 runs per preset with rotating order. Timing includes codec capability check, GPU device and scene setup, all frame rendering/encoding, encoder flush, MP4 muxing, and cleanup. Module loading and download/disk writing are excluded. Each run exports the shipped eight-second composition using the unchanged production export function. The codec chooses its own hardware/software path; GPU adapter metadata does not prove hardware encoding.

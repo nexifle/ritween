@@ -139,6 +139,10 @@ try {
         root,
         "--resolution",
         "720p",
+        "--bitrate",
+        "2000000",
+        "--keyframe-interval",
+        "1",
         "--fps",
         "30",
         "-o",
@@ -148,6 +152,9 @@ try {
       ])
     ).stdout,
   );
+  assert.equal(exported.bitrate, 2000000);
+  assert.equal(exported.latencyMode, "quality");
+  assert.equal(exported.keyFrameInterval, 1);
   assert.equal(exported.frames, 240);
   assert.equal(exported.duration, 8);
   assert.ok((await stat(video)).size > 100000);

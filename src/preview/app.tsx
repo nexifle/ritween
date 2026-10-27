@@ -249,6 +249,9 @@ export function App() {
         width,
         height,
         fps: state.fps,
+        bitrate: state.bitrate || undefined,
+        latencyMode: state.latencyMode,
+        keyFrameInterval: state.keyFrameInterval,
         mutedTrackIds: state.mutedTrackIds,
         signal: controller.signal,
         onStage: (stage) => {
@@ -325,6 +328,12 @@ export function App() {
       sizes={exportSizes(project.resolution)}
       aspectRatio={project.aspectRatio}
       fps={state.fps}
+      bitrate={state.bitrate}
+      latencyMode={state.latencyMode}
+      keyFrameInterval={state.keyFrameInterval}
+      onBitrate={(bitrate) => patch({ bitrate })}
+      onLatencyMode={(latencyMode) => patch({ latencyMode })}
+      onKeyFrameInterval={(keyFrameInterval) => patch({ keyFrameInterval })}
       duration={project.duration}
       hasAudio={(project.audioTracks ?? []).length > 0}
       done={state.done}
@@ -350,7 +359,8 @@ export function App() {
         contentClassName="p-3"
       >
         <p className="text-[11px] leading-[1.4] text-hint-foreground">
-          Scene source is open on the composition. Choose Picture to read it here again.
+          Scene source is open on the composition. Choose Picture to read it
+          here again.
         </p>
       </SidebarPanel>
     ) : (
@@ -381,13 +391,17 @@ export function App() {
     inspectorContent = (
       <div className="flex h-full w-full flex-col overflow-hidden bg-card">
         <div className="h-8 shrink-0">{renderExport(true)}</div>
-        <div className="flex flex-1 min-h-0 flex-col">{renderSource(false)}</div>
+        <div className="flex flex-1 min-h-0 flex-col">
+          {renderSource(false)}
+        </div>
       </div>
     );
   } else if (sourceCollapsed) {
     inspectorContent = (
       <div className="flex h-full w-full flex-col overflow-hidden bg-card">
-        <div className="flex flex-1 min-h-0 flex-col">{renderExport(false)}</div>
+        <div className="flex flex-1 min-h-0 flex-col">
+          {renderExport(false)}
+        </div>
         <div className="h-8 shrink-0">{renderSource(true)}</div>
       </div>
     );

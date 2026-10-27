@@ -66,10 +66,25 @@ try {
         .inputValue(),
     ) > 0,
   );
+  await page
+    .getByLabel("Video bitrate", { exact: true })
+    .selectOption("4000000");
+  await page.getByLabel("Keyframe interval", { exact: true }).selectOption("1");
+  await page.evaluate(() => {
+    const configure = VideoEncoder.prototype.configure;
+    window.exportEncoderConfig = null;
+    VideoEncoder.prototype.configure = function (config) {
+      window.exportEncoderConfig = config;
+      return configure.call(this, config);
+    };
+  });
   const downloadEvent = page.waitForEvent("download", { timeout: 120000 });
   await page.getByRole("button", { name: "Export Video", exact: true }).click();
   const download = await downloadEvent;
   await download.saveAs(new URL("source-to-motion.mp4", artifacts).pathname);
+  const encoderConfig = await page.evaluate(() => window.exportEncoderConfig);
+  assert.equal(encoderConfig.bitrate, 4000000);
+  assert.equal(encoderConfig.latencyMode, "quality");
   await page.getByRole("status").filter({ hasText: "240 frames" }).waitFor();
   const report = await page.evaluate(async () => {
     const link = document.querySelector("a[download]");
@@ -117,6 +132,14 @@ try {
     const sampleEntry = found.stsd + 16;
     const avcC = sampleEntry + 86;
     const description = data.slice(avcC + 8, avcC + view.getUint32(avcC));
+    const syncCount = view.getUint32(found.stss + 12);
+    const syncSamples = new Set(
+      Array.from({ length: syncCount }, (_, i) =>
+        view.getUint32(found.stss + 16 + 4 * i),
+      ),
+    );
+    if (!syncSamples.has(1) || syncCount < 8 || syncCount >= count)
+      throw Error("Missing GOP sync samples");
     let decoded = 0;
     const timestamps = [];
     let decoderError;
@@ -141,7 +164,7 @@ try {
       const size = view.getUint32(found.stsz + 20 + 4 * i);
       decoder.decode(
         new EncodedVideoChunk({
-          type: "key",
+          type: syncSamples.has(i + 1) ? "key" : "delta",
           timestamp: Math.round((i * 1e6) / timescale),
           duration:
             Math.round(((i + 1) * 1e6) / timescale) -
@@ -150,7 +173,8 @@ try {
         }),
       );
       offset += size;
-      if (i % 12 === 11) await decoder.flush();
+      while (decoder.decodeQueueSize >= 16 && !decoderError)
+        await new Promise((r) => setTimeout(r, 0));
     }
     await decoder.flush();
     decoder.close();

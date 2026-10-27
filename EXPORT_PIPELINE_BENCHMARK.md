@@ -1,5 +1,7 @@
 # Audio/video pipeline benchmark
 
+Historical measurements: these runs predate GOP/quality-mode export defaults. Re-run before comparing encoding size or timing with the current exporter.
+
 Measured 2026-10-26T14:55:46.234Z on Apple M1, 16 GiB RAM, darwin 27.0.0, Chrome 155.0.8059.86.
 
 3 measured runs per project/cache/pipeline combination, after one full warmup per pipeline. Workloads run one at a time in headless Chrome, at 30 FPS: demo 1280×720 (8 s), video9 working copy 720×1280 (90 s). Both modes use the same production render/encoding code; only scheduling differs. Pipeline order alternates between rounds and cache cases.

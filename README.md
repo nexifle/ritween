@@ -28,7 +28,7 @@ From this checkout, `npm install -g .` installs the same command. `npm run cli -
 
 ## Use
 
-Play/pause with Space. Seek using the scrubber; step with the transport buttons or arrow keys. The scene timeline is read-only. Choose an export size that keeps the project aspect, and 24, 30 or 60 FPS, then Export Video. The steps use a short side of 360, 720 or 1080 when that frame fits H.264 Level 4.2. On a 16:9 project those sizes are still named 360p, 720p and 1080p. Default: the 720 step at 30 FPS. Export progress reports submitted frames; download follows encoder flush and muxing. Cancel discards the partial export. A completed download stays available until the next successful export or page unload.
+Play/pause with Space. Seek using the scrubber; step with the transport buttons or arrow keys. The scene timeline is read-only. Choose an export size that keeps the project aspect, and 24, 30 or 60 FPS, choose an automatic or explicit video bitrate, then Export Video. The steps use a short side of 360, 720 or 1080 when that frame fits H.264 Level 4.2. On a 16:9 project those sizes are still named 360p, 720p and 1080p. Default: the 720 step at 30 FPS. Export progress reports submitted frames; download follows encoder flush and muxing. Cancel discards the partial export. A completed download stays available until the next successful export or page unload.
 
 ## Architecture
 
@@ -37,11 +37,11 @@ Play/pause with Space. Seek using the scrubber; step with the transport buttons 
 - `src/engine/renderer.ts`: GPU lifecycle and renderer shared by preview and export. Each renderer owns independent scene instances and device resources.
 - `src/engine/audio.ts`: export and preview compile the same managed clip schedule. Preview prepares once alongside GPU initialization, then keeps a short lookahead of live nodes. Preview track mutes use gain buses; export omits muted tracks.
 - `src/engine/export.ts`: WebGPU → OffscreenCanvas → VideoFrame → native H.264 VideoEncoder, plus AAC from that mix, → MP4.
-- `src/engine/mp4.ts`: custom ISO BMFF muxer. AVC configuration is preserved in `avcC`. An optional AAC track stores `esds`, sample sizes, chunk offsets and durations. Video samples stay all-keyframe.
+- `src/engine/mp4.ts`: custom ISO BMFF muxer. AVC configuration is preserved in `avcC`. An optional AAC track stores `esds`, sample sizes, chunk offsets and durations. Video uses Baseline AVC I/P frames, real sync-sample tables, and fast-start metadata.
 - `src/project/manifest.ts`: the entire composition, independent of the engine.
 - `src/project/scenes/`: separate TS, TSX and JS example modules. Fullscreen WGSL shaders render procedural orbital geometry and GPU bitmap lettering.
 
-Export evaluates frame `i` at `i / FPS`. VideoFrame timestamps are rounded microseconds with adjacent durations computed from the next timestamp. MP4 uses FPS as its timescale and one tick per video sample, giving exact duration. Every video sample is a keyframe; there are no reordered/B frames. Audio is a separate timeline: clips live on audio tracks, not inside scenes. Export renders the mix once with `OfflineAudioContext` at 48 kHz and encodes it as AAC. Preview plays the same clips through a lookahead of live nodes, from a user gesture, and does not wait for that offline render. Track mute is part of the exported mix. The preview volume is not. This deliberately favors muxer simplicity and seeking over compression. The browser may copy GPU data internally; this implementation makes no zero-copy claim and performs no manual GPU readback for encoding.
+Export evaluates frame `i` at `i / FPS`. VideoFrame timestamps are rounded microseconds with adjacent durations computed from the next timestamp. MP4 uses FPS as its timescale and one tick per video sample, giving exact duration. Video uses a two-second GOP and requests keyframes at scene cuts; Baseline AVC avoids reordered/B frames. Output timestamps are validated before muxing. Audio is a separate timeline: clips live on audio tracks, not inside scenes. Export renders the mix once with `OfflineAudioContext` at 48 kHz and encodes it as AAC. Preview plays the same clips through a lookahead of live nodes, from a user gesture, and does not wait for that offline render. Track mute is part of the exported mix. The preview volume is not. Export defaults to quality-mode VBR, with a target scaled by pixels and FPS (6 Mbps at Full HD 60 FPS; minimum 500 kbps). Targets are not file-size limits. The browser may copy GPU data internally; this implementation makes no zero-copy claim and performs no manual GPU readback for encoding.
 
 See [AI Authoring Guide](AI_AUTHORING.md) to create a different video entirely through source files.
 
@@ -75,3 +75,18 @@ See [export audio performance](PERFORMANCE.md) for profiling, automatic graph sc
 See [preview startup research and measurements](PREVIEW_PERFORMANCE.md) for first-play preparation, idle behavior, and the Web Audio course review.
 
 Audio and video export run concurrently by default. See the [pipeline benchmark](EXPORT_PIPELINE_BENCHMARK.md) for the sequential comparison and validation.
+
+### Export encoding controls
+
+```ts
+import { exportVideo, type ExportOptions } from "rimotion";
+
+const result = await exportVideo(project, {
+  width: 1080, height: 1920, fps: 60,
+  bitrate: 6_000_000,       // bits/second; omit for resolution/FPS-scaled Auto
+  latencyMode: "quality",  // default; "realtime" is available for low latency
+  keyFrameInterval: 2,     // seconds; scene cuts also request keyframes
+});
+```
+
+Default GOP export preserves resolution, FPS, the mixed AAC soundtrack and its priming edit list. The muxer writes metadata before media for progressive playback and avoids a second sample copy in the export path. Output still retains encoded chunks in memory; it does not yet stream directly to disk. Returned `bitrate`, `latencyMode` and `keyFrameInterval` report resolved settings, not measured bitrate or a guarantee of encoder quality.

@@ -4,7 +4,7 @@ Read for mesh animation, instancing, curved paths, or explicit stroke geometry. 
 
 ## Separate choreography from rendering cost
 
-GPU rendering does not automatically make motion smooth. Check continuity of position, velocity, and, where appropriate, acceleration. Independent eased segments that each end at zero speed create repeated braking. Overlap related actions or construct a shared curve with compatible boundary velocities. Preserve deliberate pauses when they communicate something.
+GPU rendering does not automatically make motion smooth: rendering performance and the motion's trajectory over time are separate concerns. For transitions intended to be smooth, check continuity of position, velocity, and, where appropriate, acceleration with respect to actual timeline time. Independent movement segments that each decelerate to zero speed produce repeated stops, even if their joins are mathematically continuous; zero speed at a join does not by itself imply a pause of nonzero duration. For uninterrupted travel, join segments with matching, nonzero velocity vectors at the boundary, accounting for each segment's duration rather than only matching derivatives with respect to a normalized curve parameter. Overlapping related actions can help the overall choreography flow, but does not by itself guarantee continuity of an individual object's motion. Preserve deliberate stops and pauses when they communicate something.
 
 For a segment that should start and stop gently, this quintic easing has zero first and second derivatives at its endpoints:
 

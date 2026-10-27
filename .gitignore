@@ -3,3 +3,11 @@ dist/
 *.tsbuildinfo
 artifacts/
 release/
+/benchmarks/
+
+# Local project guidance and design documents
+/.grok/
+/LOGO.md
+/DESIGN.md
+/PRODUCT.md
+/AGENTS.md

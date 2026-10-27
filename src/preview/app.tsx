@@ -301,6 +301,10 @@ export function App() {
     () => dispatch({ type: "setSourceOpen", open: true }),
     [],
   );
+  const unexpandSource = useCallback(
+    () => dispatch({ type: "setSourceOpen", open: false }),
+    [],
+  );
   const [exportCollapsed, setExportCollapsed] = useState(false);
   const [sourceCollapsed, setSourceCollapsed] = useState(false);
 
@@ -311,11 +315,11 @@ export function App() {
       activeId={active.id}
       pinnedId={state.pinnedSourceId}
       expanded={state.sourceOpen}
-      collapsed={sourceCollapsed}
-      onToggleCollapse={(next) => setSourceCollapsed(next)}
+      collapsed={false}
+      onToggleCollapse={unexpandSource}
+      onUnexpand={unexpandSource}
       onPin={pinSource}
       onFollow={followSource}
-      onExpand={state.sourceOpen ? undefined : expandSource}
     />
   );
 
@@ -361,8 +365,15 @@ export function App() {
         contentClassName="p-3"
       >
         <p className="text-[11px] leading-[1.4] text-hint-foreground">
-          Scene source is open on the composition. Choose Picture to read it
-          here again.
+          Scene source is open on the composition.{" "}
+          <button
+            type="button"
+            className="text-primary hover:underline cursor-pointer"
+            onClick={unexpandSource}
+          >
+            Choose Picture
+          </button>{" "}
+          to read it here again.
         </p>
       </SidebarPanel>
     ) : (
@@ -378,6 +389,7 @@ export function App() {
         onPin={pinSource}
         onFollow={followSource}
         onExpand={state.sourceOpen ? undefined : expandSource}
+        onUnexpand={unexpandSource}
       />
     );
 

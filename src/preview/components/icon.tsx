@@ -24,6 +24,10 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   ChevronUpIcon,
+  ArrowExpand01Icon,
+  ArrowShrink01Icon,
+  Copy01Icon,
+  LocateIcon,
 } from "@hugeicons/core-free-icons";
 
 export const icons: Record<string, IconSvgElement> = {
@@ -51,6 +55,12 @@ export const icons: Record<string, IconSvgElement> = {
   "chevron-down": ChevronDownIcon,
   "chevron-right": ChevronRightIcon,
   "chevron-up": ChevronUpIcon,
+  expand: ArrowExpand01Icon,
+  unexpand: ArrowShrink01Icon,
+  shrink: ArrowShrink01Icon,
+  copy: Copy01Icon,
+  follow: LocateIcon,
+  locate: LocateIcon,
 };
 
 export function Icon({

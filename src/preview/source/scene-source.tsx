@@ -1,8 +1,11 @@
 import { memo, useMemo, useState } from "react";
 import type { SceneEntry } from "../../engine/types";
-import { miniButton } from "../components/control-styles";
+import { Icon } from "../components/icon";
 import { highlightLines, type HighlightKind } from "./highlight";
 import { SidebarPanel } from "../components/sidebar-panel";
+
+const headerAction =
+  "flex size-5 items-center justify-center rounded text-control transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-40";
 
 const tokenClass: Partial<Record<HighlightKind, string>> = {
   comment: "hl-comment",
@@ -22,6 +25,7 @@ export const SceneSource = memo(function SceneSource({
   onPin,
   onFollow,
   onExpand,
+  onUnexpand,
   expanded = false,
   collapsed,
   onToggleCollapse,
@@ -34,6 +38,7 @@ export const SceneSource = memo(function SceneSource({
   onPin: (id: string) => void;
   onFollow: () => void;
   onExpand?: () => void;
+  onUnexpand?: () => void;
   expanded?: boolean;
   collapsed?: boolean;
   onToggleCollapse?: (collapsed: boolean) => void;
@@ -71,28 +76,48 @@ export const SceneSource = memo(function SceneSource({
       icon="code"
       title="Scene source"
       subtitle={scene.name}
-      collapsed={collapsed}
-      onToggleCollapse={onToggleCollapse}
+      collapsed={expanded ? false : collapsed}
+      onToggleCollapse={expanded ? onUnexpand : onToggleCollapse}
+      collapseIcon={expanded ? "unexpand" : undefined}
+      collapseTitle={expanded ? "Return to sidebar" : undefined}
       borderTop={borderTop}
       actions={
         <>
           {pinnedId && (
-            <button type="button" className={miniButton} onClick={onFollow}>
-              Follow
+            <button
+              type="button"
+              className={headerAction}
+              onClick={onFollow}
+              title="Follow playback"
+              aria-label="Follow playback"
+            >
+              <Icon name="follow" size={13} />
             </button>
           )}
           {onExpand && !expanded && (
-            <button type="button" className={miniButton} onClick={onExpand}>
-              Expand
+            <button
+              type="button"
+              className={headerAction}
+              onClick={onExpand}
+              title="Expand to viewer"
+              aria-label="Expand to viewer"
+            >
+              <Icon name="expand" size={13} />
             </button>
           )}
           <button
             type="button"
-            className={miniButton}
+            className={headerAction}
             disabled={code == null}
             onClick={copy}
+            title={copied ? "Copied" : "Copy source code"}
+            aria-label={copied ? "Copied" : "Copy source code"}
           >
-            {copied ? "Copied" : "Copy"}
+            <Icon
+              name={copied ? "check" : "copy"}
+              size={13}
+              className={copied ? "text-primary" : ""}
+            />
           </button>
         </>
       }

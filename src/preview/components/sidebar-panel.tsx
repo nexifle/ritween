@@ -11,6 +11,8 @@ export interface SidebarPanelProps
   defaultCollapsed?: boolean;
   collapsed?: boolean;
   onToggleCollapse?: (collapsed: boolean) => void;
+  collapseIcon?: string;
+  collapseTitle?: string;
   borderTop?: boolean;
   headerClassName?: string;
   contentClassName?: string;
@@ -26,6 +28,8 @@ export function SidebarPanel({
   defaultCollapsed = false,
   collapsed: controlledCollapsed,
   onToggleCollapse,
+  collapseIcon,
+  collapseTitle,
   borderTop = false,
   className = "",
   headerClassName = "",
@@ -91,19 +95,23 @@ export function SidebarPanel({
               type="button"
               className="flex size-5 items-center justify-center rounded text-control transition-colors hover:bg-accent hover:text-accent-foreground"
               aria-label={
-                isCollapsed
+                collapseTitle ??
+                (isCollapsed
                   ? `Expand ${titleString}`
-                  : `Minimize ${titleString}`
+                  : `Minimize ${titleString}`)
               }
               aria-expanded={!isCollapsed}
-              title={isCollapsed ? "Expand" : "Minimize"}
+              title={collapseTitle ?? (isCollapsed ? "Expand" : "Minimize")}
               onClick={(e) => {
                 e.stopPropagation();
                 toggleCollapse();
               }}
             >
               <Icon
-                name={isCollapsed ? "chevron-right" : "chevron-down"}
+                name={
+                  collapseIcon ??
+                  (isCollapsed ? "chevron-right" : "chevron-down")
+                }
                 size={13}
               />
             </button>

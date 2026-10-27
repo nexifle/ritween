@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { resolveEncodingOptions } from "../../engine/export/settings";
 import type { ExportSize } from "../../engine/export/formats/mp4/sizes";
 import { frameCount } from "../../engine/timeline";
@@ -109,6 +109,17 @@ export function ExportPanel({
   const finalizing = done >= total && total > 0;
   const percent =
     total > 0 ? Math.min(99, Math.floor((done / total) * 100)) : 0;
+  const resultParts = useMemo(() => {
+    if (!result || !result.includes("·")) return { summary: result, size: "" };
+    const segments = result.split("·").map((s) => s.trim());
+    if (segments.length >= 3) {
+      return {
+        summary: `${segments[0]} · ${segments[1]}`,
+        size: segments[2],
+      };
+    }
+    return { summary: result, size: "" };
+  }, [result]);
   const [width, height] = resolution.split("x").map(Number);
   const effectiveBitrate =
     width && height
@@ -270,67 +281,83 @@ export function ExportPanel({
           </span>
         </div>
       </div>
-      <div ref={statusRef}>
+      <div ref={statusRef} className="pt-1">
         {!exporting && result && !download && (
-          <div
-            role="status"
-            className="mb-3 flex items-start gap-2.5 border-l-2 border-border py-1 pl-3"
-          >
-            <Icon
-              name="pause"
-              size={16}
-              className="mt-0.5 shrink-0 text-muted-foreground"
-            />
-            <div>
-              <p className="text-[12px] font-medium">Export stopped</p>
-              <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-                No file created. Your settings are saved.
-              </p>
-            </div>
-          </div>
-        )}
-        {!exporting && !complete && (
-          <button
-            onClick={onExport}
-            disabled={!ready || !resolution}
-            className="flex h-9 w-full items-center justify-center gap-2 rounded-sm bg-primary text-[12px] font-semibold text-primary-foreground hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <Icon name={result ? "restart" : "export"} size={16} />
-            {result ? "Retry export" : "Export video"}
-          </button>
-        )}
-        {exporting && (
           <section
-            className="export-monitor"
-            aria-label="Export activity"
-            aria-busy="true"
+            role="status"
+            className="rounded-md border border-separator bg-secondary/50 p-2.5 space-y-2 transition-all"
           >
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-[13px] font-semibold">
-                <span className="export-beacon" aria-hidden="true" />
-                {finalizing ? "Finishing your video" : "Rendering your video"}
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0 text-muted-foreground">
+                <Icon name="stop" size={13} className="shrink-0 text-muted-foreground" />
+                <span className="truncate text-[12px] font-semibold text-foreground">
+                  Export stopped
+                </span>
               </div>
-              <span className="text-[20px] font-semibold tabular-nums tracking-tight">
-                {percent}
-                <span className="text-[11px] text-muted-foreground">%</span>
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-meta">
+                Settings saved
               </span>
             </div>
-            <p
-              role="status"
-              className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground"
-            >
-              {stage}
+
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {result} No file created. Your settings are preserved.
             </p>
-            <div className="export-filmstrip" aria-hidden="true">
-              {Array.from({ length: 24 }, (_, i) => (
-                <span
-                  key={i}
-                  className={
-                    i / 24 < done / Math.max(total, 1) ? "is-rendered" : ""
-                  }
-                />
-              ))}
+
+            <button
+              type="button"
+              onClick={onExport}
+              disabled={!ready || !resolution}
+              aria-label="Export Video"
+              className="flex h-8 w-full items-center justify-center gap-1.5 rounded-sm bg-primary text-[11px] font-semibold text-primary-foreground shadow-xs transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+            >
+              <Icon name="restart" size={13} />
+              <span>Retry export</span>
+            </button>
+          </section>
+        )}
+
+        {!exporting && !complete && !result && (
+          <button
+            type="button"
+            onClick={onExport}
+            disabled={!ready || !resolution}
+            aria-label="Export Video"
+            className="flex h-8 w-full items-center justify-center gap-1.5 rounded-sm bg-primary text-[11px] font-semibold text-primary-foreground shadow-xs transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+          >
+            <Icon name="export" size={14} />
+            <span>Export video</span>
+          </button>
+        )}
+
+        {exporting && (
+          <section
+            aria-label="Export activity"
+            aria-busy="true"
+            className="rounded-md border border-separator bg-secondary/50 p-2.5 space-y-2 transition-all"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="relative flex size-2 shrink-0">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+                  <span className="relative inline-flex size-2 rounded-full bg-primary" />
+                </span>
+                <span className="truncate text-[12px] font-semibold text-foreground">
+                  {finalizing ? "Finishing MP4…" : "Rendering video…"}
+                </span>
+              </div>
+              <span className="shrink-0 font-mono text-[12px] font-semibold tabular-nums text-foreground">
+                {percent}
+                <span className="text-[11px] font-normal text-muted-foreground">%</span>
+              </span>
             </div>
+
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+              <span className="truncate pr-2 font-medium text-foreground/80">{stage}</span>
+              <span className="shrink-0 font-mono tabular-nums">
+                {done.toLocaleString()} / {total.toLocaleString()} f
+              </span>
+            </div>
+
             <div
               role="progressbar"
               aria-label="Export progress"
@@ -338,76 +365,91 @@ export function ExportPanel({
               aria-valuemax={100}
               aria-valuenow={percent}
               aria-valuetext={`${percent} percent, ${done} of ${total} frames`}
-              className="export-meter"
+              className="relative h-1.5 w-full overflow-hidden rounded-full bg-popover border border-border/40"
             >
-              <div style={{ width: `${percent}%` }} />
+              <div
+                className="h-full rounded-full bg-primary transition-all duration-300 ease-out"
+                style={{ width: `${percent}%` }}
+              />
+              <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-3 text-[11px]">
-              <div>
-                <div className="text-muted-foreground">Time elapsed</div>
-                <div className="mt-1 text-[14px] font-medium tabular-nums">
-                  {formatExportTime(elapsed)}
-                </div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Estimated remaining</div>
-                <div className="mt-1 text-[14px] font-medium tabular-nums">
+
+            <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px]">
+              <div className="flex items-center gap-1.5 font-mono text-muted-foreground tabular-nums">
+                <span title="Elapsed time">{formatExportTime(elapsed)}</span>
+                <span className="text-muted-foreground/40">·</span>
+                <span title="Estimated remaining time">
                   {finalizing
                     ? "Finishing…"
                     : remaining === null
                       ? "Calculating…"
-                      : `~ ${formatExportTime(Math.max(1, remaining))}`}
-                </div>
+                      : `~${formatExportTime(Math.max(1, remaining))} left`}
+                </span>
               </div>
-            </div>
-            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-              {finalizing
-                ? "Frames encoded. Completing audio and packaging MP4."
-                : remaining === null
-                  ? "Estimating from the first rendered frames."
-                  : "Estimate updates as frames are rendered."}
-            </p>
-            <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-2.5 text-[11px]">
-              <span className="tabular-nums text-muted-foreground">
-                {done.toLocaleString()} / {total.toLocaleString()} frames
-              </span>
               <button
+                type="button"
                 onClick={onCancel}
-                className="rounded-sm px-2 py-1 text-link hover:bg-secondary focus-visible:outline-2 focus-visible:outline-ring"
+                className="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-destructive/20 hover:text-destructive-foreground cursor-pointer"
+                title="Cancel export"
               >
-                Cancel export
+                <Icon name="cancel" size={11} />
+                <span>Cancel</span>
               </button>
             </div>
           </section>
         )}
+
         {complete && (
-          <section role="status" className="export-monitor export-complete">
-            <div className="flex items-center gap-2 text-[14px] font-semibold">
-              <Icon name="check" size={20} />
-              <span>Your video is ready</span>
+          <section
+            role="status"
+            className="rounded-md border border-separator bg-secondary/50 p-2.5 space-y-2 transition-all"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Icon name="check" size={15} className="shrink-0 text-primary" />
+                <span className="truncate text-[12px] font-semibold text-foreground">
+                  Your video is ready
+                </span>
+              </div>
+              {resultParts.size && (
+                <span className="shrink-0 rounded border border-border/50 bg-popover px-1.5 py-0.5 font-mono text-[11px] font-medium text-emphasis tabular-nums">
+                  {resultParts.size}
+                </span>
+              )}
             </div>
-            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-              {result}
+
+            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+              <span>{resultParts.summary || result}</span>
+              <span className="text-muted-foreground/40">·</span>
+              <span className="text-foreground/80 font-medium font-mono tabular-nums">
+                in {formatExportTime(elapsed)}
+              </span>
+            </div>
+
+            <p className="text-[11px] leading-tight text-muted-foreground">
+              Download started automatically.
             </p>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Exported in {formatExportTime(elapsed)}. Download started
-              automatically.
-            </p>
-            <a
-              href={download}
-              download="source-to-motion.mp4"
-              className="mt-3 flex h-9 items-center justify-center gap-2 rounded-sm bg-primary text-[12px] font-semibold text-primary-foreground hover:bg-primary-hover"
-            >
-              <Icon name="export" size={16} />
-              Download MP4
-            </a>
-            <button
-              onClick={onExport}
-              disabled={!ready || !resolution}
-              className="mt-2 w-full rounded-sm py-2 text-[11px] text-link hover:bg-secondary disabled:opacity-45"
-            >
-              Export again
-            </button>
+
+            <div className="flex items-center gap-1.5 pt-0.5">
+              <a
+                href={download}
+                download="source-to-motion.mp4"
+                className="flex h-7.5 flex-1 items-center justify-center gap-1.5 rounded-sm bg-primary px-3 text-[11px] font-semibold text-primary-foreground shadow-xs transition-colors hover:bg-primary-hover"
+              >
+                <Icon name="export" size={13} />
+                <span>Download MP4</span>
+              </a>
+              <button
+                type="button"
+                onClick={onExport}
+                disabled={!ready || !resolution}
+                title="Export again with current settings"
+                className="flex h-7.5 items-center justify-center gap-1 rounded-sm border border-border bg-secondary/80 px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-40 cursor-pointer"
+              >
+                <Icon name="restart" size={12} />
+                <span>Export again</span>
+              </button>
+            </div>
           </section>
         )}
       </div>

@@ -483,9 +483,21 @@ progress {
     transform: translateX(350%);
   }
 }
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+}
 @media (prefers-reduced-motion: reduce) {
   .export-beacon,
-  .export-meter::after {
+  .export-meter::after,
+  .animate-shimmer {
     animation: none;
   }
   .export-meter > div,

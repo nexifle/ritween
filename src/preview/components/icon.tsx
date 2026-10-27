@@ -28,6 +28,8 @@ import {
   ArrowShrink01Icon,
   Copy01Icon,
   LocateIcon,
+  Cancel01Icon,
+  StopIcon,
 } from "@hugeicons/core-free-icons";
 
 export const icons: Record<string, IconSvgElement> = {
@@ -61,6 +63,8 @@ export const icons: Record<string, IconSvgElement> = {
   copy: Copy01Icon,
   follow: LocateIcon,
   locate: LocateIcon,
+  cancel: Cancel01Icon,
+  stop: StopIcon,
 };
 
 export function Icon({

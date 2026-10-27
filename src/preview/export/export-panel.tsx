@@ -1,8 +1,8 @@
-import { resolveEncodingOptions } from "../engine/export-settings";
-import type { ExportSize } from "../engine/export-size";
-import { frameCount } from "../engine/timeline";
-import { Icon } from "./icon";
-import { SidebarPanel } from "./sidebar-panel";
+import { resolveEncodingOptions } from "../../engine/export-settings";
+import type { ExportSize } from "../../engine/export-size";
+import { frameCount } from "../../engine/timeline";
+import { Icon } from "../components/icon";
+import { SidebarPanel } from "../components/sidebar-panel";
 
 export function ExportPanel({
   ready,

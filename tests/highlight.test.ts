@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { highlight, highlightLines } from "../src/preview/highlight";
+import { highlight, highlightLines } from "../src/preview/source/highlight";
 
 function kinds(code: string) {
   return highlight(code)

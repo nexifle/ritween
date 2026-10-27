@@ -5,8 +5,8 @@ import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
-} from "./resizable";
-import { useMediaQuery } from "./use-media-query";
+} from "../components/resizable";
+import { useMediaQuery } from "../hooks/use-media-query";
 
 function Fill({ children }: { children: ReactNode }) {
   return (

@@ -1,8 +1,8 @@
-import { PREVIEW_VOLUME_DB } from "../engine/audio";
-import { defaultExportSize } from "../engine/export-size";
-import { frameCount } from "../engine/timeline";
+import { PREVIEW_VOLUME_DB } from "../../engine/audio";
+import { defaultExportSize } from "../../engine/export-size";
+import { frameCount } from "../../engine/timeline";
 import { project } from "virtual:rimotion-project";
-import { clamp, COMP_ZOOM_MAX, COMP_ZOOM_MIN, TL_ZOOM_MAX } from "./view";
+import { clamp, COMP_ZOOM_MAX, COMP_ZOOM_MIN, TL_ZOOM_MAX } from "../utils/view-utils";
 
 export type State = {
   time: number;

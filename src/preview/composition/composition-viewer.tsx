@@ -5,10 +5,10 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { miniButton } from "./controls";
-import { Icon } from "./icon";
-import { useRestHint } from "./rest-hint";
-import { clamp, clampCompPan, COMP_ZOOM_MAX, COMP_ZOOM_MIN } from "./view";
+import { miniButton } from "../components/control-styles";
+import { Icon } from "../components/icon";
+import { useRestHint } from "../hooks/use-rest-hint";
+import { clamp, clampCompPan, COMP_ZOOM_MAX, COMP_ZOOM_MIN } from "../utils/view-utils";
 
 export function CompositionViewer({
   resolution,

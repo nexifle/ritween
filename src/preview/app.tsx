@@ -13,24 +13,24 @@ import { Renderer } from "../engine/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
 import { project } from "virtual:rimotion-project";
 import { sources } from "virtual:rimotion-sources";
-import { CompositionViewer } from "./composition-viewer";
-import { ErrorBanner } from "./error-banner";
-import { ExportPanel } from "./export-panel";
-import { ProjectHeading } from "./project-heading";
+import { CompositionViewer } from "./composition/composition-viewer";
+import { ErrorBanner } from "./components/error-banner";
+import { ExportPanel } from "./export/export-panel";
+import { ProjectHeading } from "./layout/project-heading";
 import {
   dockPaneStyle,
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
-} from "./resizable";
-import { SceneSource } from "./scene-source";
-import { SidebarPanel } from "./sidebar-panel";
-import { initial, reducer } from "./state";
-import { StudioDock } from "./studio-dock";
-import { StudioFooter } from "./studio-footer";
-import { StudioHeader } from "./studio-header";
-import { Timeline, type TimelineHandle } from "./timeline";
-import { Transport } from "./transport";
+} from "./components/resizable";
+import { SceneSource } from "./source/scene-source";
+import { SidebarPanel } from "./components/sidebar-panel";
+import { initial, reducer } from "./state/preview-state";
+import { StudioDock } from "./layout/studio-dock";
+import { StudioFooter } from "./layout/studio-footer";
+import { StudioHeader } from "./layout/studio-header";
+import { Timeline, type TimelineHandle } from "./timeline/timeline";
+import { Transport } from "./playback/transport";
 
 export function App() {
   const [state, dispatch] = useReducer(reducer, initial);

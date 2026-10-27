@@ -7,12 +7,12 @@ import {
   useState,
   type Ref,
 } from "react";
-import type { AudioTrack, SceneEntry } from "../engine/types";
-import { miniButton } from "./controls";
+import type { AudioTrack, SceneEntry } from "../../engine/types";
+import { miniButton } from "../components/control-styles";
 import { LaneBlock } from "./lane-block";
 import { TrackHeader } from "./track-header";
-import { useRestHint } from "./rest-hint";
-import { clamp, clock, formatRulerTime, rulerMarks, TL_ZOOM_MAX } from "./view";
+import { useRestHint } from "../hooks/use-rest-hint";
+import { clamp, clock, formatRulerTime, rulerMarks, TL_ZOOM_MAX } from "../utils/view-utils";
 
 const colors = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)"];
 

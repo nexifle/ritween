@@ -1,6 +1,6 @@
-import { frameCount } from "../engine/timeline";
-import { Icon } from "./icon";
-import { clock } from "./view";
+import { frameCount } from "../../engine/timeline";
+import { Icon } from "../components/icon";
+import { clock } from "../utils/view-utils";
 
 export function Transport({
   ready,

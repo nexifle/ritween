@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Icon } from "./icon";
+import { Icon } from "../components/icon";
 
 export function StudioHeader() {
   const [theme, setTheme] = useState<"light" | "dark">(() =>

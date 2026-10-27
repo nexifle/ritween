@@ -1,8 +1,8 @@
 import { memo, useMemo, useState } from "react";
-import type { SceneEntry } from "../engine/types";
-import { miniButton } from "./controls";
+import type { SceneEntry } from "../../engine/types";
+import { miniButton } from "../components/control-styles";
 import { highlightLines, type HighlightKind } from "./highlight";
-import { SidebarPanel } from "./sidebar-panel";
+import { SidebarPanel } from "../components/sidebar-panel";
 
 const tokenClass: Partial<Record<HighlightKind, string>> = {
   comment: "hl-comment",

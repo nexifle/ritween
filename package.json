@@ -8,7 +8,9 @@
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm run build:types",
+    "build:types": "node scripts/build-types.mjs",
+    "prepack": "npm run build:types",
     "preview": "vite preview --host 0.0.0.0",
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "node scripts/validate-browser.mjs",
@@ -51,11 +53,12 @@
   },
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./types/index.d.ts",
       "default": "./src/index.ts"
     }
   },
   "files": [
+    "types",
     "bin",
     "cli",
     "public",

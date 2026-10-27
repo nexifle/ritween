@@ -1,8 +1,11 @@
 /** Headless command bridge. Uses the same engine as the web interface. */
 import { project } from "virtual:ritween-project";
 import { Renderer } from "./engine/render/renderer";
-import { exportVideo, type ExportOptions } from "./engine/export";
-import { defaultExportSize } from "./engine/export/formats/mp4/sizes";
+import { exportVideo } from "./engine/export";
+import {
+  resolveExportRequest,
+  type ExportOverrides,
+} from "./engine/export/project-settings";
 import { validateProject } from "./engine/timeline";
 validateProject(project);
 function download(blob: Blob, name: string) {
@@ -64,28 +67,11 @@ const api = {
       renderer.dispose();
     }
   },
-  async export(
-    options: Omit<ExportOptions, "width" | "height"> & {
-      width?: number;
-      height?: number;
-    },
-  ) {
-    let { width, height } = options;
-    if (width === undefined && height === undefined) {
-      const size = defaultExportSize(project.resolution);
-      if (!size)
-        throw Error(
-          "No export size keeps this project aspect within H.264 Level 4.2.",
-        );
-      width = size.width;
-      height = size.height;
-    }
-    if (width === undefined || height === undefined)
-      throw Error("Export width and height must be passed together.");
+  async export(options: ExportOverrides) {
+    const resolved = resolveExportRequest(project, options);
+    const { width, height, fps } = resolved;
     const result = await exportVideo(project, {
-      ...options,
-      width,
-      height,
+      ...resolved,
       onStage: (stage) => {
         void window.ritweenStage?.(stage);
       },
@@ -100,7 +86,7 @@ const api = {
       bytes: result.blob.size,
       width,
       height,
-      fps: options.fps,
+      fps,
       bitrate: result.bitrate,
       latencyMode: result.latencyMode,
       keyFrameInterval: result.keyFrameInterval,

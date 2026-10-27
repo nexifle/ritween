@@ -1,3 +1,4 @@
+import { audibleAudioTracks, mutedAudioTrackIds } from "./project-settings";
 import { LiveMix, prepareOfflineAudio, AUDIO_LIMITS } from "./live-mix";
 import { frameCount, validateProject } from "./timeline";
 import type { Project } from "./types";
@@ -38,14 +39,11 @@ export async function renderAudio(
   const key = JSON.stringify([
     fps,
     project.duration,
-    [...mutedTrackIds].sort(),
+    [...new Set([...mutedAudioTrackIds(project), ...mutedTrackIds])].sort(),
   ]);
   const cached = exportMixes.get(project);
   if (cached?.key === key) return cached.buffer;
-  const muted = new Set(mutedTrackIds);
-  const tracks = (project.audioTracks ?? []).filter(
-    (track) => !muted.has(track.id) && track.clips.length > 0,
-  );
+  const tracks = audibleAudioTracks(project, mutedTrackIds);
   if (!tracks.length) return null;
   if (typeof OfflineAudioContext === "undefined")
     throw Error(

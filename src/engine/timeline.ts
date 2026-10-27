@@ -1,5 +1,7 @@
+import { parseProjectSettings } from "./project-settings-schema.js";
 import type { Project } from "./types";
 export function validateProject(p: Project) {
+  if (p.settings !== undefined) parseProjectSettings(p.settings);
   if (!p.name || !Number.isFinite(p.duration) || p.duration <= 0)
     throw Error("Project needs a name and positive duration.");
   if (

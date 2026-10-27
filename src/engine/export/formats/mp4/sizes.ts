@@ -1,14 +1,10 @@
 import type { Project } from "../../../types";
 
-/**
- * AVC Level 4.2, matching the export codec avc1.42002a.
- * ITU-T H.264 Table A-1: at most 8704 macroblocks, and neither side
- * wider than floor(sqrt(MaxFS * 8)) macroblocks.
- */
-export const H264_LEVEL_42_MAX_MACROBLOCKS = 8704;
-const H264_LEVEL_42_MAX_SIDE_MBS = Math.floor(
-  Math.sqrt(H264_LEVEL_42_MAX_MACROBLOCKS * 8),
-);
+import { fitsH264Level42 } from "./size-constraints.js";
+export {
+  fitsH264Level42,
+  H264_LEVEL_42_MAX_MACROBLOCKS,
+} from "./size-constraints.js";
 
 /** Short side of each offered export step. The other side keeps the project aspect. */
 export const EXPORT_SHORT_SIDES = [360, 720, 1080] as const;
@@ -28,20 +24,6 @@ export type ExportSize = {
 
 function nearestEven(value: number) {
   return 2 * Math.round(value / 2);
-}
-
-/** Even dimensions that a Level 4.2 H.264 encoder is allowed to store. */
-export function fitsH264Level42(width: number, height: number) {
-  if (!Number.isInteger(width) || !Number.isInteger(height)) return false;
-  if (width < 2 || height < 2 || width % 2 !== 0 || height % 2 !== 0)
-    return false;
-  const across = Math.ceil(width / 16);
-  const down = Math.ceil(height / 16);
-  return (
-    across <= H264_LEVEL_42_MAX_SIDE_MBS &&
-    down <= H264_LEVEL_42_MAX_SIDE_MBS &&
-    across * down <= H264_LEVEL_42_MAX_MACROBLOCKS
-  );
 }
 
 /**

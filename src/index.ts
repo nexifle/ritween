@@ -10,6 +10,9 @@ export type {
   AudioClip,
   AudioClipSource,
   AudioTrack,
+  AudioTrackSettings,
+  ProjectSettings,
+  ProjectExportSettings,
 } from "./engine/types";
 export { Renderer } from "./engine/render/renderer";
 export { exportVideo, exportMp4 } from "./engine/export";
@@ -25,3 +28,16 @@ export {
 
 export { FrameSource } from "./engine/render/frame-source";
 export type { FrameSourceOptions } from "./engine/render/frame-source";
+
+export {
+  audibleAudioTracks,
+  mutedAudioTrackIds,
+  mergeProjectSettings,
+  parseProjectSettings,
+} from "./engine/project-settings";
+
+export {
+  projectExportSettings,
+  resolveExportRequest,
+} from "./engine/export/project-settings";
+export type { ExportOverrides } from "./engine/export/project-settings";

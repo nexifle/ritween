@@ -47,6 +47,7 @@ export function Timeline({
   onZoom,
   onSeek,
   onToggleMute,
+  savingSettings,
   onOpenSource,
 }: {
   ref?: Ref<TimelineHandle>;
@@ -62,6 +63,7 @@ export function Timeline({
   onZoom: (zoom: number) => void;
   onSeek: (time: number) => void;
   onToggleMute: (id: string) => void;
+  savingSettings?: boolean;
   onOpenSource: (id: string) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -233,6 +235,11 @@ export function Timeline({
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-separator px-2 py-1">
         <div className="flex items-center gap-2">
           <h2 className="text-xs/normal font-medium">Timeline</h2>
+          {savingSettings && (
+            <span role="status" className="text-[10px] text-meta">
+              Saving…
+            </span>
+          )}
           <span className="text-[11px] text-meta">
             V1 · {audioTracks.length} audio
           </span>
@@ -328,6 +335,7 @@ export function Timeline({
                   label={track.name}
                   detail={`A${index + 1} · ${track.clips.length} clips`}
                   muted={mutedTrackIds.includes(track.id)}
+                  muteDisabled={savingSettings}
                   onMute={() => onToggleMute(track.id)}
                 />
               ))}

@@ -1,3 +1,4 @@
+import { audibleAudioTracks, mutedAudioTrackIds } from "./project-settings";
 import { validateProject } from "./timeline";
 import type { AudioClip, Project } from "./types";
 
@@ -739,10 +740,7 @@ async function recordScoreUnlocked(
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
-  const muted = new Set(mutedTrackIds);
-  const tracks = (project.audioTracks ?? []).filter(
-    (track) => !muted.has(track.id) && track.clips.length > 0,
-  );
+  const tracks = audibleAudioTracks(project, mutedTrackIds);
   const nodes: Recorded[] = [];
   const buses: ClipBus[] = [];
   if (!tracks.length)
@@ -1120,7 +1118,7 @@ export class LiveMix {
     if (this.disposed)
       return Promise.reject(Error("Preview audio is disposed."));
     validateProject(project);
-    this.setMuted(mutedTrackIds);
+    this.setMuted([...mutedAudioTrackIds(project), ...mutedTrackIds]);
     if (this.project === project) {
       if (this.score) return Promise.resolve(this.score.audible);
       if (this.preparation) return this.preparation;
@@ -1137,7 +1135,7 @@ export class LiveMix {
     const pending = recordScore(
       this.ctx,
       this.sum,
-      project,
+      { ...project, settings: undefined },
       [],
       controller.signal,
     )

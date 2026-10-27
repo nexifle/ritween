@@ -49,7 +49,24 @@ export interface AudioTrack {
   name: string;
   clips: readonly AudioClip[];
 }
+export interface AudioTrackSettings {
+  muted?: boolean;
+}
+/** Versioned, serializable entity settings. IDs remain stable when tracks move. */
+export interface ProjectExportSettings {
+  resolution?: readonly [number, number];
+  fps?: 24 | 30 | 60;
+  bitrate?: number | "auto";
+  latencyMode?: "quality" | "realtime";
+  keyFrameInterval?: number;
+}
+export interface ProjectSettings {
+  export?: ProjectExportSettings;
+  version: 1;
+  audioTracks?: Readonly<Record<string, AudioTrackSettings>>;
+}
 export interface Project {
+  settings?: ProjectSettings;
   name: string;
   resolution: readonly [number, number];
   aspectRatio: readonly [number, number];

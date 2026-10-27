@@ -26,12 +26,12 @@ Options:
                            The size must be even and match
                            the project aspect.
                            Omitting this flag exports the
-                           short-side 720 step, not full HD.
+                           project setting, or short-side 720.
                            Frame defaults to the project resolution.
-  --fps N                  24, 30 or 60 (default: 30)
-  --bitrate BPS            Video target in bits/second (auto: 6 Mbps at 1080p60)
-  --latency-mode MODE      quality (default) or realtime
-  --keyframe-interval SEC  Keyframe spacing in seconds (default: 2; max: 60)
+  --fps N                  24, 30 or 60 (export: project setting, otherwise 30)
+  --bitrate BPS|auto       Video target; overrides project setting
+  --latency-mode MODE      quality or realtime; defaults to project setting
+  --keyframe-interval SEC  Keyframe spacing; project default or 2 seconds (max: 60)
   --port N                 Preview port (default: 5173; next free if busy)
   --open                   Open the web preview in your default browser
   --channel NAME           Browser channel (default: chrome; msedge/chromium)
@@ -107,7 +107,9 @@ export function parseOptions(argv) {
   const fps = Number(values.fps ?? 30);
   if (![24, 30, 60].includes(fps)) throw Error("--fps must be 24, 30 or 60.");
   const bitrate =
-    values.bitrate === undefined ? undefined : Number(values.bitrate);
+    values.bitrate === undefined || values.bitrate === "auto"
+      ? undefined
+      : Number(values.bitrate);
   if (
     bitrate !== undefined &&
     (!Number.isSafeInteger(bitrate) || bitrate < 1 || bitrate > 100_000_000)
@@ -180,6 +182,16 @@ export function parseOptions(argv) {
     ...values,
     command,
     project: values.project ?? positionalProject ?? ".",
+    exportOverrides: {
+      ...(values.fps !== undefined ? { fps } : {}),
+      ...(values.bitrate !== undefined
+        ? { bitrate: values.bitrate === "auto" ? "auto" : bitrate }
+        : {}),
+      ...(values["latency-mode"] !== undefined ? { latencyMode } : {}),
+      ...(values["keyframe-interval"] !== undefined
+        ? { keyFrameInterval }
+        : {}),
+    },
     fps,
     bitrate,
     latencyMode,

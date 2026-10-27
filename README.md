@@ -30,6 +30,63 @@ From this checkout, `npm install -g .` installs the same command. `npm run cli -
 
 Play/pause with Space. Seek using the scrubber; step with the transport buttons or arrow keys. The scene timeline is read-only. Choose an export size that keeps the project aspect, and 24, 30 or 60 FPS, choose an automatic or explicit video bitrate, then Export Video. The steps use a short side of 360, 720 or 1080 when that frame fits H.264 Level 4.2. On a 16:9 project those sizes are still named 360p, 720p and 1080p. Default: the 720 step at 30 FPS. Export progress reports submitted frames; download follows encoder flush and muxing. Cancel discards the partial export. A completed download stays available until the next successful export or page unload.
 
+## Persisted project settings
+
+Track mute buttons save to `manifest.settings.json` next to `manifest.ts` (or the
+same filename stem for other manifest modules). Commit this file with the project:
+preview, CLI exports, and production builds load it automatically. Studio changes
+require the development server (`npm run dev` or the CLI preview server); a static
+production preview cannot write source files and reports save failures.
+
+```json
+{
+  "version": 1,
+  "audioTracks": {
+    "voice": { "muted": true },
+    "music": { "muted": false }
+  },
+  "export": {
+    "resolution": [720, 1280],
+    "fps": 30,
+    "bitrate": "auto",
+    "latencyMode": "quality",
+    "keyFrameInterval": 2
+  }
+}
+```
+
+Keys are stable track IDs, independent of display names or track order. Omitted
+mute values default to audible. Authored defaults can also be supplied as
+`project.settings`; the sidecar overrides them per track and per property.
+Explicit `false` overrides an authored mute. SDK callers who import a raw manifest
+should import the sidecar and use `mergeProjectSettings(project.settings, saved)`
+to assign the resulting `settings` before rendering.
+
+Muted tracks are omitted before offline source construction, scheduling, and
+mixing. If every track is muted, MP4 output has no audio track. Preview uses live
+gain buses for immediate mute/unmute without recompiling audio; master mute and
+preview volume remain listening controls and do not affect exports.
+
+Export controls save per property in the same document, preserving audio settings.
+Resolution uses `[width, height]`, bitrate uses bits/second or `"auto"`, and
+keyframe interval uses seconds. Auto bitrate is recalculated for the chosen size
+and FPS. Omitted export properties use framework defaults (short-side 720, 30 FPS,
+auto bitrate, quality mode, and a two-second keyframe interval).
+CLI export precedence is explicit flags, then project settings, then framework
+defaults. `--bitrate auto` explicitly overrides a saved numeric bitrate. Frame/PNG
+commands keep their existing resolution and FPS defaults. SDK integrations can use
+`projectExportSettings` and `resolveExportRequest` to apply the same precedence.
+These choices are project data; they are not stored in localStorage.
+
+The schema, entity policy, disk commands, and studio integration live in
+`src/engine/project-settings-schema.js`, `src/engine/project-settings.ts`,
+`cli/project-settings.mjs`, and `src/preview/state/use-project-settings.ts`.
+Audio mute and export controls are implemented. Future scene controls can add their own
+`scenes[id]` settings and commands, with separate policies for visibility and
+inclusion in the timeline. They must define timing behavior explicitly; audio
+mute currently preserves project duration. Writes preserve unrelated fields and
+use an atomic replacement; failed saves retain the last saved state in the UI.
+
 ## Architecture
 
 - `src/engine/types.ts`: reusable Scene, Project, RenderContext and future Compositor contracts.
@@ -51,6 +108,7 @@ See [AI Authoring Guide](AI_AUTHORING.md) to create a different video entirely t
 npm test
 npm run build
 npm run test:preview
+npm run test:project-settings
 # With npm run dev running and Google Chrome installed:
 npm run test:browser
 ```

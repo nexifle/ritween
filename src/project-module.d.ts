@@ -1,4 +1,7 @@
 declare module "virtual:ritween-project" {
+  export const authoredSettings:
+    import("./engine/types").ProjectSettings | undefined;
+  export const savedSettings: import("./engine/types").ProjectSettings;
   export const project: import("./engine/types").Project;
 }
 declare module "virtual:ritween-sources" {

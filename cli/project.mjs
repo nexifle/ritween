@@ -1,4 +1,10 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import {
+  readProjectSettings,
+  settingsPath,
+  projectSettingsMiddleware,
+} from "./project-settings.mjs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 export async function resolveProject(input = ".", demo = false, runtimeRoot) {
@@ -114,9 +120,55 @@ export function projectPlugin(manifest) {
       if (id === "virtual:ritween-project") return "\0ritween-project";
       if (id === "virtual:ritween-sources") return "\0ritween-sources";
     },
+    configureServer(server) {
+      const file = settingsPath(manifest);
+      const publish = (settings) => {
+        const module = server.moduleGraph.getModuleById("\0ritween-project");
+        if (module) server.moduleGraph.invalidateModule(module);
+        server.ws.send({
+          type: "custom",
+          event: "ritween:settings",
+          data: settings,
+        });
+      };
+      server.watcher.add(file);
+      const changed = (path) => {
+        if (path !== file) return;
+        try {
+          publish(readProjectSettings(manifest));
+        } catch (error) {
+          server.ws.send({
+            type: "custom",
+            event: "ritween:settings-error",
+            data: error.message,
+          });
+        }
+      };
+      server.watcher.on("change", changed);
+      server.watcher.on("add", changed);
+      server.watcher.on("unlink", changed);
+      server.middlewares.use(projectSettingsMiddleware(manifest, publish));
+    },
+    handleHotUpdate(context) {
+      if (context.file === settingsPath(manifest)) return [];
+    },
     load(id) {
-      if (id === "\0ritween-project")
-        return `import * as module from ${JSON.stringify(manifest)}; export const project = Object.assign({}, module).project ?? Object.assign({}, module).default; if (!project) throw new Error('Manifest must export project or a default Project.');`;
+      if (id === "\0ritween-project") {
+        // Vite treats watched files as implicit imports during dev transforms.
+        // A new project has no sidecar until its first edit.
+        if (existsSync(settingsPath(manifest)))
+          this.addWatchFile(settingsPath(manifest));
+        const schema = fileURLToPath(
+          new URL("../src/engine/project-settings-schema.js", import.meta.url),
+        );
+        return `import * as module from ${JSON.stringify(manifest)};
+          import { mergeProjectSettings } from ${JSON.stringify(schema)};
+          const authored = Object.assign({}, module).project ?? Object.assign({}, module).default;
+          if (!authored) throw new Error('Manifest must export project or a default Project.');
+          export const authoredSettings = authored.settings;
+          export const savedSettings = ${JSON.stringify(readProjectSettings(manifest))};
+          export const project = { ...authored, settings: mergeProjectSettings(authoredSettings, savedSettings) };`;
+      }
       if (id === "\0ritween-sources") {
         const found = sceneSources(manifest);
         this.addWatchFile(manifest);

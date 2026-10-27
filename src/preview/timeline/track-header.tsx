@@ -5,11 +5,13 @@ export function TrackHeader({
   detail,
   muted,
   onMute,
+  muteDisabled,
 }: {
   label: string;
   detail?: string;
   muted?: boolean;
   onMute?: () => void;
+  muteDisabled?: boolean;
 }) {
   return (
     <div
@@ -33,6 +35,7 @@ export function TrackHeader({
           title={muted ? `Unmute ${label}` : `Mute ${label}`}
           aria-pressed={muted}
           onClick={onMute}
+          disabled={muteDisabled}
           className={`flex size-5 shrink-0 items-center justify-center rounded-[3px] border text-[11px] font-semibold leading-none ${muted ? "border-primary bg-muted-track text-muted-track-foreground" : "border-control-border text-meta"}`}
         >
           <Icon name={muted ? "volume-mute" : "volume-high"} size={14} />

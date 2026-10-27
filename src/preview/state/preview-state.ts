@@ -1,5 +1,5 @@
 import { PREVIEW_VOLUME_DB } from "../../engine/audio";
-import { defaultExportSize } from "../../engine/export/formats/mp4/sizes";
+import { projectExportSettings } from "../../engine/export/project-settings";
 import { frameCount } from "../../engine/timeline";
 import { project } from "virtual:ritween-project";
 import {
@@ -19,14 +19,8 @@ export type State = {
   exportStage: string;
   done: number;
   total: number;
-  resolution: string;
-  fps: number;
-  bitrate: number;
-  latencyMode: "quality" | "realtime";
-  keyFrameInterval: number;
   result: string;
   download: string;
-  mutedTrackIds: string[];
   volumeDb: number;
   masterMuted: boolean;
   compZoom: number;
@@ -45,18 +39,9 @@ export const initial: State = {
   exporting: false,
   exportStage: "",
   done: 0,
-  total: frameCount(project.duration, 30),
-  resolution: (() => {
-    const size = defaultExportSize(project.resolution);
-    return size ? `${size.width}x${size.height}` : "";
-  })(),
-  fps: 30,
-  bitrate: 0, // Auto, scaled to resolution and FPS.
-  latencyMode: "quality",
-  keyFrameInterval: 2,
+  total: frameCount(project.duration, projectExportSettings(project).fps),
   result: "",
   download: "",
-  mutedTrackIds: [],
   volumeDb: PREVIEW_VOLUME_DB,
   masterMuted: false,
   compZoom: 1,
@@ -74,7 +59,6 @@ export type Action =
   | { type: "sync"; time: number }
   | { type: "toggle" }
   | { type: "pause" }
-  | { type: "toggleTrackMute"; id: string }
   | { type: "toggleMasterMute" }
   | { type: "setVolume"; volumeDb: number }
   | { type: "compView"; zoom: number; panX: number; panY: number }
@@ -108,13 +92,6 @@ export function reducer(s: State, a: Action): State {
   if (a.type === "pinSource") return { ...s, pinnedSourceId: a.id };
   if (a.type === "followSource") return { ...s, pinnedSourceId: null };
   if (a.type === "setSourceOpen") return { ...s, sourceOpen: a.open };
-  if (a.type === "toggleTrackMute")
-    return {
-      ...s,
-      mutedTrackIds: s.mutedTrackIds.includes(a.id)
-        ? s.mutedTrackIds.filter((id) => id !== a.id)
-        : [...s.mutedTrackIds, a.id],
-    };
   if (a.type === "seek" || a.type === "sync") {
     const time = Math.max(0, Math.min(project.duration, a.time));
     return {

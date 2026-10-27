@@ -1,3 +1,5 @@
+import { projectExportSettings } from "../engine/export/project-settings";
+import { audibleAudioTracks } from "../engine/project-settings";
 import {
   useCallback,
   useEffect,
@@ -11,7 +13,12 @@ import { PreviewAudio } from "../engine/audio";
 import { exportSizes } from "../engine/export/formats/mp4/sizes";
 import { Renderer } from "../engine/render/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
-import { project } from "virtual:ritween-project";
+import {
+  project as sourceProject,
+  authoredSettings,
+  savedSettings,
+} from "virtual:ritween-project";
+import { useProjectSettings } from "./state/use-project-settings";
 import { sources } from "virtual:ritween-sources";
 import { CompositionViewer } from "./composition/composition-viewer";
 import { ErrorBanner } from "./components/error-banner";
@@ -33,6 +40,33 @@ import { Timeline, type TimelineHandle } from "./timeline/timeline";
 import { Transport } from "./playback/transport";
 
 export function App() {
+  const {
+    project,
+    mutedTrackIds,
+    toggleTrackMute,
+    updateExportSettings,
+    saving: savingSettings,
+    error: settingsError,
+  } = useProjectSettings(sourceProject, authoredSettings, savedSettings);
+  const exportSettings = projectExportSettings(project);
+  const exportFps = exportSettings.fps;
+  const exportBitrate =
+    exportSettings.bitrate === "auto" ? 0 : exportSettings.bitrate;
+  const exportLatencyMode = exportSettings.latencyMode;
+  const exportKeyFrameInterval = exportSettings.keyFrameInterval;
+  const sizes = exportSizes(project.resolution);
+  if (
+    project.settings?.export?.resolution &&
+    !sizes.some(
+      (size) =>
+        size.width === exportSettings.width &&
+        size.height === exportSettings.height,
+    )
+  )
+    sizes.push({ width: exportSettings.width, height: exportSettings.height });
+  const exportResolution = sizes.length
+    ? `${exportSettings.width}x${exportSettings.height}`
+    : "";
   const [state, dispatch] = useReducer(reducer, initial);
   const canvas = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<Renderer | null>(null);
@@ -109,9 +143,9 @@ export function App() {
       patch({ error: String(e), playing: false, ready: false });
     }
   }, [state.time, state.ready]);
-  const mutedKey = state.mutedTrackIds.join("\0");
+  const mutedKey = mutedTrackIds.join("\0");
   useEffect(() => {
-    audio.current?.setMuted(state.mutedTrackIds);
+    audio.current?.setMuted(mutedTrackIds);
   }, [mutedKey]);
   useEffect(() => {
     const player = audio.current;
@@ -126,15 +160,13 @@ export function App() {
     const player = mix();
     player.setMonitor(state.volumeDb, state.masterMuted);
     let cancelled = false;
-    void player
-      .play(timeRef.current, project, state.mutedTrackIds)
-      .catch((e) => {
-        if (!cancelled)
-          patch({
-            error: e instanceof Error ? e.message : String(e),
-            playing: false,
-          });
-      });
+    void player.play(timeRef.current, project, mutedTrackIds).catch((e) => {
+      if (!cancelled)
+        patch({
+          error: e instanceof Error ? e.message : String(e),
+          playing: false,
+        });
+    });
     let id = 0;
     let last = performance.now();
     const tick = (now: number) => {
@@ -197,7 +229,7 @@ export function App() {
       if (e.code === "ArrowRight" || e.code === "ArrowLeft") {
         e.preventDefault();
         const time =
-          state.time + (e.code === "ArrowRight" ? 1 : -1) / state.fps;
+          state.time + (e.code === "ArrowRight" ? 1 : -1) / exportFps;
         seekAndReveal(time);
       }
       if (e.key === "-" || e.key === "_" || e.key === "=" || e.key === "+") {
@@ -212,8 +244,9 @@ export function App() {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [state.time, state.playing, state.ready, state.fps, state.exporting]);
+  }, [state.time, state.playing, state.ready, exportFps, state.exporting]);
   async function startExport() {
+    if (savingSettings || state.exporting || !exportResolution) return;
     const controller = new AbortController();
     abort.current = controller;
     audio.current?.stop();
@@ -222,7 +255,7 @@ export function App() {
       exporting: true,
       exportStage: "Preparing export…",
       done: 0,
-      total: frameCount(project.duration, state.fps),
+      total: frameCount(project.duration, exportFps),
       error: "",
       result: "",
       download: "",
@@ -243,17 +276,16 @@ export function App() {
             "…",
         });
     };
-    const [width, height] = state.resolution.split("x").map(Number);
+    const [width, height] = exportResolution.split("x").map(Number);
     try {
       const { exportVideo } = await import("../engine/export");
       const result = await exportVideo(project, {
         width,
         height,
-        fps: state.fps,
-        bitrate: state.bitrate || undefined,
-        latencyMode: state.latencyMode,
-        keyFrameInterval: state.keyFrameInterval,
-        mutedTrackIds: state.mutedTrackIds,
+        fps: exportFps,
+        bitrate: exportBitrate || undefined,
+        latencyMode: exportLatencyMode,
+        keyFrameInterval: exportKeyFrameInterval,
         signal: controller.signal,
         onStage: (stage) => {
           activeStages.add(stage);
@@ -326,21 +358,28 @@ export function App() {
 
   const renderExport = (collapsed: boolean, borderTop = false) => (
     <ExportPanel
-      ready={state.ready}
+      ready={state.ready && !savingSettings}
+      savingSettings={savingSettings}
       exporting={state.exporting}
       stage={state.exportStage}
-      resolution={state.resolution}
-      sizes={exportSizes(project.resolution)}
+      resolution={exportResolution}
+      sizes={sizes}
       aspectRatio={project.aspectRatio}
-      fps={state.fps}
-      bitrate={state.bitrate}
-      latencyMode={state.latencyMode}
-      keyFrameInterval={state.keyFrameInterval}
-      onBitrate={(bitrate) => patch({ bitrate })}
-      onLatencyMode={(latencyMode) => patch({ latencyMode })}
-      onKeyFrameInterval={(keyFrameInterval) => patch({ keyFrameInterval })}
+      fps={exportFps}
+      bitrate={exportBitrate}
+      latencyMode={exportLatencyMode}
+      keyFrameInterval={exportKeyFrameInterval}
+      onBitrate={(bitrate) =>
+        void updateExportSettings({ bitrate: bitrate || "auto" })
+      }
+      onLatencyMode={(latencyMode) =>
+        void updateExportSettings({ latencyMode })
+      }
+      onKeyFrameInterval={(keyFrameInterval) =>
+        void updateExportSettings({ keyFrameInterval })
+      }
       duration={project.duration}
-      hasAudio={(project.audioTracks ?? []).length > 0}
+      hasAudio={audibleAudioTracks(project).length > 0}
       done={state.done}
       total={state.total}
       result={state.result}
@@ -348,8 +387,11 @@ export function App() {
       collapsed={collapsed}
       borderTop={borderTop}
       onToggleCollapse={(next) => setExportCollapsed(next)}
-      onResolution={(resolution) => patch({ resolution })}
-      onFps={(fps) => patch({ fps })}
+      onResolution={(resolution) => {
+        const [width, height] = resolution.split("x").map(Number);
+        void updateExportSettings({ resolution: [width, height] });
+      }}
+      onFps={(fps) => void updateExportSettings({ fps: fps as 24 | 30 | 60 })}
       onExport={() => void startExport()}
       onCancel={() => abort.current?.abort()}
     />
@@ -456,7 +498,7 @@ export function App() {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <StudioHeader />
-      <ErrorBanner error={state.error} />
+      <ErrorBanner error={state.error || settingsError} />
       <main className="min-h-0 flex-1">
         <StudioDock
           viewer={
@@ -489,7 +531,7 @@ export function App() {
                   playing={state.playing}
                   time={state.time}
                   duration={project.duration}
-                  fps={state.fps}
+                  fps={exportFps}
                   volumeDb={state.volumeDb}
                   masterMuted={state.masterMuted}
                   onSeek={seekAndReveal}
@@ -509,17 +551,18 @@ export function App() {
             <Timeline
               ref={timelineRef}
               duration={project.duration}
-              fps={state.fps}
+              fps={exportFps}
               time={state.time}
               playing={state.playing}
               zoom={state.tlZoom}
               scenes={project.scenes}
               audioTracks={project.audioTracks ?? []}
               activeSceneId={active.id}
-              mutedTrackIds={state.mutedTrackIds}
+              mutedTrackIds={mutedTrackIds}
               onZoom={(zoom) => dispatch({ type: "tlZoom", zoom })}
               onSeek={seekTo}
-              onToggleMute={(id) => dispatch({ type: "toggleTrackMute", id })}
+              onToggleMute={toggleTrackMute}
+              savingSettings={savingSettings}
               onOpenSource={pinSource}
             />
           }

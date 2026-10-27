@@ -8,6 +8,7 @@ import { SidebarPanel } from "../components/sidebar-panel";
 export function ExportPanel({
   ready,
   exporting,
+  savingSettings,
   stage,
   resolution,
   sizes,
@@ -35,6 +36,7 @@ export function ExportPanel({
 }: {
   ready: boolean;
   exporting: boolean;
+  savingSettings?: boolean;
   stage: string;
   resolution: string;
   sizes: readonly ExportSize[];
@@ -136,13 +138,18 @@ export function ExportPanel({
       onToggleCollapse={onToggleCollapse}
       contentClassName="p-3"
     >
+      {savingSettings && (
+        <p role="status" className="mb-2 text-[11px] text-meta">
+          Saving settings…
+        </p>
+      )}
       <label className="mb-1 block text-[11px] text-label" htmlFor="resolution">
         Resolution
       </label>
       {sizes.length ? (
         <select
           id="resolution"
-          disabled={exporting}
+          disabled={exporting || savingSettings}
           value={resolution}
           onChange={(e) => onResolution(e.target.value)}
           className="mb-2 h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-[11px]"
@@ -170,7 +177,7 @@ export function ExportPanel({
       </label>
       <select
         id="fps"
-        disabled={exporting}
+        disabled={exporting || savingSettings}
         value={fps}
         onChange={(e) => onFps(Number(e.target.value))}
         className="h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-[11px]"
@@ -189,7 +196,7 @@ export function ExportPanel({
       </label>
       <select
         id="video-bitrate"
-        disabled={exporting}
+        disabled={exporting || savingSettings}
         value={bitrate}
         onChange={(e) => onBitrate(Number(e.target.value))}
         className="h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-[11px]"
@@ -200,11 +207,13 @@ export function ExportPanel({
             ? ` · ${(resolveEncodingOptions(Number(resolution.split("x")[0]), Number(resolution.split("x")[1]), fps).bitrate / 1e6).toFixed(1)} Mbps`
             : ""}
         </option>
-        {[2, 4, 6, 8, 12, 20].map((mbps) => (
-          <option key={mbps} value={mbps * 1e6}>
-            {mbps} Mbps
-          </option>
-        ))}
+        {[...new Set([2, 4, 6, 8, 12, 20, ...(bitrate ? [bitrate / 1e6] : [])])]
+          .sort((a, b) => a - b)
+          .map((mbps) => (
+            <option key={mbps} value={mbps * 1e6}>
+              {mbps} Mbps
+            </option>
+          ))}
       </select>
       <p className="mt-1 text-[11px] text-muted-foreground">
         Higher bitrate keeps more detail and increases file size.
@@ -217,7 +226,7 @@ export function ExportPanel({
       </label>
       <select
         id="encoding-mode"
-        disabled={exporting}
+        disabled={exporting || savingSettings}
         value={latencyMode}
         onChange={(e) =>
           onLatencyMode(e.target.value as "quality" | "realtime")
@@ -235,16 +244,18 @@ export function ExportPanel({
       </label>
       <select
         id="keyframe-interval"
-        disabled={exporting}
+        disabled={exporting || savingSettings}
         value={keyFrameInterval}
         onChange={(e) => onKeyFrameInterval(Number(e.target.value))}
         className="h-[30px] w-full rounded-sm border border-input bg-popover px-2 text-[11px]"
       >
-        {[1, 2, 4].map((seconds) => (
-          <option key={seconds} value={seconds}>
-            {seconds} seconds{seconds === 2 ? " · recommended" : ""}
-          </option>
-        ))}
+        {[...new Set([1, 2, 4, keyFrameInterval])]
+          .sort((a, b) => a - b)
+          .map((seconds) => (
+            <option key={seconds} value={seconds}>
+              {seconds} seconds{seconds === 2 ? " · recommended" : ""}
+            </option>
+          ))}
       </select>
       <div className="my-2.5 space-y-1 border-y border-border py-2 text-[11px]">
         <div className="flex justify-between">
@@ -289,7 +300,11 @@ export function ExportPanel({
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 min-w-0 text-muted-foreground">
-                <Icon name="stop" size={13} className="shrink-0 text-muted-foreground" />
+                <Icon
+                  name="stop"
+                  size={13}
+                  className="shrink-0 text-muted-foreground"
+                />
                 <span className="truncate text-[12px] font-semibold text-foreground">
                   Export stopped
                 </span>
@@ -347,12 +362,16 @@ export function ExportPanel({
               </div>
               <span className="shrink-0 font-mono text-[12px] font-semibold tabular-nums text-foreground">
                 {percent}
-                <span className="text-[11px] font-normal text-muted-foreground">%</span>
+                <span className="text-[11px] font-normal text-muted-foreground">
+                  %
+                </span>
               </span>
             </div>
 
             <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-              <span className="truncate pr-2 font-medium text-foreground/80">{stage}</span>
+              <span className="truncate pr-2 font-medium text-foreground/80">
+                {stage}
+              </span>
               <span className="shrink-0 font-mono tabular-nums">
                 {done.toLocaleString()} / {total.toLocaleString()} f
               </span>
@@ -406,7 +425,11 @@ export function ExportPanel({
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 min-w-0">
-                <Icon name="check" size={15} className="shrink-0 text-primary" />
+                <Icon
+                  name="check"
+                  size={15}
+                  className="shrink-0 text-primary"
+                />
                 <span className="truncate text-[12px] font-semibold text-foreground">
                   Your video is ready
                 </span>

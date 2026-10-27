@@ -206,10 +206,7 @@ export async function main(argv = process.argv.slice(2)) {
               : window.ritween.export({
                   width: options.width,
                   height: options.height,
-                  fps: options.fps,
-                  bitrate: options.bitrate,
-                  latencyMode: options.latencyMode,
-                  keyFrameInterval: options.keyFrameInterval,
+                  ...options.exportOverrides,
                 }),
           options,
         ),

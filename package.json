@@ -58,9 +58,11 @@
   "files": [
     "bin",
     "cli",
+    "public",
     "src",
     "index.html",
     "README.md",
+    "LOGO.md",
     "AI_AUTHORING.md",
     "CLI.md"
   ],

@@ -25,7 +25,39 @@ export function StudioHeader() {
         className="flex items-center gap-[11px] text-[21px] font-semibold tracking-[-0.6px]"
       >
         <span className="flex h-[29px] w-[29px] items-center justify-center rounded-lg bg-primary text-brand-ink">
-          <Icon name="film" size={19} />
+          <svg
+            viewBox="0 0 24 24"
+            width={19}
+            height={19}
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M6 20V10.5C6 6.91 8.91 4 12.5 4H13.5"
+              stroke="currentColor"
+              strokeWidth={2.4}
+              strokeLinecap="round"
+            />
+            <path
+              d="M20 5C20 10.8 15.5 15 10 15C10 9.2 14.5 5 20 5Z"
+              fill="currentColor"
+            />
+            <path
+              d="M11 14.5L16.2 18.8"
+              stroke="currentColor"
+              strokeWidth={2.4}
+              strokeLinecap="round"
+            />
+            <rect
+              x={14.8}
+              y={16.6}
+              width={4.4}
+              height={4.4}
+              rx={0.9}
+              transform="rotate(45 17 18.8)"
+              fill="currentColor"
+            />
+          </svg>
         </span>
         ritween
         <span className="ml-[3px] rounded-sm border border-badge px-1.5 py-0.5 text-[11px] font-medium tracking-normal text-badge-foreground">

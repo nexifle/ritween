@@ -17,7 +17,9 @@ export async function startServer({ runtimeRoot, project, port = 0 }) {
       cacheDir: join(cache, "node_modules/.vite"),
       publicDir: existsSync(join(project.directory, "public"))
         ? join(project.directory, "public")
-        : false,
+        : existsSync(join(runtimeRoot, "public"))
+          ? join(runtimeRoot, "public")
+          : false,
       plugins: [
         projectPlugin(project.manifest),
         react(),

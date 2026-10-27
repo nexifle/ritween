@@ -2,7 +2,13 @@ import { PREVIEW_VOLUME_DB } from "../../engine/audio";
 import { defaultExportSize } from "../../engine/export/formats/mp4/sizes";
 import { frameCount } from "../../engine/timeline";
 import { project } from "virtual:ritween-project";
-import { clamp, COMP_ZOOM_MAX, COMP_ZOOM_MIN, TL_ZOOM_MAX } from "../utils/view-utils";
+import {
+  clamp,
+  COMP_ZOOM_MAX,
+  COMP_ZOOM_MIN,
+  TL_ZOOM_MIN,
+  TL_ZOOM_MAX,
+} from "../utils/view-utils";
 
 export type State = {
   time: number;
@@ -98,7 +104,7 @@ export function reducer(s: State, a: Action): State {
       compPanY: a.panY,
     };
   if (a.type === "tlZoom")
-    return { ...s, tlZoom: clamp(a.zoom, 1, TL_ZOOM_MAX) };
+    return { ...s, tlZoom: clamp(a.zoom, TL_ZOOM_MIN, TL_ZOOM_MAX) };
   if (a.type === "pinSource") return { ...s, pinnedSourceId: a.id };
   if (a.type === "followSource") return { ...s, pinnedSourceId: null };
   if (a.type === "setSourceOpen") return { ...s, sourceOpen: a.open };

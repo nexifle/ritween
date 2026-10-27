@@ -5,6 +5,7 @@ export function LaneBlock({
   color,
   title,
   detail,
+  timing,
   active,
   onInspect,
 }: {
@@ -14,11 +15,13 @@ export function LaneBlock({
   color: string;
   title: string;
   detail: string;
+  timing?: string;
   active?: boolean;
   onInspect?: () => void;
 }) {
   return (
     <div
+      title={`${title} · ${timing ?? detail}`}
       className="absolute top-1 bottom-1 flex flex-col justify-center overflow-hidden rounded-[3px] border px-1.5"
       style={{
         left: `${(start / total) * 100}%`,
@@ -27,9 +30,17 @@ export function LaneBlock({
         backgroundColor: `color-mix(in srgb, ${color} var(--clip-fill), transparent)`,
       }}
     >
-      <div className="truncate text-[11px] font-medium leading-[14px]" style={{ color }}>
+      <div
+        className="truncate text-[11px] font-medium leading-[14px]"
+        style={{ color }}
+      >
         {title}
       </div>
+      {timing && (
+        <div className="truncate font-mono text-[10px] leading-4 tabular-nums text-meta">
+          {timing}
+        </div>
+      )}
       {onInspect ? (
         <button
           type="button"

@@ -1,5 +1,6 @@
 export const COMP_ZOOM_MIN = 0.25;
 export const COMP_ZOOM_MAX = 32;
+export const TL_ZOOM_MIN = 0.1;
 export const TL_ZOOM_MAX = 80;
 
 export const clamp = (value: number, min: number, max: number) =>
@@ -13,15 +14,23 @@ export const clock = (time: number) =>
 export function rulerStep(pxPerSec: number, fps: number) {
   const frame = 1 / fps;
   const raw = 78 / Math.max(pxPerSec, 0.0001);
-  const frames = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800];
-  const step = frames.find((count) => count * frame >= raw - 1e-9);
-  return (step ?? frames[frames.length - 1]) * frame;
+  if (raw < 1) {
+    const frames = [1, 2, 3, 5, 6, 10, 12, 15, 24, 30, 48, 60];
+    return (
+      (frames.find((count) => count <= fps && count * frame >= raw - 1e-9) ??
+        fps) * frame
+    );
+  }
+  const seconds = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+  return (
+    seconds.find((step) => step >= raw - 1e-9) ?? Math.ceil(raw / 3600) * 3600
+  );
 }
 
 export function formatRulerTime(time: number, step: number, fps: number) {
   const pad = (value: number) => value.toString().padStart(2, "0");
   const safe = Math.max(0, time);
-  if (step < 0.5 - 1e-6) {
+  if (step < 1 - 1e-6) {
     const frames = Math.round(safe * fps);
     const ff = ((frames % fps) + fps) % fps;
     const total = Math.floor(frames / fps);
@@ -30,8 +39,7 @@ export function formatRulerTime(time: number, step: number, fps: number) {
   const whole = Math.floor(safe);
   const mm = Math.floor(whole / 60);
   const ss = whole % 60;
-  if (step < 1 - 1e-6) return `${mm}:${pad(ss)}.${Math.round((safe - whole) * 10)}`;
-  return `${mm}:${pad(ss)}`;
+  return `${pad(mm)}:${pad(ss)}`;
 }
 
 export function rulerMarks(
@@ -42,7 +50,13 @@ export function rulerMarks(
   viewEnd: number,
 ) {
   const major = rulerStep(pxPerSec, fps);
-  const minorDiv = major * pxPerSec >= 150 ? 5 : major * pxPerSec >= 96 ? 2 : 1;
+  // Subdivide in whole frames: dense ticks without implying sub-frame precision.
+  const majorFrames = Math.max(1, Math.round(major * fps));
+  const subdivisions = [10, 5, 4, 3, 2, 1];
+  const minorDiv =
+    subdivisions.find(
+      (count) => majorFrames % count === 0 && (major * pxPerSec) / count >= 7,
+    ) ?? 1;
   const minor = major / minorDiv;
   const first = Math.max(0, Math.floor((viewStart - major) / minor));
   const last = Math.ceil((viewEnd + major) / minor);

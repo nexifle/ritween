@@ -1,3 +1,4 @@
+import { saveStudioPreferences } from "../state/studio-preferences";
 import { useEffect, useState } from "react";
 import { Icon } from "../components/icon";
 
@@ -9,7 +10,7 @@ export function StudioHeader() {
     const root = document.documentElement;
     root.classList.toggle("dark", theme === "dark");
     root.style.colorScheme = theme;
-    localStorage.setItem("ritween-theme", theme);
+    saveStudioPreferences({ theme });
     const color = getComputedStyle(root)
       .getPropertyValue("--background")
       .trim();

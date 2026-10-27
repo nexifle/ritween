@@ -7,8 +7,20 @@
     <title>Ritween — Source to motion</title>
     <script>
       try {
-        var stored = localStorage.getItem("ritween-theme");
-        var dark = stored ? stored === "dark" : true;
+        var stored;
+        try {
+          var preferences = JSON.parse(
+            localStorage.getItem("ritween-studio-preferences") || "null",
+          );
+          if (
+            preferences &&
+            preferences.version === 1 &&
+            (preferences.theme === "light" || preferences.theme === "dark")
+          )
+            stored = preferences.theme;
+        } catch (e) {}
+        if (!stored) stored = localStorage.getItem("ritween-theme");
+        var dark = stored !== "light";
         document.documentElement.classList.toggle("dark", dark);
         document.documentElement.style.colorScheme = dark ? "dark" : "light";
         var meta = document.querySelector('meta[name="theme-color"]');

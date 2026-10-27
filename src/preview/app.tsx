@@ -5,10 +5,10 @@ import {
   useEffect,
   useReducer,
   useRef,
-  useState,
   type ReactNode,
 } from "react";
-import { useDefaultLayout } from "react-resizable-panels";
+import { usePersistentLayout } from "./hooks/use-persistent-layout";
+import { saveStudioPreferences } from "./state/studio-preferences";
 import { PreviewAudio } from "../engine/audio";
 import { exportSizes } from "../engine/export/formats/mp4/sizes";
 import { Renderer } from "../engine/render/renderer";
@@ -32,7 +32,7 @@ import {
 } from "./components/resizable";
 import { SceneSource } from "./source/scene-source";
 import { SidebarPanel } from "./components/sidebar-panel";
-import { initial, reducer } from "./state/preview-state";
+import { initial, reducer, createInitialState } from "./state/preview-state";
 import { StudioDock } from "./layout/studio-dock";
 import { StudioFooter } from "./layout/studio-footer";
 import { StudioHeader } from "./layout/studio-header";
@@ -67,7 +67,7 @@ export function App() {
   const exportResolution = sizes.length
     ? `${exportSettings.width}x${exportSettings.height}`
     : "";
-  const [state, dispatch] = useReducer(reducer, initial);
+  const [state, dispatch] = useReducer(reducer, initial, createInitialState);
   const canvas = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<Renderer | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -76,10 +76,27 @@ export function App() {
   const audio = useRef<PreviewAudio | null>(null);
   const timeRef = useRef(0);
   const timelineRef = useRef<TimelineHandle>(null);
-  const inspectorLayout = useDefaultLayout({
-    id: "ritween-inspector",
-    onlySaveAfterUserInteractions: true,
-  });
+  const inspectorLayout = usePersistentLayout("ritween-inspector", [
+    "export",
+    "source",
+  ]);
+  useEffect(() => {
+    saveStudioPreferences({
+      tlZoom: state.tlZoom,
+      volumeDb: state.volumeDb,
+      masterMuted: state.masterMuted,
+      sourceOpen: state.sourceOpen,
+      exportCollapsed: state.exportCollapsed,
+      sourceCollapsed: state.sourceCollapsed,
+    });
+  }, [
+    state.tlZoom,
+    state.volumeDb,
+    state.masterMuted,
+    state.sourceOpen,
+    state.exportCollapsed,
+    state.sourceCollapsed,
+  ]);
   const patch = (value: Partial<typeof state>) =>
     dispatch({ type: "patch", value });
   const mix = () => {
@@ -338,8 +355,11 @@ export function App() {
     () => dispatch({ type: "setSourceOpen", open: false }),
     [],
   );
-  const [exportCollapsed, setExportCollapsed] = useState(false);
-  const [sourceCollapsed, setSourceCollapsed] = useState(false);
+  const { exportCollapsed, sourceCollapsed } = state;
+  const setExportCollapsed = (exportCollapsed: boolean) =>
+    patch({ exportCollapsed });
+  const setSourceCollapsed = (sourceCollapsed: boolean) =>
+    patch({ sourceCollapsed });
 
   const sceneSource = (
     <SceneSource

@@ -1,3 +1,4 @@
+import { usePersistentLayout } from "../hooks/use-persistent-layout";
 import {
   useEffect,
   useImperativeHandle,
@@ -66,6 +67,10 @@ export function Timeline({
   savingSettings?: boolean;
   onOpenSource: (id: string) => void;
 }) {
+  const columns = usePersistentLayout("ritween-track-columns", [
+    "track-names",
+    "track-lanes",
+  ]);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -303,6 +308,9 @@ export function Timeline({
         </div>
       </div>
       <ResizablePanelGroup
+        id="ritween-track-columns"
+        defaultLayout={columns.defaultLayout}
+        onLayoutChanged={columns.onLayoutChanged}
         orientation="horizontal"
         className="min-h-0 min-w-0 flex-1"
       >

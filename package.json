@@ -14,6 +14,7 @@
     "test:browser": "node scripts/validate-browser.mjs",
     "test:preview": "node scripts/validate-preview.mjs",
     "test:project-settings": "node scripts/validate-project-settings.mjs",
+    "test:studio-preferences": "node scripts/validate-studio-preferences.mjs",
     "benchmark:preview": "node scripts/diagnose-preview.mjs",
     "benchmark:export": "node scripts/benchmark-export.mjs",
     "cli": "node bin/ritween.mjs",

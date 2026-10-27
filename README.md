@@ -87,6 +87,24 @@ inclusion in the timeline. They must define timing behavior explicitly; audio
 mute currently preserves project duration. Writes preserve unrelated fields and
 use an atomic replacement; failed saves retain the last saved state in the UI.
 
+## Browser studio preferences
+
+The studio remembers theme, timeline zoom, preview volume/master mute, the Code
+view, and the collapsed state of the export/source panels in localStorage under
+`ritween-studio-preferences` (version 1). Existing `ritween-theme` values migrate
+on first use. Theme is applied before React starts to avoid a color flash.
+
+Divider sizes use the existing `react-resizable-panels:ritween-*` keys, including
+the timeline layer-name divider. Desktop rows/columns and the mobile stack keep
+separate layouts. Resizing the window does not overwrite user-chosen sizes.
+Stored values are validated, and unavailable/full storage leaves controls usable
+for the current session.
+
+Preferences belong to the browser origin and are shared by projects opened on
+that origin. Playback position, active playback, export jobs, source pinning, and
+export results are not restored. Track mute and export options remain project
+settings in the source-controlled sidecar, independent of these preferences.
+
 ## Architecture
 
 - `src/engine/types.ts`: reusable Scene, Project, RenderContext and future Compositor contracts.
@@ -109,6 +127,7 @@ npm test
 npm run build
 npm run test:preview
 npm run test:project-settings
+npm run test:studio-preferences
 # With npm run dev running and Google Chrome installed:
 npm run test:browser
 ```

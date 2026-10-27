@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useDefaultLayout } from "react-resizable-panels";
+import { usePersistentLayout } from "../hooks/use-persistent-layout";
 import {
   dockPaneStyle,
   ResizableHandle,
@@ -26,18 +26,16 @@ export function StudioDock({
   timeline: ReactNode;
 }) {
   const stacked = useMediaQuery("(max-width: 1023px)");
-  const stack = useDefaultLayout({
-    id: "ritween-stack",
-    onlySaveAfterUserInteractions: true,
-  });
-  const rows = useDefaultLayout({
-    id: "ritween-rows",
-    onlySaveAfterUserInteractions: true,
-  });
-  const columns = useDefaultLayout({
-    id: "ritween-columns",
-    onlySaveAfterUserInteractions: true,
-  });
+  const stack = usePersistentLayout("ritween-stack", [
+    "viewer",
+    "inspector",
+    "timeline",
+  ]);
+  const rows = usePersistentLayout("ritween-rows", ["stage", "timeline"]);
+  const columns = usePersistentLayout("ritween-columns", [
+    "viewer",
+    "inspector",
+  ]);
 
   if (stacked) {
     return (

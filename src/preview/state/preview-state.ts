@@ -1,3 +1,4 @@
+import { readStudioPreferences } from "./studio-preferences";
 import { PREVIEW_VOLUME_DB } from "../../engine/audio";
 import { projectExportSettings } from "../../engine/export/project-settings";
 import { frameCount } from "../../engine/timeline";
@@ -29,6 +30,8 @@ export type State = {
   tlZoom: number;
   pinnedSourceId: string | null;
   sourceOpen: boolean;
+  exportCollapsed: boolean;
+  sourceCollapsed: boolean;
 };
 
 export const initial: State = {
@@ -50,7 +53,30 @@ export const initial: State = {
   tlZoom: 1,
   pinnedSourceId: null,
   sourceOpen: false,
+  exportCollapsed: false,
+  sourceCollapsed: false,
 };
+
+/** Restore only studio controls; playback and export jobs always start idle. */
+export function createInitialState(): State {
+  const {
+    tlZoom,
+    volumeDb,
+    masterMuted,
+    sourceOpen,
+    exportCollapsed,
+    sourceCollapsed,
+  } = readStudioPreferences();
+  return {
+    ...initial,
+    tlZoom,
+    volumeDb,
+    masterMuted,
+    sourceOpen,
+    exportCollapsed,
+    sourceCollapsed,
+  };
+}
 
 export type Action =
   | { type: "patch"; value: Partial<State> }

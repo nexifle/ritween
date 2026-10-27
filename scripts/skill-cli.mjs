@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { nodeCli } from "./node-cli.mjs";
 
 const [mode, ...args] = process.argv.slice(2);
 if (mode !== "local" && mode !== "installed") {
@@ -9,11 +10,18 @@ if (mode !== "local" && mode !== "installed") {
   process.exit(1);
 }
 
-const executable = mode === "local" ? process.execPath : "ritween";
+let installed;
+try {
+  installed = mode === "installed" ? nodeCli("ritween") : null;
+} catch (error) {
+  console.error(`Unable to run installed CLI: ${error.message}`);
+  process.exit(1);
+}
+const executable = installed?.command ?? process.execPath;
 const cliArgs =
   mode === "local"
     ? [fileURLToPath(new URL("../bin/ritween.mjs", import.meta.url)), ...args]
-    : args;
+    : [...installed.args, ...args];
 const result = spawnSync(executable, cliArgs, { stdio: "inherit" });
 if (result.error) {
   console.error(`Unable to run ${mode} CLI: ${result.error.message}`);

@@ -7,6 +7,7 @@ import {
   sceneSources,
 } from "../cli/project.mjs";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 test("CLI resolves web preview, PNG preview alias, frame indices and export presets", () => {
   assert.equal(parseOptions(["preview"]).command, "preview");
   const frame = parseOptions([
@@ -64,7 +65,7 @@ test("CLI rejects ambiguous and unsupported options before browser startup", () 
 test("CLI discovers a project and reports absent manifests", async () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
   const found = await resolveProject(root, false, root);
-  assert.ok(found.manifest.endsWith("src/project/manifest.ts"));
+  assert.ok(found.manifest.endsWith(join("src", "project", "manifest.ts")));
   await assert.rejects(
     resolveProject("/nonexistent/ritween-project", false, root),
   );

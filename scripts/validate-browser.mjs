@@ -1,6 +1,7 @@
 import { chromium } from "playwright";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 const base = process.env.BASE_URL ?? "http://localhost:5173";
 const browser = await chromium.launch({
   channel: process.env.CHROME_CHANNEL ?? "chrome",
@@ -36,7 +37,7 @@ try {
   };
   await seek(0.8);
   await page.screenshot({
-    path: new URL("desktop.png", artifacts).pathname,
+    path: fileURLToPath(new URL("desktop.png", artifacts)),
     fullPage: true,
   });
   await seek(5.2);
@@ -81,7 +82,9 @@ try {
   const downloadEvent = page.waitForEvent("download", { timeout: 120000 });
   await page.getByRole("button", { name: "Export Video", exact: true }).click();
   const download = await downloadEvent;
-  await download.saveAs(new URL("source-to-motion.mp4", artifacts).pathname);
+  await download.saveAs(
+    fileURLToPath(new URL("source-to-motion.mp4", artifacts)),
+  );
   const encoderConfig = await page.evaluate(() => window.exportEncoderConfig);
   assert.equal(encoderConfig.bitrate, 4000000);
   assert.equal(encoderConfig.latencyMode, "quality");
@@ -324,7 +327,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await seek(0.8);
   await page.screenshot({
-    path: new URL("mobile.png", artifacts).pathname,
+    path: fileURLToPath(new URL("mobile.png", artifacts)),
     fullPage: true,
   });
   assert.equal(

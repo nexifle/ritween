@@ -255,13 +255,25 @@ test("save and reload preserve unrelated fields, explicit unmute and authored so
   }
 });
 
-test("settings writes cannot follow a symlink to a different file", async () => {
+test("settings writes cannot follow a symlink to a different file", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ritween-settings-"));
   try {
     const manifest = join(directory, "manifest.ts");
     const outside = join(directory, "other.json");
     await writeFile(outside, '{"version":1}');
-    await symlink(outside, settingsPath(manifest));
+    try {
+      await symlink(outside, settingsPath(manifest));
+    } catch (error) {
+      if (
+        process.platform !== "win32" ||
+        (error as NodeJS.ErrnoException).code !== "EPERM"
+      )
+        throw error;
+      t.skip(
+        "File symlinks require Windows Developer Mode or elevated privileges.",
+      );
+      return;
+    }
     await assert.rejects(
       writeSettingsCommand(manifest, {
         type: "set-audio-track-muted",

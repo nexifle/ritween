@@ -28,7 +28,18 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
   };
   try {
     const packed = JSON.parse(
-      run("npm", ["pack", "--json", "--pack-destination", temporary], root),
+      run(
+        process.execPath,
+        [
+          process.env.npm_execpath ??
+            join(process.execPath, "..", "node_modules/npm/bin/npm-cli.js"),
+          "pack",
+          "--json",
+          "--pack-destination",
+          temporary,
+        ],
+        root,
+      ),
     );
     const consumer = join(temporary, "consumer");
     const modules = join(consumer, "node_modules");
@@ -59,7 +70,7 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
     symlinkSync(
       join(root, "node_modules/@webgpu/types"),
       join(modules, "@webgpu/types"),
-      "dir",
+      process.platform === "win32" ? "junction" : "dir",
     );
     writeFileSync(
       join(consumer, "package.json"),

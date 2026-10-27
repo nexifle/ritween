@@ -158,7 +158,7 @@ try {
             test,
             segments: report.segments,
             secondsPerSegment: report.secondsPerSegment,
-            projectModule: "/@fs" + project.manifest,
+            projectModule: "/@id/virtual:ritween-project",
           },
         )
         .catch((e) => ({ error: String(e) }));

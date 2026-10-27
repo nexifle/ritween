@@ -11,7 +11,6 @@ import type { AudioTrack, SceneEntry } from "../../engine/types";
 import { miniButton } from "../components/control-styles";
 import { LaneBlock } from "./lane-block";
 import { TrackHeader } from "./track-header";
-import { useRestHint } from "../hooks/use-rest-hint";
 import { clamp, clock, formatRulerTime, rulerMarks, TL_ZOOM_MAX } from "../utils/view-utils";
 
 const colors = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)"];
@@ -63,9 +62,6 @@ export function Timeline({
   const [laneWidth, setLaneWidth] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [laneScrollbar, setLaneScrollbar] = useState(0);
-  const gesture = useRestHint(
-    "Scroll vertically to reach tracks below. Shift-scroll pans. Command or Ctrl-scroll zooms. Drag to scrub. Alt-drag to pan.",
-  );
   zoomRef.current = zoom;
 
   const contentWidth =
@@ -218,7 +214,6 @@ export function Timeline({
       aria-label="Read-only composition timeline"
       className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-sequence"
     >
-      {gesture.hint}
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-separator px-2 py-1">
         <div className="flex items-center gap-2">
           <h2 className="text-xs/normal font-medium">Timeline</h2>
@@ -297,10 +292,6 @@ export function Timeline({
             setScrollLeft(event.currentTarget.scrollLeft);
             syncHeader();
           }}
-          onPointerEnter={gesture.onPointerEnter}
-          onPointerMove={gesture.onPointerMove}
-          onPointerLeave={gesture.onPointerLeave}
-          onPointerDown={gesture.onPointerDown}
         >
           <div
             ref={contentRef}

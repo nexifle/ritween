@@ -7,7 +7,6 @@ import {
 } from "react";
 import { miniButton } from "../components/control-styles";
 import { Icon } from "../components/icon";
-import { useRestHint } from "../hooks/use-rest-hint";
 import { clamp, clampCompPan, COMP_ZOOM_MAX, COMP_ZOOM_MIN } from "../utils/view-utils";
 
 export function CompositionViewer({
@@ -50,7 +49,6 @@ export function CompositionViewer({
   } | null>(null);
   const [frame, setFrame] = useState({ width: 0, height: 0 });
   const [dragging, setDragging] = useState(false);
-  const gesture = useRestHint("Scroll to zoom. Drag to pan.");
   const viewRef = useRef({ zoom, panX, panY });
   const onViewRef = useRef(onView);
   const zoomAtRef = useRef<
@@ -140,7 +138,6 @@ export function CompositionViewer({
       aria-label="Video preview"
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     >
-      {gesture.hint}
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-separator px-2.5 py-1 text-[11px]">
         {/* Left: View Identity & View Switcher */}
         <div className="flex items-center gap-2 min-w-0">
@@ -258,10 +255,7 @@ export function CompositionViewer({
         ref={wellRef}
         className={`${sourceOpen ? "hidden" : "relative min-h-0 flex-1 touch-none overflow-hidden bg-canvas"} ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
         style={{ containerType: "size" }}
-        onPointerEnter={gesture.onPointerEnter}
-        onPointerLeave={gesture.onPointerLeave}
         onPointerDown={(event) => {
-          gesture.onPointerDown();
           if (event.button !== 0 && event.button !== 1) return;
           event.preventDefault();
           compDrag.current = {
@@ -279,7 +273,6 @@ export function CompositionViewer({
           }
         }}
         onPointerMove={(event) => {
-          gesture.onPointerMove(event);
           const drag = compDrag.current;
           const stage = stageRef.current;
           if (!drag || drag.id !== event.pointerId || !stage) return;

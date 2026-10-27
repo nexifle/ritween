@@ -327,7 +327,9 @@ input[type="range"] {
   cursor: pointer;
   border: 1px solid rgba(0, 0, 0, 0.2);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  transition: transform 0.1s ease, box-shadow 0.1s ease;
+  transition:
+    transform 0.1s ease,
+    box-shadow 0.1s ease;
 }
 
 .transport-scrubber:hover::-webkit-slider-thumb,
@@ -399,5 +401,95 @@ progress {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+  }
+}
+
+.export-monitor {
+  margin-top: 12px;
+  padding: 14px 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--popover);
+  font-size: 11px;
+}
+.export-beacon {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: export-pulse 1.8s ease-in-out infinite;
+}
+.export-filmstrip {
+  display: flex;
+  gap: 3px;
+  overflow: hidden;
+  margin: 16px 0 6px;
+  padding: 5px 0;
+  border-block: 2px dotted var(--border);
+}
+.export-filmstrip span {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--secondary);
+  transition: background-color 500ms;
+}
+.export-filmstrip span.is-rendered {
+  background: color-mix(in srgb, var(--primary) 65%, var(--popover));
+}
+.export-meter {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  background: var(--secondary);
+  border-radius: 2px;
+}
+.export-meter > div {
+  height: 100%;
+  background: var(--primary);
+  transition: width 600ms ease-out;
+}
+.export-meter::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--primary) 70%, transparent),
+    transparent
+  );
+  width: 40%;
+  animation: export-scan 2s linear infinite;
+}
+.export-complete {
+  border-top: 2px solid var(--success-foreground);
+}
+.export-complete > div:first-child {
+  color: var(--success-foreground);
+}
+@keyframes export-pulse {
+  50% {
+    opacity: 0.4;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 15%, transparent);
+  }
+}
+@keyframes export-scan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .export-beacon,
+  .export-meter::after {
+    animation: none;
+  }
+  .export-meter > div,
+  .export-filmstrip span {
+    transition: none;
   }
 }

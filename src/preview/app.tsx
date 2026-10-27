@@ -225,6 +225,7 @@ export function App() {
       total: frameCount(project.duration, state.fps),
       error: "",
       result: "",
+      download: "",
     });
     const activeStages = new Set<string>();
     const stageLabels: Record<string, string> = {

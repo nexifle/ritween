@@ -63,11 +63,21 @@
     "index.html",
     "README.md",
     "LOGO.md",
-    "AI_AUTHORING.md",
-    "CLI.md"
+    "CLI.md",
+    "docs/technical-guide.md"
   ],
   "allowScripts": {
     "esbuild@0.28.2": true,
     "fsevents@2.3.3": true
+  },
+  "license": "MIT",
+  "homepage": "https://ritween.nexifle.com",
+  "author": {
+    "name": "Nexifle Lab",
+    "url": "https://nexifle.com"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

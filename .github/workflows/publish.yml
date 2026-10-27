@@ -1,0 +1,59 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@11
+      - name: Validate release version and choose npm dist-tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+          if (process.env.RELEASE_TAG !== `v${pkg.version}`) {
+            throw new Error("Release tag must equal v + package.json version");
+          }
+          if (lock.version !== pkg.version || lock.packages[""].version !== pkg.version) {
+            throw new Error("package-lock.json version must match package.json");
+          }
+          const prerelease = pkg.version.includes("-");
+          if (prerelease !== (process.env.RELEASE_PRERELEASE === "true")) {
+            throw new Error("GitHub prerelease status must match the package version");
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `dist-tag=${prerelease ? "next" : "latest"}\n`);
+          NODE
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm pack --dry-run
+      - name: Publish with OIDC authentication
+        run: npm publish --access public --provenance --tag "${{ steps.release.outputs.dist-tag }}"

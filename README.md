@@ -1,169 +1,215 @@
+<div align="center">
+
 # Ritween
 
-A code-first video framework. External AI agents write scene modules and register them in a manifest; the browser evaluates, previews and exports the composition. No chatbot, backend, DOM capture, or multimedia dependencies.
+**Write scenes. Preview instantly. Export video.**
 
-## Run
+A code-first video framework powered by WebGPU and native browser codecs.
 
-Requires Node.js 22.12+ (or 20.19+), a current Chrome/Edge with WebGPU and H.264 WebCodecs encoding, and GPU acceleration.
+[Website](https://ritween.nexifle.com) · [Quick start](#quick-start) · [CLI guide](CLI.md) · [Technical guide](docs/technical-guide.md)
+
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![WebGPU](https://img.shields.io/badge/rendering-WebGPU-005A9C)](https://gpuweb.github.io/gpuweb/)
+
+**Engineered by [Nexifle Lab](https://nexifle.com).**
+
+</div>
+
+---
+
+Ritween turns source code into video. Define a composition in a manifest, write scenes in TypeScript or JavaScript, and use the browser studio to preview, seek, and export the result. The same engine powers the studio, CLI, and programmatic API.
+
+Built for developers and workflows where external AI coding agents author scene modules, Ritween keeps composition logic in version control. Rendering uses WebGPU; MP4 export uses WebCodecs and a custom muxer, without a backend rendering service, FFmpeg, or DOM capture.
+
+## Highlights
+
+- **Code-first compositions** — describe scene timing, resolution, and audio tracks in a project manifest.
+- **GPU rendering** — create procedural visuals with WebGPU and WGSL shaders.
+- **Interactive studio** — preview playback, seek through scenes, inspect source, and configure exports.
+- **Native MP4 export** — encode H.264 video with an optional AAC soundtrack and fast-start metadata.
+- **Shared timeline** — preview and export evaluate scenes at absolute times, with export frames scheduled at `frameIndex / FPS`.
+- **Audio tracks** — schedule clips independently of scenes and persist track mute settings with the project.
+- **Automation** — render PNG frames or export complete videos through the CLI, including JSON output for scripts.
+
+## Quick start
+
+### Requirements
+
+- Node.js **20.19+ within the 20.x line**, or **22.12+**.
+- A current Chrome or Edge with **WebGPU**, **WebCodecs H.264 encoding**, and GPU acceleration. Audio export also requires AAC encoding support.
+- **HTTPS or localhost** for WebGPU. The CLI requires a separately installed compatible browser; it does not download one.
+
+From a checkout of this repository:
 
 ```sh
-npm install
+npm ci
 npm run dev
 ```
 
-Open http://localhost:5173. WebGPU needs localhost or HTTPS. Vite hot reloads scene and manifest changes. `npm run build` creates `dist`; `npm run preview` serves that build.
+Open [localhost:5173](http://localhost:5173). Vite reloads changes to scenes and the manifest.
 
-## CLI
-
-Install the Node executable, then run it from any directory. Node.js 22.12+ (or 20.19+) stays on the machine; Chrome stays external.
+To create and serve a production build:
 
 ```sh
-npm install -g ritween
-ritween preview --open
-ritween frame --time 5.2 -o artifacts/frame.png
-ritween export -o artifacts/video.mp4
+npm run build
+npm run preview
 ```
 
-From this checkout, `npm install -g .` installs the same command. `npm run cli -- <arguments>` runs it without a global install. Pass `--project /path/to/project` to render another codebase or `--demo` for the bundled example. See [CLI commands and automation](CLI.md).
+Visit **[ritween.nexifle.com](https://ritween.nexifle.com)** for the Ritween website.
 
-## Use
+## Author a composition
 
-Play/pause with Space. Seek using the scrubber; step with the transport buttons or arrow keys. The scene timeline is read-only. Choose an export size that keeps the project aspect, and 24, 30 or 60 FPS, choose an automatic or explicit video bitrate, then Export Video. The steps use a short side of 360, 720 or 1080 when that frame fits H.264 Level 4.2. On a 16:9 project those sizes are still named 360p, 720p and 1080p. Default: the 720 step at 30 FPS. Export progress reports submitted frames; download follows encoder flush and muxing. Cancel discards the partial export. A completed download stays available until the next successful export or page unload.
+The bundled project is an eight-second composition with three scenes and two audio tracks. Start with:
 
-## Persisted project settings
+| File                                                 | Purpose                                                      |
+| ---------------------------------------------------- | ------------------------------------------------------------ |
+| [`src/project/manifest.ts`](src/project/manifest.ts) | Composition name, dimensions, scene timing, and audio tracks |
+| [`src/project/scenes/`](src/project/scenes/)         | Scene factories and GPU rendering code                       |
+| [`src/project/audio/`](src/project/audio/)           | Procedural audio sources                                     |
+| [`src/engine/types.ts`](src/engine/types.ts)         | Public scene, project, and audio contracts                   |
 
-Track mute buttons save to `manifest.settings.json` next to `manifest.ts` (or the
-same filename stem for other manifest modules). Commit this file with the project:
-preview, CLI exports, and production builds load it automatically. Studio changes
-require the development server (`npm run dev` or the CLI preview server); a static
-production preview cannot write source files and reports save failures.
+Each scene implements three lifecycle methods:
 
-```json
-{
-  "version": 1,
-  "audioTracks": {
-    "voice": { "muted": true },
-    "music": { "muted": false }
-  },
-  "export": {
-    "resolution": [720, 1280],
-    "fps": 30,
-    "bitrate": "auto",
-    "latencyMode": "quality",
-    "keyFrameInterval": 2
-  }
+```ts
+import type { Scene } from "ritween";
+
+export default function createScene(): Scene {
+  return {
+    setup({ device, format, resolution }) {
+      // Create GPU resources and render pipelines.
+    },
+    render({ encoder, target, localTime, progress }) {
+      // Encode GPU commands for this absolute timeline position.
+    },
+    dispose() {
+      // Release resources owned by this scene.
+    },
+  };
 }
 ```
 
-Keys are stable track IDs, independent of display names or track order. Omitted
-mute values default to audible. Authored defaults can also be supplied as
-`project.settings`; the sidecar overrides them per track and per property.
-Explicit `false` overrides an authored mute. SDK callers who import a raw manifest
-should import the sidecar and use `mergeProjectSettings(project.settings, saved)`
-to assign the resulting `settings` before rendering.
+This is a lifecycle outline; use the bundled scenes for complete rendering implementations. Rendering must be synchronous and seekable: derive animation from timeline time rather than accumulated frame deltas. Each renderer owns its own scene instances and GPU resources.
 
-Muted tracks are omitted before offline source construction, scheduling, and
-mixing. If every track is muted, MP4 output has no audio track. Preview uses live
-gain buses for immediate mute/unmute without recompiling audio; master mute and
-preview volume remain listening controls and do not affect exports.
+Scene modules execute as application code. Use trusted source modules. TSX files are supported as modules; JSX is not automatically converted into GPU graphics.
 
-Export controls save per property in the same document, preserving audio settings.
-Resolution uses `[width, height]`, bitrate uses bits/second or `"auto"`, and
-keyframe interval uses seconds. Auto bitrate is recalculated for the chosen size
-and FPS. Omitted export properties use framework defaults (short-side 720, 30 FPS,
-auto bitrate, quality mode, and a two-second keyframe interval).
-CLI export precedence is explicit flags, then project settings, then framework
-defaults. `--bitrate auto` explicitly overrides a saved numeric bitrate. Frame/PNG
-commands keep their existing resolution and FPS defaults. SDK integrations can use
-`projectExportSettings` and `resolveExportRequest` to apply the same precedence.
-These choices are project data; they are not stored in localStorage.
+## Use the studio
 
-The schema, entity policy, disk commands, and studio integration live in
-`src/engine/project-settings-schema.js`, `src/engine/project-settings.ts`,
-`cli/project-settings.mjs`, and `src/preview/state/use-project-settings.ts`.
-Audio mute and export controls are implemented. Future scene controls can add their own
-`scenes[id]` settings and commands, with separate policies for visibility and
-inclusion in the timeline. They must define timing behavior explicitly; audio
-mute currently preserves project duration. Writes preserve unrelated fields and
-use an atomic replacement; failed saves retain the last saved state in the UI.
+1. Edit the manifest and scene modules.
+2. Press **Space** to play or pause. Use the scrubber to seek and the arrow keys to step through frames.
+3. Choose an export size, **24, 30, or 60 FPS**, and automatic or explicit bitrate.
+4. Select **Export Video** to encode and download the composition as MP4.
 
-## Browser studio preferences
+Export sizes preserve the project aspect ratio, using an even frame size with a short side of 360, 720, or 1080 where supported by H.264 Level 4.2. The default is the short-side 720 preset at 30 FPS. Cancelling an export discards the partial result.
 
-The studio remembers theme, timeline zoom, preview volume/master mute, the Code
-view, and the collapsed state of the export/source panels in localStorage under
-`ritween-studio-preferences` (version 1). Existing `ritween-theme` values migrate
-on first use. Theme is applied before React starts to avoid a color flash.
+### Project settings and browser preferences
 
-Divider sizes use the existing `react-resizable-panels:ritween-*` keys, including
-the timeline layer-name divider. Desktop rows/columns and the mobile stack keep
-separate layouts. Resizing the window does not overwrite user-chosen sizes.
-Stored values are validated, and unavailable/full storage leaves controls usable
-for the current session.
+Track mutes and export options are saved beside the manifest in `manifest.settings.json`. Commit this sidecar with your project so preview, CLI export, and production builds use the same settings. Saving requires a development or CLI preview server; a static deployment cannot write source files.
 
-Preferences belong to the browser origin and are shared by projects opened on
-that origin. Playback position, active playback, export jobs, source pinning, and
-export results are not restored. Track mute and export options remain project
-settings in the source-controlled sidecar, independent of these preferences.
+CLI export resolves settings in this order: **explicit flags → saved project settings → framework defaults**. Muted tracks are excluded from exported audio; preview volume and master mute only affect listening.
 
-## Architecture
+Theme, timeline zoom, preview volume, and panel layout are stored locally in the browser. See the [technical guide](docs/technical-guide.md) for the settings schema, SDK integration, and persistence behavior.
 
-- `src/engine/types.ts`: reusable Scene, Project, RenderContext and future Compositor contracts.
-- `src/engine/timeline.ts`: stateless absolute-time evaluation, frame schedules and manifest validation.
-- `src/engine/renderer.ts`: GPU lifecycle and renderer shared by preview and export. Each renderer owns independent scene instances and device resources.
-- `src/engine/audio.ts`: export and preview compile the same managed clip schedule. Preview prepares once alongside GPU initialization, then keeps a short lookahead of live nodes. Preview track mutes use gain buses; export omits muted tracks.
-- `src/engine/export.ts`: WebGPU → OffscreenCanvas → VideoFrame → native H.264 VideoEncoder, plus AAC from that mix, → MP4.
-- `src/engine/mp4.ts`: custom ISO BMFF muxer. AVC configuration is preserved in `avcC`. An optional AAC track stores `esds`, sample sizes, chunk offsets and durations. Video uses Baseline AVC I/P frames, real sync-sample tables, and fast-start metadata.
-- `src/project/manifest.ts`: the entire composition, independent of the engine.
-- `src/project/scenes/`: separate TS, TSX and JS example modules. Fullscreen WGSL shaders render procedural orbital geometry and GPU bitmap lettering.
+## CLI
 
-Export evaluates frame `i` at `i / FPS`. VideoFrame timestamps are rounded microseconds with adjacent durations computed from the next timestamp. MP4 uses FPS as its timescale and one tick per video sample, giving exact duration. Video uses a two-second GOP and requests keyframes at scene cuts; Baseline AVC avoids reordered/B frames. Output timestamps are validated before muxing. Audio is a separate timeline: clips live on audio tracks, not inside scenes. Export renders the mix once with `OfflineAudioContext` at 48 kHz and encodes it as AAC. Preview plays the same clips through a lookahead of live nodes, from a user gesture, and does not wait for that offline render. Track mute is part of the exported mix. The preview volume is not. Export defaults to quality-mode VBR, with a target scaled by pixels and FPS (6 Mbps at Full HD 60 FPS; minimum 500 kbps). Targets are not file-size limits. The browser may copy GPU data internally; this implementation makes no zero-copy claim and performs no manual GPU readback for encoding.
-
-See [AI Authoring Guide](AI_AUTHORING.md) to create a different video entirely through source files.
-
-## Validation
+Run directly from the checkout:
 
 ```sh
-npm test
-npm run build
-npm run test:preview
-npm run test:project-settings
-npm run test:studio-preferences
-# With npm run dev running and Google Chrome installed:
-npm run test:browser
+# Open the studio
+npm run cli -- preview --open
+
+# Render a frame at 5.2 seconds
+npm run cli -- frame --time 5.2 -o artifacts/frame.png
+
+# Export the composition
+npm run cli -- export -o artifacts/video.mp4
 ```
 
-`CHROME_CHANNEL` and `BASE_URL` can override the browser channel and server address. The browser test uses actual WebGPU, H.264, and AAC encoding. It exports the default eight-second composition, parses its MP4, decodes all 240 video samples with native VideoDecoder, decodes the AAC track, verifies exact eight-second media duration, opens the MP4 in a native video element and seeks to 0.5, 5.2 and 7.5 seconds. It also checks identical GPU canvas screenshots when revisiting 5.2 seconds, transport actions, cancellation, browser errors, and mobile overflow. Artifacts are written to ignored `artifacts/` (including the actual MP4 and validation report). Screenshot use is limited to tests; no screenshot enters the export pipeline.
+Or install the checkout as a global command:
 
-Unit tests cover cut boundaries, scene timing, invalid manifests, frame timing at every supported FPS, MP4 table consistency and rejected muxer inputs. Synthetic sample bytes in unit tests only test box structure; the browser test verifies real encoded media.
+```sh
+npm install -g .
+ritween preview --open
+ritween export --project /path/to/project -o video.mp4 --json
+```
 
-## MVP limits
+Once the package is published to npm, it can also be installed with `npm install -g ritween`.
 
-Sequential, gapless, hard-cut scenes only. A Compositor interface reserves a path to rendering active scenes to intermediate textures and blending transitions; overlapping transitions are not implemented. Base preview resolution is specified by the manifest. Export sizes keep that aspect: even scales with a short side of 360, 720 or 1080, within H.264 Level 4.2. A size with a different aspect is rejected. There is no letterboxing. Projects keep compressed samples in memory; files of 4 GiB or more are rejected. Encoding is asynchronous on the UI thread with bounded queues and cooperative yields, not a worker. Long or GPU-intensive compositions may reduce preview responsiveness during export.
+Use `--demo` for the bundled example, `--project` for another project or manifest, and `--force` to replace an existing output. See the [CLI guide](CLI.md) for browser selection, encoding controls, output formats, and automation.
 
-No microphone input, DOM/HTML rasterization, clip dragging, or automatic TSX-to-GPU conversion. Setup may fetch resources, but rendering must be synchronous and seekable. Use trusted scene code only: scene modules execute as part of the application. GPU/codec availability varies by platform; unsupported configurations display errors rather than substitute a different rendering or recording pipeline.
+## Programmatic export
 
-API references: [WebCodecs AVC registration](https://www.w3.org/TR/webcodecs-avc-codec-registration/), [WebCodecs](https://www.w3.org/TR/webcodecs/), [WebGPU](https://gpuweb.github.io/gpuweb/).
-
-## Export benchmark
-
-Run `npm run benchmark:export` while Vite is running. It benchmarks all nine presets with three runs each after one warm-up and writes timing, throughput, output sizes, and environment details to `BENCHMARK.md` and `artifacts/benchmark-export.json`. See [measured results](BENCHMARK.md). Override `BENCH_REPEATS` to change the run count.
-
-See [export audio performance](PERFORMANCE.md) for profiling, automatic graph scheduling, and memory limits.
-See [preview startup research and measurements](PREVIEW_PERFORMANCE.md) for first-play preparation, idle behavior, and the Web Audio course review.
-
-Audio and video export run concurrently by default. See the [pipeline benchmark](EXPORT_PIPELINE_BENCHMARK.md) for the sequential comparison and validation.
-
-### Export encoding controls
+The package exposes TypeScript source for browser applications using a compatible bundler:
 
 ```ts
-import { exportVideo, type ExportOptions } from "ritween";
+import { exportMp4 } from "ritween";
+import { project } from "./src/project/manifest";
 
-const result = await exportVideo(project, {
-  width: 1080, height: 1920, fps: 60,
-  bitrate: 6_000_000,       // bits/second; omit for resolution/FPS-scaled Auto
-  latencyMode: "quality",  // default; "realtime" is available for low latency
-  keyFrameInterval: 2,     // seconds; scene cuts also request keyframes
+const result = await exportMp4(project, {
+  width: 1280,
+  height: 720,
+  fps: 30,
+  bitrate: 3_000_000,
+  latencyMode: "quality",
+  keyFrameInterval: 2,
 });
 ```
 
-Default GOP export preserves resolution, FPS, the mixed AAC soundtrack and its priming edit list. The muxer writes metadata before media for progressive playback and avoids a second sample copy in the export path. Output still retains encoded chunks in memory; it does not yet stream directly to disk. Returned `bitrate`, `latencyMode` and `keyFrameInterval` report resolved settings, not measured bitrate or a guarantee of encoder quality.
+`exportVideo` is an alias of `exportMp4`. Automatic bitrate scales with resolution and FPS when `bitrate` is omitted. A bitrate target is not a file-size limit. See the [engine guide](src/engine/README.md) for renderer, frame source, and export architecture.
+
+## Development
+
+```sh
+npm ci
+npm test
+npm run build
+```
+
+Additional validation is available for the studio and native browser pipeline:
+
+```sh
+npm run test:preview
+npm run test:project-settings
+npm run test:studio-preferences
+npm run test:cli
+
+# Start npm run dev in another terminal; Google Chrome must be installed.
+npm run test:browser
+```
+
+Browser validation requires actual GPU and codec support. `BASE_URL` and `CHROME_CHANNEL` override the browser validation defaults. Generated media and reports go into the ignored `artifacts/` directory.
+
+```text
+src/engine/    Timeline, GPU rendering, audio, codecs, and MP4 muxing
+src/project/   Bundled composition, scenes, and audio
+src/preview/   React studio interface
+bin/ + cli/    Node CLI and browser automation
+tests/        Unit tests
+scripts/       Browser validation and benchmarks
+```
+
+See the [preview organization guide](src/preview/README.md) before adding studio features.
+
+## CI and npm releases
+
+GitHub Actions runs unit tests, a production build, and a package dry run on pushes and pull requests across Node.js 20.19, 22, and 24.
+
+Publishing a GitHub Release triggers the npm workflow. It validates the release tag against the package version, repeats validation, and publishes using npm Trusted Publishing with provenance. Stable releases use `latest`; prereleases use `next`.
+
+See [Publishing to npm](docs/publishing.md) for the one-time npm setup and release procedure.
+
+## Current scope
+
+Ritween currently supports sequential, gapless scenes with hard cuts. Overlapping transitions, clip dragging, microphone input, and HTML/DOM rasterization are not implemented.
+
+Export keeps encoded samples in memory rather than streaming to disk; files of 4 GiB or more are rejected. Encoding runs asynchronously on the UI thread, so demanding compositions can affect preview responsiveness. Browser and platform codec support determine which exports are available.
+
+## Contributing
+
+Contributions are welcome. For substantial changes, open an issue describing the proposed behavior before implementation. Keep changes focused, add behavior tests for engine changes, and run `npm test` and `npm run build` before submitting a pull request. Include screenshots for studio UI changes and relevant browser validation for rendering or codec changes.
+
+## License
+
+Ritween is available under the [MIT License](LICENSE).
+
+Engineered by **[Nexifle Lab](https://nexifle.com)** · [ritween.nexifle.com](https://ritween.nexifle.com)

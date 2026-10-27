@@ -26,6 +26,8 @@ Chrome/Chromium, GPU acceleration, WebGPU, and WebCodecs are needed. The CLI use
 
 Existing outputs are refused unless `--force` is supplied. Choose fresh filenames or ask before overwriting. The default timeout is 120 seconds and includes server/browser startup. JSON results use stdout and progress uses stderr.
 
+For failed commands, incorrect frames, seeking discrepancies, or missing audio, use [render diagnostics](render-diagnostics.md). For final audio balance and metering, use [mix loudness](mix-loudness.md); detecting an audio stream is not a listening test.
+
 ## Encoding and sizing
 
 - Output is H.264 MP4, with AAC when audible audio is present.

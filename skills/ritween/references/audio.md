@@ -53,6 +53,10 @@ audioTracks: [{
 - The supplied context is a managed facade, not unrestricted Web Audio. It supports common oscillator/gain/buffer/filter and other managed nodes; unsupported APIs throw. Its `currentTime` is zero. Do not assume audio worklets, microphone input, or arbitrary context methods are available.
 - For file audio, fetch the asset from the consumer project's public directory, check the response, and await promise-based `decodeAudioData`. Handle failed requests explicitly.
 
+## Optional sound references
+
+Read only what the soundtrack needs: [sound synthesis](sound-synthesis.md) for voices and samples, [sound arrangement](sound-arrangement.md) for scores and routing, [pattern sequencing](pattern-sequencing.md) for tracker-style projects, and [mix loudness](mix-loudness.md) for balance, ducking, and measurement. These are authored project techniques, not built-in instruments or sequencers.
+
 ## Preview versus export
 
 Preview uses a live audio clock and lookahead. Export mixes offline, stereo at 48 kHz, aligned to exported video frame count. Preview volume and master mute do not change export; project track mute does. Check actual exported audio rather than inferring it from preview volume.

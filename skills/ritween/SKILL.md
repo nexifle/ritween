@@ -42,6 +42,23 @@ Help the user produce a runnable project, not just code snippets. This skill tar
 - The CLI provides only `preview`, `frame`, and `export`; there is no `init` or `create` command.
 - Do not overwrite output files or use `--force` without the user's permission.
 
+## Optional implementation references
+
+Read only the references needed for the current task, not the entire collection. These describe techniques to implement with public contracts, not additional built-in Ritween APIs. Choose techniques from the brief; do not let a reference dictate the video's subject or aesthetic.
+
+| Task                                                                   | Reference                                                            |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Custom GPU pipelines, uniforms, text assets, and resource lifecycle    | [GPU scene workflow](references/gpu-scene-workflow.md)               |
+| Curved paths, smooth timing, mesh deformation, instancing, and strokes | [Geometry and motion](references/gpu-geometry-motion.md)             |
+| Illustrative lighting, hatching, and 3D outlines                       | [Stylized surfaces](references/stylized-surface-rendering.md)        |
+| Data scales, labels, layout, and chart geometry                        | [Data layout and marks](references/data-layout-and-marks.md)         |
+| Animated chart windows, linked views, and dense time series            | [Data animation and series](references/data-animation-and-series.md) |
+| Tones, envelopes, percussion, and pitched samples                      | [Sound synthesis](references/sound-synthesis.md)                     |
+| Musical scores, buses, effects, and audiovisual synchronization        | [Sound arrangement](references/sound-arrangement.md)                 |
+| Tracker-style patterns and bounded module interpretation               | [Pattern sequencing](references/pattern-sequencing.md)               |
+| Speech/music balance, ducking, and final audio metering                | [Mix loudness](references/mix-loudness.md)                           |
+| Failed commands, incorrect frames, seeking, or audio/export problems   | [Render diagnostics](references/render-diagnostics.md)               |
+
 ## Starting an empty project
 
 Use a small structure that requires neither framework source files nor a custom Vite configuration:

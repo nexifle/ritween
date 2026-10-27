@@ -14,15 +14,17 @@ export const project: Project = {
   resolution: [1280, 720],
   aspectRatio: [16, 9],
   duration: 3,
-  scenes: [{
-    id: "main",
-    name: "Main",
-    source: "scenes/main.ts",
-    start: 0,
-    duration: 3,
-    create: main,
-    transition: { type: "cut" },
-  }],
+  scenes: [
+    {
+      id: "main",
+      name: "Main",
+      source: "scenes/main.ts",
+      start: 0,
+      duration: 3,
+      create: main,
+      transition: { type: "cut" },
+    },
+  ],
 };
 ```
 
@@ -41,12 +43,14 @@ export default function main(): Scene {
     setup() {},
     render({ encoder, target, progress }) {
       const pass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: target.createView(),
-          clearValue: { r: 0.05 + 0.3 * progress, g: 0.08, b: 0.25, a: 1 },
-          loadOp: "clear",
-          storeOp: "store",
-        }],
+        colorAttachments: [
+          {
+            view: target.createView(),
+            clearValue: { r: 0.05 + 0.3 * progress, g: 0.08, b: 0.25, a: 1 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
       });
       pass.end();
     },
@@ -56,6 +60,8 @@ export default function main(): Scene {
 ```
 
 For real geometry, create shader modules, pipelines, buffers, and textures in `setup({ device, format, resolution })`. Record draws into the provided encoder in `render`. Update uniforms from context time. Destroy scene-owned buffers/textures in `dispose`; do not destroy the shared device or target and do not submit the encoder yourself. All scenes are set up at renderer creation, not lazily when first active.
+
+For custom pipelines, uniforms, text assets, and multipass rendering, read [GPU scene workflow](gpu-scene-workflow.md). For paths, strokes, instancing, and deformation, read [geometry and motion](gpu-geometry-motion.md). These are implementation techniques, not extra framework APIs.
 
 ## Timeline invariants
 

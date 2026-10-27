@@ -30,7 +30,7 @@ export class FrameSource {
 
   async render(time: number) {
     this.signal?.throwIfAborted();
-    this.renderer.render(time);
+    await this.renderer.renderAsync(time, this.signal);
     await this.renderer.device.queue.onSubmittedWorkDone();
     this.signal?.throwIfAborted();
     return this.canvas;

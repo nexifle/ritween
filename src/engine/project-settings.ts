@@ -1,4 +1,4 @@
-import type { Project } from "./types";
+import type { AudioClip, Project } from "./types";
 export {
   parseProjectSettings,
   mergeProjectSettings,
@@ -11,6 +11,18 @@ export function mutedAudioTrackIds(project: Project): string[] {
       (track) => project.settings?.audioTracks?.[track.id]?.muted === true,
     )
     .map((track) => track.id);
+}
+
+/** Saved clip settings override authored mute defaults by stable global clip ID. */
+export function isAudioClipMuted(project: Project, clip: AudioClip): boolean {
+  return project.settings?.audioClips?.[clip.id]?.muted ?? clip.muted ?? false;
+}
+
+export function mutedAudioClipIds(project: Project): string[] {
+  return (project.audioTracks ?? [])
+    .flatMap((track) => track.clips)
+    .filter((clip) => isAudioClipMuted(project, clip))
+    .map((clip) => clip.id);
 }
 
 /** Temporary caller exclusions may add to persisted mute, never undo it. */

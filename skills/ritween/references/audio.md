@@ -51,7 +51,7 @@ audioTracks: [{
 - Clips stay within project duration and cannot overlap within one track. Different tracks may overlap.
 - Use `host.destination` as a connection target; do not mutate it as though it were your own gain node.
 - The supplied context is a managed facade, not unrestricted Web Audio. It supports common oscillator/gain/buffer/filter and other managed nodes; unsupported APIs throw. Its `currentTime` is zero. Do not assume audio worklets, microphone input, or arbitrary context methods are available.
-- For file audio, fetch the asset from the consumer project's public directory, check the response, and await promise-based `decodeAudioData`. Handle failed requests explicitly.
+- Untuk file audio, gunakan helper publik `audioFile({ url, offset, volume, loop })`; baca [aset media lokal](media-assets.md) untuk contoh BGM/SFX, audio footage, dan mute per clip. Kode khusus juga dapat memakai fetch dari public proyek, memeriksa respons, lalu menunggu promise `decodeAudioData`. Tangani kegagalan secara eksplisit.
 
 ## Optional sound references
 

@@ -1,6 +1,8 @@
 import { parseProjectSettings } from "./project-settings-schema.js";
 import type { Project } from "./types";
+import { resolveMediaProject } from "./media/project";
 export function validateProject(p: Project) {
+  p = resolveMediaProject(p);
   if (p.settings !== undefined) parseProjectSettings(p.settings);
   if (!p.name || !Number.isFinite(p.duration) || p.duration <= 0)
     throw Error("Project needs a name and positive duration.");

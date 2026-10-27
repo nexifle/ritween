@@ -1,4 +1,5 @@
 import { runExportPipelines } from "../../pipeline";
+import { resolveMediaProject } from "../../../media/project";
 import { renderAudio, SAMPLE_RATE } from "../../../audio";
 import { resolveEncodingOptions } from "../../settings";
 import { assertExportSize } from "./sizes";
@@ -16,6 +17,7 @@ import {
 } from "../../codecs/aac";
 
 export async function exportMp4(project: Project, options: ExportOptions) {
+  project = resolveMediaProject(project);
   const { width, height, fps, signal, onProgress } = options;
   if (![24, 30, 60].includes(fps))
     throw Error("Unsupported export frame rate.");

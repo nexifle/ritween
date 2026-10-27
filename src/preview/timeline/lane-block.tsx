@@ -1,3 +1,5 @@
+import { Icon } from "../components/icon";
+
 export function LaneBlock({
   start,
   duration,
@@ -7,7 +9,10 @@ export function LaneBlock({
   detail,
   timing,
   active,
+  muted,
   onInspect,
+  onToggleMute,
+  muteDisabled,
 }: {
   start: number;
   duration: number;
@@ -17,7 +22,10 @@ export function LaneBlock({
   detail: string;
   timing?: string;
   active?: boolean;
+  muted?: boolean;
   onInspect?: () => void;
+  onToggleMute?: () => void;
+  muteDisabled?: boolean;
 }) {
   return (
     <div
@@ -26,13 +34,15 @@ export function LaneBlock({
       style={{
         left: `${(start / total) * 100}%`,
         width: `${(duration / total) * 100}%`,
-        borderColor: active ? color : "var(--clip)",
-        backgroundColor: `color-mix(in srgb, ${color} var(--clip-fill), transparent)`,
+        borderColor: active && !muted ? color : "var(--clip)",
+        backgroundColor: muted
+          ? "color-mix(in srgb, var(--muted-track) 38%, transparent)"
+          : `color-mix(in srgb, ${color} var(--clip-fill), transparent)`,
       }}
     >
       <div
         className="truncate text-[11px] font-medium leading-[14px]"
-        style={{ color }}
+        style={{ color: muted ? "var(--meta)" : color }}
       >
         {title}
       </div>
@@ -58,6 +68,23 @@ export function LaneBlock({
         <p className="truncate font-mono text-[11px] leading-[14px] text-detail">
           {detail}
         </p>
+      )}
+      {onToggleMute && (
+        <button
+          type="button"
+          aria-label={muted ? `Unmute ${title}` : `Mute ${title}`}
+          title={muted ? `Unmute ${title}` : `Mute ${title}`}
+          aria-pressed={muted}
+          disabled={muteDisabled}
+          className={`absolute right-1 top-1 flex size-4 items-center justify-center rounded-[2px] border bg-background/80 ${muted ? "border-primary text-primary" : "border-control-border text-meta"}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleMute();
+          }}
+        >
+          <Icon name={muted ? "volume-mute" : "volume-high"} size={12} />
+        </button>
       )}
     </div>
   );

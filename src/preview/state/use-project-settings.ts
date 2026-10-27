@@ -6,6 +6,7 @@ import type {
 } from "../../engine/types";
 import {
   mergeProjectSettings,
+  mutedAudioClipIds,
   mutedAudioTrackIds,
   parseProjectSettings,
 } from "../../engine/project-settings";
@@ -25,6 +26,7 @@ export function useProjectSettings(
     [source, authored, saved],
   );
   const mutedTrackIds = useMemo(() => mutedAudioTrackIds(project), [project]);
+  const mutedClipIds = useMemo(() => mutedAudioClipIds(project), [project]);
 
   useEffect(() => {
     const receive = (value: unknown) => {
@@ -86,6 +88,25 @@ export function useProjectSettings(
     },
     [source, mutedTrackIds, saveCommand],
   );
+  const toggleClipMute = useCallback(
+    (id: string) => {
+      if (
+        !(source.audioTracks ?? []).some((track) =>
+          track.clips.some((clip) => clip.id === id),
+        )
+      )
+        return;
+      return saveCommand(
+        {
+          type: "set-audio-clip-muted",
+          id,
+          muted: !mutedClipIds.includes(id),
+        },
+        "Mute clip",
+      );
+    },
+    [source, mutedClipIds, saveCommand],
+  );
   const updateExportSettings = useCallback(
     (patch: ProjectExportSettings) =>
       saveCommand({ type: "update-export-settings", patch }, "Export settings"),
@@ -94,7 +115,9 @@ export function useProjectSettings(
   return {
     project,
     mutedTrackIds,
+    mutedClipIds,
     toggleTrackMute,
+    toggleClipMute,
     updateExportSettings,
     saving,
     error,

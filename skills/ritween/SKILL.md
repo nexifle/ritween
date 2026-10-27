@@ -19,7 +19,7 @@ Help the user produce a runnable project, not just code snippets. This skill tar
 1. Inspect the existing project and the brief: message, duration, aspect ratio, assets, audio, and output location. Reuse the existing project where possible. Choose simple defaults for nonblocking details; ask about unresolved creative decisions or destructive changes.
 2. Check that the `ritween` command is available on `PATH`. Use it directly in the normal user workflow. If missing, explain global installation with `npm install -g ritween` and obtain authorization before installing. Do not assume the user has a framework checkout.
 3. For new videos or changes to visual direction, storytelling, or motion, read [motion design](references/motion-design.md): turn the brief into a subject-specific direction, a short beat sheet, and purposeful choreography before coding. Preserve existing brand decisions for narrow edits; skip this reference for purely technical fixes. Read the [authoring reference](references/authoring.md) for contracts and a minimal example. Create the manifest and scenes using public imports from `ritween`, not deep imports into `src/engine`.
-4. Arrange scenes consecutively without gaps or overlaps, and derive animation from timeline time. For audio, read the [audio reference](references/audio.md).
+4. Arrange scenes consecutively without gaps or overlaps, and derive animation from timeline time. For audio, read the [audio reference](references/audio.md). Jika pengguna menyediakan gambar, BGM/SFX, atau footage, baca [aset media lokal](references/media-assets.md); utamakan aset tersebut, bukan menggantinya dengan synth atau visual prosedural.
 5. Run manifest validation and the project's available typecheck. Follow [preview and export](references/preview-export.md): inspect keyframes for composition and legibility, review playback for pacing and choreography, verify seeking, then export MP4 when requested. Technical success alone does not establish visual quality.
 6. Report changed files, run commands, output locations, actual validation results, and blockers. Distinguish typechecked code from browser-verified output. Do not claim success when export fails.
 
@@ -33,7 +33,7 @@ Help the user produce a runnable project, not just code snippets. This skill tar
 
 ## Correctness rules
 
-- `setup` may be asynchronous; `render` is synchronous. Load assets and prepare resources before rendering.
+- `setup` may be asynchronous; `render` is synchronous. Load assets and prepare resources before rendering. Resource video menyiapkan frame dalam `prepareFrame` asinkron; gunakan `Renderer.renderAsync` untuk scene tersebut.
 - Scenes must be seekable: rendering the same time produces the same image independently of previous frames. Do not integrate deltas, use `Date.now()`, or use unseeded randomness for animation.
 - Each `create` factory returns a fresh instance. GPU state belongs to one renderer instance; release scene-owned resources in `dispose`.
 - Use `device`, `format`, `resolution`, `encoder`, and `target` from the context. The renderer submits the command buffer.

@@ -315,7 +315,7 @@ try {
     assert.equal(seek.width, 1280);
     assert.equal(seek.height, 720);
   }
-  await page.getByRole("button", { name: "Export Video", exact: true }).click();
+  await page.getByRole("button", { name: "Export again", exact: true }).click();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page
     .getByRole("status")

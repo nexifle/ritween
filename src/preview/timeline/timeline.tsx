@@ -45,9 +45,11 @@ export function Timeline({
   audioTracks,
   activeSceneId,
   mutedTrackIds,
+  mutedClipIds,
   onZoom,
   onSeek,
   onToggleMute,
+  onToggleClipMute,
   savingSettings,
   onOpenSource,
 }: {
@@ -61,9 +63,11 @@ export function Timeline({
   audioTracks: readonly AudioTrack[];
   activeSceneId: string;
   mutedTrackIds: readonly string[];
+  mutedClipIds: readonly string[];
   onZoom: (zoom: number) => void;
   onSeek: (time: number) => void;
   onToggleMute: (id: string) => void;
+  onToggleClipMute: (id: string) => void;
   savingSettings?: boolean;
   onOpenSource: (id: string) => void;
 }) {
@@ -515,6 +519,9 @@ export function Timeline({
                       title={clip.name}
                       detail={`${clip.duration.toFixed(2)}s`}
                       timing={`${clock(clip.start)} – ${clock(clip.start + clip.duration)}`}
+                      muted={mutedClipIds.includes(clip.id)}
+                      muteDisabled={savingSettings}
+                      onToggleMute={() => onToggleClipMute(clip.id)}
                     />
                   ))}
                 </div>

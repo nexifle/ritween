@@ -145,6 +145,8 @@ try {
         await mix.prepare({ ...score, audioTracks: [tone("tone", 880)] }, [
           "tone",
         ]);
+        const mutedReplacementSchedules = schedules;
+        await mix.setMuted([]);
         const replacedSchedules = schedules;
         mix.dispose();
         let disposedRejected = false;
@@ -359,6 +361,7 @@ try {
           backwardSeekRms,
           silentNoContext,
           cachedSchedules,
+          mutedReplacementSchedules,
           replacedSchedules,
           disposedRejected,
           cancellationRejected,
@@ -391,6 +394,11 @@ try {
   ])
     assert.equal(report[key], true, key);
   assert.equal(report.cachedSchedules, 2);
+  assert.equal(
+    report.mutedReplacementSchedules,
+    2,
+    "Clip muted tidak boleh disiapkan sebelum unmute",
+  );
   assert.equal(report.replacedSchedules, 3);
   assert.equal(report.attempts, 2);
   assert.equal(

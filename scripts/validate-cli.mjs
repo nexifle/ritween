@@ -205,6 +205,10 @@ try {
     [...prefix, "preview", "--project", directory, "--port", "0", "--json"],
     { cwd: directory, stdio: ["ignore", "pipe", "pipe"] },
   );
+  let previewStderr = "";
+  preview.stderr.on("data", (data) => {
+    previewStderr += data;
+  });
   try {
     const event = await new Promise((resolve, reject) => {
       let text = "";
@@ -262,6 +266,7 @@ try {
     preview.kill("SIGINT");
     // Windows terminates the process instead of delivering POSIX SIGINT.
     assert.equal(await closed, process.platform === "win32" ? null : 0);
+    assert.doesNotMatch(previewStderr, /\[BABEL\].*deoptimised/);
   } finally {
     if (preview.exitCode === null) preview.kill("SIGTERM");
   }

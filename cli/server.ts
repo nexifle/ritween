@@ -1,4 +1,4 @@
-import { createServer } from "vite";
+import { createServer, normalizePath } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve, dirname, join } from "node:path";
@@ -41,7 +41,9 @@ export async function startServer({
             }
           },
         },
-        react(),
+        react({
+          exclude: [/\/node_modules\//, `${normalizePath(builtRoot)}/**`],
+        }),
         tailwindcss(),
         {
           name: "ritween-render-shell",

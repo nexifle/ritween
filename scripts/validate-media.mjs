@@ -164,6 +164,8 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
     project,
     watch: false,
     mediaLoading: process.env.RITWEEN_RANGE_MEDIA === "1" ? "range" : "full",
+    mediaActivation:
+      process.env.RITWEEN_ACTIVE_MEDIA === "1" ? "active-only" : "eager",
   });
   const address = server.url;
   const errors = [];
@@ -188,6 +190,10 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
     const { exportMp4 } = await import(
       `${engineRoot}/export/formats/mp4/export-mp4.ts`
     );
+    const { checkMediaActivation } = await import(
+      `${engineRoot.replace(/src\/engine$/, "scripts/media-activation-checks.mjs")}`
+    );
+    const activation = await checkMediaActivation(engineRoot);
     const project = resolveMediaProject(authored);
     const canvas = new OffscreenCanvas(320, 180);
     const renderer = await Renderer.create(canvas, project);
@@ -389,6 +395,7 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
       fps: 24,
     });
     return {
+      activation,
       first,
       blue,
       repeated,
@@ -471,7 +478,8 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
   await page.screenshot({ path: `${directory}/studio.png`, fullPage: true });
   assert.deepEqual(errors, []);
   report.rangeVideo = process.env.RITWEEN_RANGE_MEDIA === "1";
-  const reportName = report.rangeVideo ? "report-range.json" : "report.json";
+  report.activeOnly = process.env.RITWEEN_ACTIVE_MEDIA === "1";
+  const reportName = `report${report.activeOnly ? "-active" : ""}${report.rangeVideo ? "-range" : ""}.json`;
   await writeFile(
     `${directory}/${reportName}`,
     JSON.stringify(report, null, 2),

@@ -63,6 +63,23 @@ import type { Project, Scene } from "ritween";
 
 Web preview binds only to `127.0.0.1`, defaults to port 5173, and reports the actual URL if that port is busy. `--port 0` chooses an available port. Source changes trigger HMR or reload. Ctrl+C closes the server. Frame and export commands start a temporary private server and headless browser, save the result and close both automatically.
 
+## Imported video activation
+
+Preview, frame, and export accept `--media-activation eager|active-only`.
+The default remains `eager`. `active-only` opens built-in video scenes only when
+an asynchronous frame needs them, releasing the previous scene's video texture,
+decoder, and encoded-data owner before activating the next scene. Returning to a
+scene reopens it; there is no prefetch, so scene boundaries can stall.
+
+This option is independent of `--media-loading full|range`. Images and custom
+scenes retain eager setup and their existing rendering contracts. Linked audio
+preparation is unchanged and may still load future footage: this is not lazy
+loading of the entire project. The shared 64 MiB media-texture budget is unchanged.
+
+```sh
+ritween frame /path/to/project --media-activation active-only --time 1.25 -o still.png
+```
+
 ## Imported media loading
 
 Preview, frame, and export accept `--media-loading full|range`. The default is

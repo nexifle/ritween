@@ -1,5 +1,11 @@
 # Engine: rendering, codecs, and media
 
+Built-in video scenes support the CLI opt-in `--media-activation active-only`
+(default: `eager`). Inactive videos retain lightweight scene state only; the
+renderer releases their media before preparing the next scene. Frame preparation
+stays ordered for export. Images, custom scenes, and audio keep their existing
+contracts. See [activation details](../../CLI.md#imported-video-activation).
+
 Rendering produces pixels. Codecs turn those pixels or mixed audio into encoded
 samples. Format implementations orchestrate tracks and package the result. Keep
 these responsibilities separate so a new output format does not change the GPU

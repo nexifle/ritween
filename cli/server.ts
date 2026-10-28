@@ -14,12 +14,14 @@ export async function startServer({
   port = 0,
   watch = true,
   mediaLoading = "full",
+  mediaActivation = "eager",
 }: {
   runtimeRoot: string;
   project: ResolvedProject;
   port?: number;
   watch?: boolean;
   mediaLoading?: "full" | "range";
+  mediaActivation?: "eager" | "active-only";
 }) {
   const cache = await mkdtemp(join(tmpdir(), "ritween-vite-"));
   let server;
@@ -43,7 +45,7 @@ export async function startServer({
             handler: () => [
               {
                 tag: "script",
-                children: `globalThis.__ritweenRangeVideo = ${mediaLoading === "range"};`,
+                children: `globalThis.__ritweenRangeVideo = ${mediaLoading === "range"}; globalThis.__ritweenMediaActivation = ${JSON.stringify(mediaActivation)};`,
                 injectTo: "head-prepend",
               },
             ],

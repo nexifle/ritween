@@ -65,6 +65,8 @@ test("offline frames wait for GPU completion, reuse the canvas and honor cancell
   }
 });
 
+import { managedVideoScenes } from "../src/engine/render/visual";
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((complete) => {
@@ -245,6 +247,36 @@ test("sync rendering remains available but rejects async-preparation scenes", ()
   assert.deepEqual(rendered, [0.5]);
   assert.deepEqual(compositionResolutions, [[1920, 1080]]);
   syncRenderer.dispose();
+});
+
+test("renderer releases inactive managed media before preparation, never custom scenes", async () => {
+  const events: string[] = [];
+  const active = testScene(
+    () => events.push("submit"),
+    () => {
+      events.push("prepare");
+    },
+  );
+  const inactive = testScene(
+    () => {},
+    undefined,
+    () => events.push("terminal"),
+  );
+  const custom = testScene(
+    () => {},
+    undefined,
+    () => events.push("custom"),
+  );
+  managedVideoScenes.set(inactive, {
+    deactivate: () => events.push("release"),
+  });
+  const renderer = createTestRenderer(active);
+  (renderer as unknown as { scenes: Map<string, Scene> }).scenes
+    .set("inactive", inactive)
+    .set("custom", custom);
+  await renderer.renderAsync(0);
+  assert.deepEqual(events, ["release", "prepare", "submit"]);
+  renderer.dispose();
 });
 
 test("preparation failures reject and leave the async render queue usable", async () => {

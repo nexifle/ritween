@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { startServer } from "../cli/server";
 import { resolveProject } from "../cli/project";
 
-test("range loading is initialized before studio and renderer modules", async () => {
+test("media loading and activation are initialized before studio and renderer modules", async () => {
   const runtimeRoot = resolve(".");
   const project = await resolveProject(".", true, runtimeRoot);
   const { server, url } = await startServer({
@@ -12,11 +12,16 @@ test("range loading is initialized before studio and renderer modules", async ()
     project,
     watch: false,
     mediaLoading: "range",
+    mediaActivation: "active-only",
   });
   try {
     for (const path of ["/", "/__ritween/render"]) {
       const html = await (await fetch(url + path)).text();
       assert.match(html, /globalThis\.__ritweenRangeVideo = true/);
+      assert.match(
+        html,
+        /globalThis\.__ritweenMediaActivation = "active-only"/,
+      );
       assert.ok(
         html.indexOf("__ritweenRangeVideo") < html.indexOf('type="module"'),
       );
@@ -37,6 +42,7 @@ test("one-shot CLI servers disable HMR and watching while preview keeps both", a
       for (const path of ["/", "/__ritween/render"]) {
         const html = await (await fetch(url + path)).text();
         assert.match(html, /globalThis\.__ritweenRangeVideo = false/);
+        assert.match(html, /globalThis\.__ritweenMediaActivation = "eager"/);
         assert.ok(
           html.indexOf("__ritweenRangeVideo") < html.indexOf('type="module"'),
         );

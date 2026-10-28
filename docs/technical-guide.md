@@ -136,6 +136,29 @@ npm run test:browser
 
 Unit tests cover cut boundaries, scene timing, invalid manifests, frame timing at every supported FPS, MP4 table consistency and rejected muxer inputs. Synthetic sample bytes in unit tests only test box structure; the browser test verifies real encoded media.
 
+## Active-only built-in video
+
+CLI preview, frame, and export can opt into `--media-activation active-only`;
+`eager` remains the default. Setup retains pipelines/uniforms but does not open
+inactive built-in videos or allocate their textures. Asynchronous frame preparation
+releases inactive video resources before loading the target; failed preparation
+rejects without submitting a stale frame. Reactivation reopens the source, with no
+prefetch. Images/custom scenes and linked-audio preparation remain unchanged.
+This policy is independent of full/Range byte loading and does not bound total
+browser memory. See [CLI usage](../CLI.md#imported-video-activation).
+
+The shared **64 MiB** RGBA8 media-texture budget is an application policy introduced
+with native media support (`013fbd2`), not a WebGPU limit or a measured optimal
+budget. No calibration evidence accompanied that choice in repository history.
+One 3840 × 2160 RGBA8 texture is 33,177,600 bytes (31.64 MiB): a 32 MiB budget
+barely fits one, 64 MiB fits two, and 128 MiB fits four. Raising the budget permits
+more simultaneous retained media but does not improve decoding throughput or
+provide an out-of-memory guarantee. Lowering it rejects more supported dimensions
+or custom multi-texture scenes. Phase 4A keeps it unchanged to isolate activation
+policy; cross-device calibration and any configurable/default budget change are
+separate work. The accounting excludes render targets, decoder surfaces, audio,
+driver allocation overhead, and all other browser memory.
+
 ## Internal Range loading for imported media
 
 Phase 3 provides opt-in loading through `--media-loading range` on the CLI

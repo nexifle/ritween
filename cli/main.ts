@@ -90,6 +90,7 @@ export async function main(argv = process.argv.slice(2)) {
         port: activeOptions.command === "preview" ? activeOptions.port : 0,
         watch: activeOptions.command === "preview",
         mediaLoading: activeOptions.mediaLoading,
+        mediaActivation: activeOptions.mediaActivation,
       });
       server = serving.server;
       if (cancelled || interrupted) throw Error("Cancelled.");

@@ -65,6 +65,7 @@
     "README.md",
     "LOGO.md",
     "CLI.md",
+    "LICENSE",
     "docs/technical-guide.md"
   ],
   "allowScripts": {

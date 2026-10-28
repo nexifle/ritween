@@ -21,6 +21,9 @@ render/                    Decoded media + scenes → pixels / mixed audio
   live-mix.ts              Shared audio graph scheduling and resource limits
 media/                     Shared asset/project integration, not a decoding layer
   resource.ts              Asset fetching, cancellation and caching
+  byte-range.ts            HTTP Range and resource version validation
+  byte-source.ts           Shared ownership and cross-resource byte LRU
+  mp4-metadata.ts           Header/moov reads without downloading the entire mdat
   project.ts               Media clip validation and footage audio track mapping
 export/
   types.ts                 Existing MP4 export options and stage callbacks

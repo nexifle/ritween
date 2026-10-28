@@ -1,4 +1,4 @@
-# Preview and export — Ritween 0.1.0
+# Preview and export — Ritween 0.2.0
 
 The examples assume `ritween` is available on `PATH`, normally after `npm install -g ritween`. Run from the consumer project; replace paths with the actual manifest and output locations. Create the output directory first if needed. For an intentionally local dependency, use a package-manager script that exposes its executable.
 
@@ -11,6 +11,39 @@ ritween export --project ./manifest.ts -o ./artifacts/video.mp4 --json
 ```
 
 There is no scaffold command. Do not pass `--time` or `-o` to `preview` expecting a studio at that time: these options switch it to a frame operation.
+
+## Imported MP4 loading
+
+Check `ritween --help` for `--media-loading` before using it; older installed
+packages may not expose the option. Preview, frame, and export default to
+`--media-loading full`. Opt into `range` when requested or when evaluating startup
+and download costs for large footage:
+
+```sh
+ritween preview --project ./manifest.ts --media-loading range
+ritween frame --project ./manifest.ts --media-loading range --time 0.5 -o ./artifacts/range-frame.png --json
+ritween export --project ./manifest.ts --media-loading range -o ./artifacts/range-video.mp4 --json
+```
+
+The option affects imported MP4 video and linked AAC, not standalone audio files.
+It does not change the manifest or increase the 128 MiB per-asset limit. Do not
+set internal globals or invent an SDK loading parameter to activate it. See
+[media loading limits](media-assets.md#loading-mode-and-budgets) for fallback and
+cache behavior.
+
+For frame/export, inspect JSON `mediaLoading` and `mediaRequests`.
+`rangeRequests` counts MP4 responses to requests carrying a Range header;
+`partialResponses` counts `206` responses and `fullResponses` counts `200`
+responses. Requested mode alone is not proof of incremental loading: a small file
+may fit entirely in the initial partial response, and unsupported servers may
+fall back to full downloads. For preview, inspect browser requests and responses.
+
+When comparing modes, use the same asset, timestamp, output settings, and
+validation checks with distinct output paths. Compare actual frames and exported
+audio, not only request counts. Report measured timing and response bytes only
+when captured; response counts are not byte measurements. Range can reduce
+startup downloads for large footage but may be slower for short files or
+high-latency access. Do not promise a universal speedup or a total RAM limit.
 
 ## Validation sequence
 

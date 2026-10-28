@@ -2,6 +2,7 @@ import { aacDecoderConfig } from "../codecs/aac";
 import type { AudioClipSource, AudioHost } from "../types";
 import { parseMp4, type Mp4Sample, type Mp4Track } from "./formats/mp4";
 import { fetchAsset } from "../media/resource";
+import { openByteSource } from "../media/byte-source";
 
 const MAX_PCM_BYTES = 128 * 2 ** 20;
 const MAX_INPUT_SAMPLES = 250_000;
@@ -66,16 +67,21 @@ function audioTrack(tracks: Mp4Track[]) {
   return track;
 }
 
-function sampleBytes(bytes: ArrayBuffer, sample: Mp4Sample) {
+function sampleEnd(sample: Mp4Sample, length: number) {
   if (
     !Number.isSafeInteger(sample.offset) ||
     !Number.isSafeInteger(sample.size) ||
     sample.offset < 0 ||
     sample.size <= 0 ||
-    sample.offset > bytes.byteLength - sample.size
+    sample.offset > length - sample.size
   )
     throw Error("MP4 audio sample is outside the downloaded resource.");
-  return new Uint8Array(bytes, sample.offset, sample.size);
+  return sample.offset + sample.size;
+}
+
+function sampleBytes(bytes: ArrayBuffer, sample: Mp4Sample) {
+  const end = sampleEnd(sample, bytes.byteLength);
+  return new Uint8Array(bytes, sample.offset, end - sample.offset);
 }
 
 function abortError(signal: AbortSignal) {
@@ -262,10 +268,43 @@ export async function decodeVideoAudio(
   if (!Number.isFinite(duration) || duration <= 0)
     throw Error("Audio clip duration must be a finite positive number.");
   signal?.throwIfAborted();
-  const bytes = await fetchAsset(url, signal);
+  const rangeEnabled =
+    (globalThis as typeof globalThis & { __ritweenRangeVideo?: boolean })
+      .__ritweenRangeVideo === true;
+  const source = rangeEnabled ? await openByteSource(url, signal) : null;
+  try {
+    return await decodeVideoAudioResource(
+      url,
+      context,
+      offset,
+      duration,
+      signal,
+      source,
+    );
+  } finally {
+    source?.dispose();
+  }
+}
+
+async function decodeVideoAudioResource(
+  url: string,
+  context: BaseAudioContext,
+  offset: number,
+  duration: number,
+  signal: AbortSignal | undefined,
+  source: Awaited<ReturnType<typeof openByteSource>> | null,
+): Promise<AudioBuffer | null> {
+  const bytes = source ? null : await fetchAsset(url, signal);
   signal?.throwIfAborted();
-  const track = audioTrack(parseMp4(bytes).tracks);
+  const track = audioTrack(
+    source ? source.parse().tracks : parseMp4(bytes!).tracks,
+  );
   if (!track) return null;
+  const readSample = async (sample: Mp4Sample) => {
+    if (!source) return sampleBytes(bytes!, sample);
+    const end = sampleEnd(sample, source.length);
+    return waitFor(source.read(sample.offset, end, signal), signal);
+  };
 
   const channels = track.channels!;
   const sampleRate = track.sampleRate!;
@@ -369,7 +408,7 @@ export async function decodeVideoAudio(
         type: sample.key ? "key" : "delta",
         timestamp: sampleTimestampUs(sample.timestamp) - decodeOriginUs,
         duration: Math.max(1, sampleTimestampUs(sample.duration)),
-        data: sampleBytes(bytes, sample),
+        data: await readSample(sample),
       };
       decoder.decode(new EncodedAudioChunk(chunk));
       if (decoder.decodeQueueSize >= MAX_DECODE_QUEUE) {

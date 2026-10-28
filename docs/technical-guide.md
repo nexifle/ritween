@@ -136,9 +136,60 @@ npm run test:browser
 
 Unit tests cover cut boundaries, scene timing, invalid manifests, frame timing at every supported FPS, MP4 table consistency and rejected muxer inputs. Synthetic sample bytes in unit tests only test box structure; the browser test verifies real encoded media.
 
+## Internal Range loading for imported media
+
+Phase 3 provides opt-in loading through `--media-loading range` on the CLI
+`preview`, `frame`, and `export` commands. `--media-loading full` remains the
+default. The server initializes the internal `globalThis.__ritweenRangeVideo`
+flag before application modules run; it is not a public SDK option. Range mode
+enables a shared byte source for video and linked AAC; standalone audio using
+`decodeAudioData()` is unchanged. See [CLI usage](../CLI.md#imported-media-loading).
+
+- The initial probe reads at most 512 KiB. Small files received in full through
+  the probe use the full-resource fallback without a second request. Probe bytes
+  are reused as cache blocks; the scanner skips `mdat` and supports both leading
+  and trailing `moov` boxes.
+- Incremental reads require a strong ETag. Each response is checked for
+  `If-Range` consistency, offsets, total length, body length, and resource version.
+  A `206` response may stop exactly at EOF; earlier truncation is rejected.
+  Servers without Range support or a strong ETag use a bounded full fallback.
+- The aggregate compressed-block LRU is limited to 8 MiB with 256 KiB blocks;
+  shared full fallbacks are limited to 128 MiB in total. At most 16 distinct
+  resources may have active owners. Each range/sample and each `moov` is limited
+  to 4 MiB, the scanner is limited to 4,096 top-level boxes, and the per-asset
+  limit remains 128 MiB. Exceeding a limit raises an error rather than extending
+  large-file support.
+- Requests and parsed metadata are deduplicated while the same resource has
+  active owners. Sample metadata is treated as immutable; each consumer has
+  separate root and track objects, as well as separate decoder state.
+  Cancelling one consumer does not cancel another. The last owner cancels
+  remaining work and releases the resource cache.
+- Asset body reads are limited to four concurrent requests, including full
+  downloads. The cache budget is not a total RAM limit: caller-owned output
+  copies, metadata, in-flight buffers, native decoders, audio PCM, and GPU
+  resources are not included in the 8 MiB LRU.
+- The CLI server provides Range responses and strong content-based ETags for
+  public MP4 assets. It still reads full-file snapshots to calculate validators,
+  with a separate 128 MiB snapshot cache. Reduced client downloads do not prove
+  lower server I/O or peak RAM. Other servers, including the default Vite
+  development server, are not assumed to provide the same validators.
+
+Run the standard and Range media suites with Vite and Chrome available:
+
+```sh
+npm run test:media
+RITWEEN_RANGE_MEDIA=1 npm run test:media
+```
+
+The second report is stored separately at `artifacts/native-media/report-range.json`.
+Phase 3 comparison measurements are stored under `artifacts/media-performance/`;
+throwaway benchmark scripts are not part of the distributable source. Range has
+not been promoted to the default because fewer downloaded bytes do not always
+produce a faster first frame, particularly for short 4K fixtures with added latency.
+
 ## MVP limits
 
-Sequential, gapless, hard-cut scenes only. A Compositor interface reserves a path to rendering active scenes to intermediate textures and blending transitions; overlapping transitions are not implemented. Base preview resolution is specified by the manifest. Export sizes keep that aspect: even scales with a short side of 360, 720 or 1080, within H.264 Level 4.2. A size with a different aspect is rejected. There is no letterboxing. Imported media still uses bounded full-resource downloads (128 MiB per asset), not HTTP Range. Video metadata is indexed once; compatible tracks reuse a decoder with bounded frame caching, while reordered or oversized tracks use random access. Cache estimates do not include browser-native decoder memory. Export keeps compressed samples in memory; files of 4 GiB or more are rejected. Encoding is asynchronous on the UI thread with bounded queues and cooperative yields, not a worker. Long or GPU-intensive compositions may reduce preview responsiveness during export.
+Sequential, gapless, hard-cut scenes only. A Compositor interface reserves a path to rendering active scenes to intermediate textures and blending transitions; overlapping transitions are not implemented. Base preview resolution is specified by the manifest. Export sizes keep that aspect: even scales with a short side of 360, 720 or 1080, within H.264 Level 4.2. A size with a different aspect is rejected. There is no letterboxing. Imported media defaults to bounded full-resource downloads (128 MiB per asset); CLI users can opt into bounded HTTP Range loading with `--media-loading range`. Video metadata is indexed once; compatible tracks reuse a decoder with bounded frame caching, while reordered or oversized tracks use random access. Cache estimates do not include browser-native decoder memory. Export keeps compressed samples in memory; files of 4 GiB or more are rejected. Encoding is asynchronous on the UI thread with bounded queues and cooperative yields, not a worker. Long or GPU-intensive compositions may reduce preview responsiveness during export.
 
 No microphone input, DOM/HTML rasterization, clip dragging, or automatic TSX-to-GPU conversion. Setup may fetch resources, but rendering must be synchronous and seekable. Use trusted scene code only: scene modules execute as part of the application. GPU/codec availability varies by platform; unsupported configurations display errors rather than substitute a different rendering or recording pipeline.
 

@@ -7,14 +7,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { ResolvedProject } from "./project.ts";
 import { projectPlugin } from "./project.ts";
+import { mediaResponse } from "./media-response.ts";
 export async function startServer({
   runtimeRoot,
   project,
   port = 0,
+  watch = true,
+  mediaLoading = "full",
 }: {
   runtimeRoot: string;
   project: ResolvedProject;
   port?: number;
+  watch?: boolean;
+  mediaLoading?: "full" | "range";
 }) {
   const cache = await mkdtemp(join(tmpdir(), "ritween-vite-"));
   let server;
@@ -31,6 +36,19 @@ export async function startServer({
           ? join(builtRoot, "public")
           : false,
       plugins: [
+        {
+          name: "ritween-media-loading",
+          transformIndexHtml: {
+            order: "post",
+            handler: () => [
+              {
+                tag: "script",
+                children: `globalThis.__ritweenRangeVideo = ${mediaLoading === "range"};`,
+                injectTo: "head-prepend",
+              },
+            ],
+          },
+        },
         projectPlugin(project.manifest, join(builtRoot, "schema.js"), true),
         {
           name: "ritween-built-runtime-reload",
@@ -48,6 +66,8 @@ export async function startServer({
         {
           name: "ritween-render-shell",
           configureServer(server) {
+            if (server.config.publicDir)
+              server.middlewares.use(mediaResponse(server.config.publicDir));
             server.middlewares.use(
               "/__ritween/render",
               async (req, res, next) => {
@@ -79,6 +99,8 @@ export async function startServer({
       server: {
         host: "127.0.0.1",
         port,
+        hmr: watch,
+        watch: watch ? undefined : null,
         fs: {
           allow: [runtimeRoot, project.directory, dirname(project.manifest)],
         },

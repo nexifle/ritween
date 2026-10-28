@@ -14,7 +14,7 @@
     "preview": "node bin/ritween.mjs preview --demo",
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "node scripts/validate-browser.mjs",
-    "test:media": "node scripts/validate-media.mjs",
+    "test:media": "node --import tsx scripts/validate-media.mjs",
     "test:preview": "node --import tsx scripts/validate-preview.mjs",
     "test:project-settings": "node scripts/validate-project-settings.mjs",
     "test:studio-preferences": "node scripts/validate-studio-preferences.mjs",

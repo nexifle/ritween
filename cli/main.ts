@@ -88,12 +88,15 @@ export async function main(argv = process.argv.slice(2)) {
         runtimeRoot,
         project,
         port: activeOptions.command === "preview" ? activeOptions.port : 0,
+        watch: activeOptions.command === "preview",
+        mediaLoading: activeOptions.mediaLoading,
       });
       server = serving.server;
       if (cancelled || interrupted) throw Error("Cancelled.");
       if (activeOptions.command === "preview") {
         const result = {
           command: "preview",
+          mediaLoading: activeOptions.mediaLoading,
           url: serving.url,
           manifest: project.manifest,
         };
@@ -141,6 +144,18 @@ export async function main(argv = process.argv.slice(2)) {
       }
       if (cancelled || interrupted) throw Error("Cancelled.");
       const page = await browser.newPage({ acceptDownloads: true });
+      const mediaRequests = {
+        rangeRequests: 0,
+        partialResponses: 0,
+        fullResponses: 0,
+      };
+      page.on("response", (response) => {
+        if (response.headers()["content-type"]?.split(";")[0] !== "video/mp4")
+          return;
+        if (response.request().headers().range) mediaRequests.rangeRequests++;
+        if (response.status() === 206) mediaRequests.partialResponses++;
+        if (response.status() === 200) mediaRequests.fullResponses++;
+      });
       page.setDefaultTimeout(activeOptions.timeout);
       const initializationFailure = new Promise((_, reject) =>
         page.once("pageerror", reject),
@@ -247,6 +262,8 @@ export async function main(argv = process.argv.slice(2)) {
       temporary = undefined;
       const result = {
         command: activeOptions.command,
+        mediaLoading: activeOptions.mediaLoading,
+        mediaRequests,
         output,
         project: metadata.name,
         ...details,

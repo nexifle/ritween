@@ -1,5 +1,45 @@
 export const MAX_ASSET_BYTES = 128 * 2 ** 20;
 
+const MAX_ASSET_REQUESTS = 4;
+let activeRequests = 0;
+const requestWaiters = new Set<() => void>();
+
+/** Hold the slot until the body is read, not just until headers arrive. */
+export async function withAssetRequest<T>(
+  signal: AbortSignal | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  while (activeRequests >= MAX_ASSET_REQUESTS) {
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        requestWaiters.delete(wake);
+        signal?.removeEventListener("abort", abort);
+      };
+      const wake = () => {
+        cleanup();
+        resolve();
+      };
+      const abort = () => {
+        cleanup();
+        reject(signal!.reason);
+      };
+      if (signal?.aborted) reject(signal.reason);
+      else {
+        requestWaiters.add(wake);
+        signal?.addEventListener("abort", abort, { once: true });
+      }
+    });
+  }
+  signal?.throwIfAborted();
+  activeRequests++;
+  try {
+    return await run();
+  } finally {
+    activeRequests--;
+    requestWaiters.values().next().value?.();
+  }
+}
+
 /** Resolve only same-origin HTTP(S) asset URLs; file URLs are never fetchable. */
 export function resolveAssetUrl(input: string, baseHref?: string) {
   if (typeof input !== "string" || input.trim() === "")
@@ -86,6 +126,13 @@ export async function readAssetResponse(
       length += value.byteLength;
     }
     signal?.throwIfAborted();
+    const encoding = response.headers.get("content-encoding");
+    if (
+      advertised !== null &&
+      (!encoding || encoding === "identity") &&
+      length !== advertised
+    )
+      throw Error("Asset response length does not match Content-Length.");
   } catch (error) {
     await reader.cancel(error).catch(() => {});
     if (signal?.aborted) signal.throwIfAborted();
@@ -108,11 +155,13 @@ export async function readAssetResponse(
 export async function fetchAsset(url: string, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const resolved = resolveAssetUrl(url);
-  const response = await fetch(resolved, {
-    signal,
-    credentials: "same-origin",
-    mode: "same-origin",
-    redirect: "error",
+  return withAssetRequest(signal, async () => {
+    const response = await fetch(resolved, {
+      signal,
+      credentials: "same-origin",
+      mode: "same-origin",
+      redirect: "error",
+    });
+    return readAssetResponse(response, signal);
   });
-  return readAssetResponse(response, signal);
 }

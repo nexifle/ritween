@@ -44,7 +44,7 @@ export class SequentialVideo {
     end: number,
     count: number,
     timestamp: number,
-    chunk: (index: number) => EncodedVideoChunk,
+    chunk: (index: number) => EncodedVideoChunk | Promise<EncodedVideoChunk>,
     signal: AbortSignal,
   ): Promise<VideoFrame> {
     signal.throwIfAborted();
@@ -118,7 +118,9 @@ export class SequentialVideo {
           decoder.decodeQueueSize < 4 &&
           this.frames.size < MAX_FRAMES - 4
         ) {
-          decoder.decode(chunk(this.next++));
+          const encoded = await chunk(this.next++);
+          signal?.throwIfAborted();
+          decoder.decode(encoded);
           continue;
         }
         if (this.next === count && !this.ended) {

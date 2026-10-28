@@ -23,6 +23,20 @@
       "expectations": ["Manifest and clip boundaries are valid", "Audio is scheduled using clip-local mapping with ordered fades", "MP4 export succeeds with 60 frames", "Exported dimensions and audio presence are verified"]
     },
     {
+      "id": 5,
+      "prompt": "My existing Ritween project imports public/media/shot.mp4 with linked audio. Compare a frame at 0.5 seconds and a one-second export using full loading versus HTTP Range, and open the preview using Range. Preserve my manifest and existing outputs. Check whether the installed CLI supports the option, verify actual partial responses, and do not claim a speedup without measuring it.",
+      "expected_output": "Public CLI commands for preview, frame, and export with explicit loading modes and fresh paths; actual mode/response evidence and output checks, or an explicit installed-version/environment blocker.",
+      "files": [],
+      "expectations": ["Checks installed CLI help before using --media-loading", "Uses ritween directly with --media-loading full or range rather than internal globals or invented SDK parameters", "Preserves the manifest and existing outputs", "Distinguishes selected mode from actual 206 responses and response counts from bytes", "Checks frame equivalence and exported audio or explicitly reports unavailable checks", "Does not claim universal performance improvement"]
+    },
+    {
+      "id": 6,
+      "prompt": "My Ritween input MP4 is 200 MiB. Can you enable Range so it bypasses the file-size limit? I also use audioFile for a separate WAV. Explain what Range changes and give the safe next step; do not change files or run commands.",
+      "expected_output": "Explains that Range does not bypass the 128 MiB asset limit or change standalone audio loading; suggests splitting or reducing the asset outside Ritween without silently relaxing safeguards.",
+      "files": [],
+      "expectations": ["Retains the 128 MiB per-asset limit", "Explains that standalone audioFile loading is unchanged", "Does not raise constants, invent a bypass option, or claim total RAM is bounded by the encoded LRU", "Recommends splitting or reducing the asset without changing files"]
+    },
+    {
       "id": 4,
       "prompt": "Create a 15-second dynamic motion video that showcases your strength as a motion designer. It is for a neighborhood library's evening reading event. Keep it clean, with large readable text and subtle original procedural sound. Use these exact lines: 'Make room for a story', 'Evening reading at your library', 'Thursday, 7 pm'. I want expressive connected animation, not slides with fade-in/fade-out. Avoid psychedelic shader effects and do not copy the bundled motion-study video's theme, wording, or sequence. Export at 640x360 and 30 fps.",
       "expected_output": "A library-specific direction and 15-second rendered film with readable supplied copy, connected purposeful motion, and audible procedural sound, plus honest visual/playback validation. Human review assesses communication and choreography; technical checks alone do not prove visual quality.",

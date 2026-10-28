@@ -32,6 +32,7 @@ Options:
   --bitrate BPS|auto       Video target; overrides project setting
   --latency-mode MODE      quality or realtime; defaults to project setting
   --keyframe-interval SEC  Keyframe spacing; project default or 2 seconds (max: 60)
+  --media-loading MODE     full (default) or range for video/linked audio
   --port N                 Preview port (default: 5173; next free if busy)
   --open                   Open the web preview in your default browser
   --channel NAME           Browser channel (default: chrome; msedge/chromium)
@@ -63,6 +64,7 @@ export function parseOptions(argv: string[]) {
       bitrate: { type: "string" },
       "latency-mode": { type: "string" },
       "keyframe-interval": { type: "string" },
+      "media-loading": { type: "string" },
       port: { type: "string" },
       open: { type: "boolean" },
       channel: { type: "string" },
@@ -107,6 +109,10 @@ export function parseOptions(argv: string[]) {
     throw Error("--open and --port apply to web preview only.");
   if (values.time !== undefined && values.frame !== undefined)
     throw Error("Pass --time or --frame, not both.");
+  const requestedMediaLoading = values["media-loading"] ?? "full";
+  if (requestedMediaLoading !== "full" && requestedMediaLoading !== "range")
+    throw Error("--media-loading must be full or range.");
+  const mediaLoading: "full" | "range" = requestedMediaLoading;
   const fps = Number(values.fps ?? 30);
   if (![24, 30, 60].includes(fps)) throw Error("--fps must be 24, 30 or 60.");
   const bitrate =
@@ -201,6 +207,7 @@ export function parseOptions(argv: string[]) {
     bitrate,
     latencyMode,
     keyFrameInterval,
+    mediaLoading,
     time,
     frame,
     port,

@@ -1,6 +1,7 @@
 import { h264DecoderConfig } from "../codecs/h264";
 import { parseMp4, type Mp4Sample, type Mp4Track } from "./formats/mp4";
 import { fetchAsset } from "../media/resource";
+import { openByteSource } from "../media/byte-source";
 import { createSampleIndex } from "./sample-index";
 import { SequentialVideo } from "./sequential-video";
 
@@ -157,10 +158,31 @@ export async function openVideo(
   url: string,
   signal?: AbortSignal,
 ): Promise<OpenVideoResource> {
-  let bytes: ArrayBuffer | null = await fetchAsset(url, signal);
-  signal?.throwIfAborted();
-  const input = parseMp4(bytes);
-  const track = videoTrack(input.tracks);
+  const rangeEnabled =
+    (globalThis as typeof globalThis & { __ritweenRangeVideo?: boolean })
+      .__ritweenRangeVideo === true;
+  const source = rangeEnabled ? await openByteSource(url, signal) : null;
+  let bytes: ArrayBuffer | null = source ? null : await fetchAsset(url, signal);
+  let input;
+  let track;
+  try {
+    signal?.throwIfAborted();
+    input = source ? source.parse() : parseMp4(bytes!);
+    track = videoTrack(input.tracks);
+  } catch (error) {
+    source?.dispose();
+    throw error;
+  }
+  const readSample = async (sample: Mp4Sample, decodeSignal: AbortSignal) => {
+    const data = source
+      ? await waitFor(
+          source.read(sample.offset, sample.offset + sample.size, decodeSignal),
+          decodeSignal,
+        )
+      : sampleBytes(bytes!, sample);
+    decodeSignal.throwIfAborted();
+    return data;
+  };
   const width = track.width!;
   const height = track.height!;
   let index: ReturnType<typeof createSampleIndex> | null = createSampleIndex(
@@ -210,6 +232,7 @@ export async function openVideo(
   let busy = false;
 
   const releasePayload = () => {
+    source?.dispose();
     bytes = null;
     index = null;
     visibleFrameDurations.clear();
@@ -292,7 +315,7 @@ export async function openVideo(
               end,
               track.samples.length,
               timestampUs(track.samples[end].timestamp, "sample timestamp"),
-              (i) => {
+              async (i) => {
                 const sample = track.samples[i];
                 return new EncodedVideoChunk({
                   type: sample.key ? "key" : "delta",
@@ -301,7 +324,7 @@ export async function openVideo(
                     1,
                     timestampUs(sample.duration, "sample duration"),
                   ),
-                  data: sampleBytes(bytes!, sample),
+                  data: await readSample(sample, decodeSignal),
                 });
               },
               decodeSignal,
@@ -386,7 +409,7 @@ export async function openVideo(
               1,
               timestampUs(sample.duration, "sample duration"),
             ),
-            data: sampleBytes(bytes!, sample),
+            data: await readSample(sample, decodeSignal),
           };
           decoder.decode(new EncodedVideoChunk(chunk));
           if (decoder.decodeQueueSize >= MAX_DECODE_QUEUE)

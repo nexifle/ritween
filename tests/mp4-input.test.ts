@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseMp4 } from "../src/engine/decode/formats/mp4";
+import { parseMp4, parseMp4Metadata } from "../src/engine/decode/formats/mp4";
+import { decodeVideoAudio } from "../src/engine/decode/audio-file";
+import { openByteSource } from "../src/engine/media/byte-source";
 
 type SampleSpec = {
   data: Uint8Array;
@@ -469,6 +471,243 @@ function findBox(data: Uint8Array, type: string) {
   assert.ok(found, `missing fixture ${type}`);
   return found!;
 }
+
+test("metadata-only parser matches full MP4 without allocating media payload", () => {
+  const fixture = makeFixture({ tracks: [videoTrack(), audioTrack()] });
+  const view = new DataView(fixture);
+  let moov: ArrayBuffer | undefined;
+  const mdats: { start: number; end: number }[] = [];
+  for (let at = 0; at < fixture.byteLength;) {
+    const size = view.getUint32(at);
+    const type = String.fromCharCode(...new Uint8Array(fixture, at + 4, 4));
+    if (type === "moov") moov = fixture.slice(at, at + size);
+    if (type === "mdat") mdats.push({ start: at + 8, end: at + size });
+    at += size;
+  }
+  assert.ok(moov);
+  assert.deepEqual(
+    parseMp4Metadata(moov, mdats, fixture.byteLength),
+    parseMp4(fixture),
+  );
+  assert.throws(
+    () => parseMp4Metadata(moov, [{ start: -1, end: 10 }], fixture.byteLength),
+    /bounds/,
+  );
+  assert.throws(
+    () => parseMp4Metadata(moov, [...mdats, ...mdats], fixture.byteLength),
+    /bounds/,
+  );
+  assert.throws(
+    () => parseMp4Metadata(moov, [{ start: 0, end: 1 }], fixture.byteLength),
+    /outside every mdat/,
+  );
+  assert.throws(
+    () => parseMp4Metadata(fixture, mdats, fixture.byteLength),
+    /exactly one moov/,
+  );
+});
+
+test("linked MP4 audio uses byte-source reads only when range mode is enabled", async () => {
+  const samples = audioTrack().samples;
+  samples[0].data = new Uint8Array(512 * 2 ** 10 + 1).fill(0xa1);
+  const fixture = makeFixture({
+    tracks: [audioTrack({ samples })],
+  });
+  const previousFetch = globalThis.fetch;
+  const previousGlobals = new Map(
+    [
+      "location",
+      "__ritweenRangeVideo",
+      "AudioDecoder",
+      "EncodedAudioChunk",
+    ].map(
+      (name) =>
+        [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const,
+    ),
+  );
+  class FakeEncodedAudioChunk {
+    timestamp: number;
+    data: Uint8Array;
+
+    constructor(init: EncodedAudioChunkInit) {
+      this.timestamp = init.timestamp;
+      this.data = new Uint8Array(init.data as Uint8Array);
+    }
+  }
+  class FakeAudioDecoder {
+    static async isConfigSupported(config: AudioDecoderConfig) {
+      return { supported: true, config };
+    }
+
+    decodeQueueSize = 0;
+    state: AudioDecoderState = "unconfigured";
+    private output: (data: AudioData) => void;
+
+    constructor(init: AudioDecoderInit) {
+      this.output = init.output;
+    }
+
+    configure() {
+      this.state = "configured";
+    }
+
+    decode(chunk: EncodedAudioChunk) {
+      const encoded = chunk as unknown as FakeEncodedAudioChunk;
+      const value = encoded.data[0] / 255;
+      this.output({
+        numberOfChannels: 2,
+        sampleRate: 48_000,
+        numberOfFrames: 1024,
+        timestamp: encoded.timestamp,
+        copyTo(plane: Float32Array) {
+          plane.fill(value);
+        },
+        close() {},
+      } as unknown as AudioData);
+    }
+
+    flush() {
+      return Promise.resolve();
+    }
+
+    close() {
+      this.state = "closed";
+    }
+  }
+
+  try {
+    Object.defineProperty(globalThis, "location", {
+      configurable: true,
+      value: { href: "https://studio.example/editor" },
+    });
+    Object.defineProperty(globalThis, "AudioDecoder", {
+      configurable: true,
+      writable: true,
+      value: FakeAudioDecoder,
+    });
+    Object.defineProperty(globalThis, "EncodedAudioChunk", {
+      configurable: true,
+      writable: true,
+      value: FakeEncodedAudioChunk,
+    });
+    for (const rangeEnabled of [false, true]) {
+      const requests: (string | null)[] = [];
+      Object.defineProperty(globalThis, "__ritweenRangeVideo", {
+        configurable: true,
+        writable: true,
+        value: rangeEnabled,
+      });
+      globalThis.fetch = (async (_input, init) => {
+        const range = new Headers(init?.headers).get("range");
+        requests.push(range);
+        if (!range) return new Response(fixture.slice(0));
+        const match = /^bytes=(\d+)-(\d+)$/.exec(range);
+        assert.ok(match);
+        const start = Number(match[1]);
+        const end = Number(match[2]) + 1;
+        return new Response(fixture.slice(start, end), {
+          status: 206,
+          headers: {
+            etag: '"audio-v1"',
+            "content-range": `bytes ${start}-${end - 1}/${fixture.byteLength}`,
+          },
+        });
+      }) as typeof fetch;
+      const planes: Float32Array[] = [];
+      const context = {
+        createBuffer(channels: number, frames: number, sampleRate: number) {
+          planes.length = 0;
+          for (let channel = 0; channel < channels; channel++)
+            planes.push(new Float32Array(frames));
+          return {
+            duration: frames / sampleRate,
+            getChannelData(channel: number) {
+              return planes[channel];
+            },
+          } as AudioBuffer;
+        },
+      } as unknown as BaseAudioContext;
+      const decoded = await decodeVideoAudio("/audio.mp4", context, 0, 0.05);
+      assert.ok(decoded);
+      const pcm = decoded.getChannelData(0);
+      assert.ok(Math.abs(pcm[0] - 0xa1 / 255) < 1e-7);
+      assert.ok(Math.abs(pcm[1024] - 0xa2 / 255) < 1e-7);
+      assert.ok(Math.abs(pcm[2048] - 0xa4 / 255) < 1e-7);
+      if (rangeEnabled) {
+        assert.ok(requests.length > 1);
+        assert.ok(
+          requests.every((range) => range !== null),
+          JSON.stringify(requests),
+        );
+      } else {
+        assert.deepEqual(requests, [null]);
+      }
+    }
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+});
+
+test("shared byte-source parsing isolates track roots and survives owner disposal", async () => {
+  const fixture = makeFixture({ tracks: [audioTrack()] });
+  const previousFetch = globalThis.fetch;
+  const previousLocation = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "location",
+  );
+  let requests = 0;
+  Object.defineProperty(globalThis, "location", {
+    configurable: true,
+    value: { href: "https://studio.example/editor" },
+  });
+  globalThis.fetch = (async () => {
+    requests++;
+    return new Response(fixture.slice(0));
+  }) as typeof fetch;
+  try {
+    const [first, second] = await Promise.all([
+      openByteSource("/shared-audio.mp4"),
+      openByteSource("https://studio.example/shared-audio.mp4"),
+    ]);
+    try {
+      assert.equal(requests, 1);
+      const parsedFirst = first.parse();
+      const parsedSecond = second.parse();
+      const firstTrack = parsedFirst.tracks[0];
+      const secondTrack = parsedSecond.tracks[0];
+      assert.notStrictEqual(parsedFirst, parsedSecond);
+      assert.notStrictEqual(parsedFirst.tracks, parsedSecond.tracks);
+      assert.notStrictEqual(firstTrack, secondTrack);
+      assert.strictEqual(firstTrack.samples, secondTrack.samples);
+      const sharedSamples = secondTrack.samples;
+      const sample = sharedSamples[0];
+
+      firstTrack.samples = [];
+      assert.strictEqual(secondTrack.samples, sharedSamples);
+      assert.equal(secondTrack.samples.length, 3);
+      first.dispose();
+      const parsedAfterDispose = second.parse();
+      assert.notStrictEqual(parsedAfterDispose.tracks[0], secondTrack);
+      assert.strictEqual(parsedAfterDispose.tracks[0].samples, sharedSamples);
+      assert.deepEqual(
+        await second.read(sample.offset, sample.offset + sample.size),
+        new Uint8Array(fixture, sample.offset, sample.size),
+      );
+    } finally {
+      first.dispose();
+      second.dispose();
+    }
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousLocation)
+      Object.defineProperty(globalThis, "location", previousLocation);
+    else Reflect.deleteProperty(globalThis, "location");
+  }
+});
 
 test("parses AVC and AAC tracks, descriptions, timing, sample ranges, and sync flags", () => {
   const fixture = makeFixture({

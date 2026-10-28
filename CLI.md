@@ -63,6 +63,29 @@ import type { Project, Scene } from "ritween";
 
 Web preview binds only to `127.0.0.1`, defaults to port 5173, and reports the actual URL if that port is busy. `--port 0` chooses an available port. Source changes trigger HMR or reload. Ctrl+C closes the server. Frame and export commands start a temporary private server and headless browser, save the result and close both automatically.
 
+## Imported media loading
+
+Preview, frame, and export accept `--media-loading full|range`. The default is
+`full`; `range` opts into bounded HTTP Range loading for imported MP4 video and
+linked AAC audio. Standalone audio loading is unchanged.
+
+```sh
+ritween preview /path/to/project --media-loading range
+ritween frame /path/to/project --media-loading range --time 1.25 -o still.png
+ritween export /path/to/project --media-loading range -o final.mp4
+```
+
+The CLI initializes the selected mode before studio or renderer modules run.
+Range loading requires a strong ETag and valid partial responses; unsupported
+servers use a bounded full-resource fallback. The per-asset limit remains
+128 MiB. Range can reduce startup downloads for large footage, but may be slower
+for short files on high-latency connections, so it is not the default.
+
+JSON results include `mediaLoading`. Frame/export results also include
+`mediaRequests`: counts of MP4 responses to Range requests, partial (`206`)
+responses, and full (`200`) responses. These are response counts, not transferred
+bytes or a guarantee that every asset used incremental loading.
+
 ## Output and automation
 
 - `frame`: native WebGPU OffscreenCanvas → PNG via `convertToBlob`, at the project base resolution unless overridden with `--resolution WIDTHxHEIGHT` or 360p/720p/1080p. This is a single-image operation, not a screenshot-based video export.

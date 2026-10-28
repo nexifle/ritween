@@ -866,6 +866,7 @@ async function recordClip(
     },
   });
   budget.destinations.set(destination, bus);
+  const source = clip.create();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: (() => void) | undefined;
   const stopped = new Promise<never>((_resolve, reject) => {
@@ -878,7 +879,7 @@ async function recordClip(
   });
   try {
     await Promise.race([
-      clip.create().schedule({
+      source.schedule({
         context: authorContext,
         signal,
         destination,
@@ -898,6 +899,7 @@ async function recordClip(
   } finally {
     clearTimeout(timer);
     if (abort) signal?.removeEventListener("abort", abort);
+    source.dispose?.();
   }
   for (const node of nodes.slice(before)) {
     if (node.when == null) continue;
@@ -1336,8 +1338,12 @@ export class LiveMix {
   }
 
   dispose() {
+    if (this.disposed) return;
     this.disposed = true;
     this.preparationAbort?.abort();
+    this.preparationAbort = null;
+    this.preparation = null;
+    this.preparedClipIds.clear();
     this.stop();
     this.dropBuses();
     this.score = null;

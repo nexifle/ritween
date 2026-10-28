@@ -44,13 +44,13 @@ export async function readAssetResponse(
   signal?: AbortSignal,
   maxBytes = MAX_ASSET_BYTES,
 ) {
-  signal?.throwIfAborted();
-  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
-    throw Error("Asset byte limit must be a positive safe integer.");
-  if (!response.ok)
-    throw Error(`Asset request failed with HTTP ${response.status}.`);
   let advertised: number | null;
   try {
+    signal?.throwIfAborted();
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
+      throw Error("Asset byte limit must be a positive safe integer.");
+    if (!response.ok)
+      throw Error(`Asset request failed with HTTP ${response.status}.`);
     advertised = contentLength(response);
     if (advertised !== null && advertised > maxBytes)
       throw Error(
@@ -87,6 +87,7 @@ export async function readAssetResponse(
     }
     signal?.throwIfAborted();
   } catch (error) {
+    await reader.cancel(error).catch(() => {});
     if (signal?.aborted) signal.throwIfAborted();
     throw error;
   } finally {
@@ -113,6 +114,5 @@ export async function fetchAsset(url: string, signal?: AbortSignal) {
     mode: "same-origin",
     redirect: "error",
   });
-  signal?.throwIfAborted();
   return readAssetResponse(response, signal);
 }

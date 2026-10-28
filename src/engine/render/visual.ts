@@ -200,8 +200,8 @@ function visualScene(
   asynchronous = false,
 ): Scene {
   let resource: ImageTexture | VideoTexture | undefined;
-  let pipeline: GPURenderPipeline;
-  let bind: GPUBindGroup;
+  let pipeline: GPURenderPipeline | undefined;
+  let bind: GPUBindGroup | undefined;
   let uniform: GPUBuffer | undefined;
   const lifetime = new AbortController();
   return {
@@ -209,6 +209,7 @@ function visualScene(
       resource = await load(context, lifetime.signal);
       if (lifetime.signal.aborted) {
         resource.dispose();
+        resource = undefined;
         lifetime.signal.throwIfAborted();
       }
       try {
@@ -240,6 +241,7 @@ function visualScene(
           primitive: { topology: "triangle-list" },
         });
         lifetime.signal.throwIfAborted();
+        if (!resource) throw Error("Media scene is disposed.");
         uniform = context.device.createBuffer({
           size: 48,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -259,8 +261,12 @@ function visualScene(
           ],
         });
       } catch (error) {
-        resource.dispose();
+        resource?.dispose();
+        resource = undefined;
         uniform?.destroy();
+        uniform = undefined;
+        bind = undefined;
+        pipeline = undefined;
         throw error;
       }
     },
@@ -272,7 +278,8 @@ function visualScene(
         }
       : undefined,
     render(context) {
-      if (!resource || !uniform) throw Error("Media scene is not ready.");
+      if (!resource || !uniform || !pipeline || !bind)
+        throw Error("Media scene is not ready.");
       const reference = context.compositionResolution ?? context.resolution;
       const transform =
         typeof options.transform === "function"
@@ -333,9 +340,14 @@ function visualScene(
       pass.end();
     },
     dispose() {
+      if (lifetime.signal.aborted) return;
       lifetime.abort();
       resource?.dispose();
+      resource = undefined;
       uniform?.destroy();
+      uniform = undefined;
+      bind = undefined;
+      pipeline = undefined;
     },
   };
 }

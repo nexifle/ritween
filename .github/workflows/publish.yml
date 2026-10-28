@@ -52,8 +52,8 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `dist-tag=${prerelease ? "next" : "latest"}\n`);
           NODE
       - run: npm ci
-      - run: npm test
       - run: npm run build
+      - run: npm test
       - run: npm pack --dry-run
       - name: Publish with OIDC authentication
         run: npm publish --access public --provenance --tag "${{ steps.release.outputs.dist-tag }}"

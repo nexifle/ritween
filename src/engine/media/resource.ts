@@ -1,4 +1,6 @@
-export const MAX_ASSET_BYTES = 128 * 2 ** 20;
+import { MAX_ASSET_BYTES } from "./limits";
+
+export { MAX_ASSET_BYTES } from "./limits";
 
 const MAX_ASSET_REQUESTS = 4;
 let activeRequests = 0;
@@ -74,7 +76,9 @@ function contentLength(response: Response) {
   if (!Number.isSafeInteger(length))
     throw Error("Asset Content-Length exceeds the safe integer range.");
   if (length > MAX_ASSET_BYTES)
-    throw Error("Asset exceeds the 128 MiB encoded resource limit.");
+    throw Error(
+      `Asset exceeds the ${MAX_ASSET_BYTES / 2 ** 20} MiB encoded resource limit.`,
+    );
   return length;
 }
 

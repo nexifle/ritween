@@ -4,7 +4,7 @@ import { parseMp4, type Mp4Sample, type Mp4Track } from "./formats/mp4";
 import { fetchAsset } from "../media/resource";
 import { openByteSource } from "../media/byte-source";
 
-const MAX_PCM_BYTES = 128 * 2 ** 20;
+import { MAX_PCM_BYTES } from "../media/limits";
 const MAX_INPUT_SAMPLES = 250_000;
 const MAX_DECODE_QUEUE = 16;
 const MAX_OUTPUT_CHUNK_FRAMES = 8_192;
@@ -319,7 +319,9 @@ async function decodeVideoAudioResource(
   const frames = range.frameCount;
   const pcmBytes = channels * frames * Float32Array.BYTES_PER_ELEMENT;
   if (!Number.isSafeInteger(pcmBytes) || pcmBytes > MAX_PCM_BYTES)
-    throw Error("Decoded audio exceeds the 128 MiB PCM limit. Split the clip.");
+    throw Error(
+      `Decoded audio exceeds the ${MAX_PCM_BYTES / 2 ** 20} MiB PCM limit. Split the clip.`,
+    );
   const buffer = context.createBuffer(channels, frames, sampleRate);
   if (range.audibleStartFrame >= range.clipEndFrame) return buffer;
 

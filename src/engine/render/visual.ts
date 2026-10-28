@@ -6,6 +6,7 @@ import type {
   SceneEntry,
   SetupContext,
 } from "../types";
+import { MAX_TEXTURE_BYTES } from "../media/limits";
 import { fetchAsset } from "../media/resource";
 import { openVideo } from "../decode/video-resource";
 import { validateMediaClip } from "../media/project";
@@ -21,7 +22,7 @@ export interface VideoTexture extends ImageTexture {
     context: Pick<FramePreparationContext, "time" | "signal">,
   ): Promise<void>;
 }
-const MAX_TEXTURE_BYTES = 64 * 1024 * 1024;
+
 const textureBytes = new WeakMap<GPUDevice, number>();
 const releases = new WeakMap<GPUTexture, () => void>();
 function releaseTexture(value: GPUTexture) {
@@ -38,7 +39,9 @@ function texture(device: GPUDevice, width: number, height: number) {
     height > device.limits.maxTextureDimension2D ||
     width * height * 4 + (textureBytes.get(device) ?? 0) > MAX_TEXTURE_BYTES
   )
-    throw Error("Media textures exceed the device or shared 64 MiB limit.");
+    throw Error(
+      `Media textures exceed the device or shared ${MAX_TEXTURE_BYTES / 2 ** 20} MiB limit.`,
+    );
   const bytes = width * height * 4;
   const result = device.createTexture({
     size: [width, height],

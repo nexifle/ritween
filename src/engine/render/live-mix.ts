@@ -1,3 +1,4 @@
+import { MAX_ASSET_BYTES, MAX_AUDIO_SOURCE_BYTES } from "../media/limits";
 import {
   audibleAudioTracks,
   mutedAudioClipIds,
@@ -18,7 +19,7 @@ export const AUDIO_LIMITS = Object.freeze({
   graphVisits: 1_000_000,
   edges: 64_000,
   automationEvents: 200_000,
-  sourceBufferBytes: 128 * 2 ** 20,
+  sourceBufferBytes: MAX_AUDIO_SOURCE_BYTES,
   delaySeconds: 60,
   scheduleTimeoutMs: 30_000,
   mixBufferBytes: 256 * 2 ** 20,
@@ -163,7 +164,9 @@ export class VirtualParam {
       this.budget &&
       (this.budget.bytes += values.length * 4) > AUDIO_LIMITS.sourceBufferBytes
     )
-      throw Error("Audio curves exceed the 128 MiB source budget.");
+      throw Error(
+        `Audio curves exceed the ${AUDIO_LIMITS.sourceBufferBytes / 2 ** 20} MiB source budget.`,
+      );
     this.record({
       op: "curve",
       value: values[values.length - 1],
@@ -537,7 +540,9 @@ function installRecorder(
       budget.buffers.add(value);
       budget.bytes += value.length * value.numberOfChannels * 4;
       if (budget.bytes > AUDIO_LIMITS.sourceBufferBytes)
-        throw Error("Audio source buffers exceed the 128 MiB limit.");
+        throw Error(
+          `Audio source buffers exceed the ${AUDIO_LIMITS.sourceBufferBytes / 2 ** 20} MiB limit.`,
+        );
     }
     return value;
   };
@@ -552,7 +557,9 @@ function installRecorder(
     for (const sample of value) finite(sample, "curve value");
     budget.bytes += value.byteLength;
     if (budget.bytes > AUDIO_LIMITS.sourceBufferBytes)
-      throw Error("Audio curves exceed the 128 MiB source budget.");
+      throw Error(
+        `Audio curves exceed the ${AUDIO_LIMITS.sourceBufferBytes / 2 ** 20} MiB source budget.`,
+      );
     return value.slice();
   };
   const make = (kind: string, options: Record<string, unknown> = {}) => {
@@ -631,7 +638,9 @@ function installRecorder(
             channels * length * 4 + budget.bytes >
             AUDIO_LIMITS.sourceBufferBytes
           )
-            throw Error("Audio source buffers exceed the 128 MiB limit.");
+            throw Error(
+              `Audio source buffers exceed the ${AUDIO_LIMITS.sourceBufferBytes / 2 ** 20} MiB limit.`,
+            );
           return buffer(ctx.createBuffer(channels, length, rate));
         };
       if (key === "decodeAudioData")
@@ -640,8 +649,10 @@ function installRecorder(
             throw Error(
               "Use promise-based decodeAudioData and await it inside schedule.",
             );
-          if (bytes.byteLength > AUDIO_LIMITS.sourceBufferBytes)
-            throw Error("Encoded audio exceeds the 128 MiB asset limit.");
+          if (bytes.byteLength > MAX_ASSET_BYTES)
+            throw Error(
+              `Encoded audio exceeds the ${MAX_ASSET_BYTES / 2 ** 20} MiB asset limit.`,
+            );
           budget.pendingDecodes++;
           const pending = ctx
             .decodeAudioData(bytes)

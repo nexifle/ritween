@@ -3,7 +3,10 @@ import { open, realpath } from "node:fs/promises";
 import { resolve, relative, sep } from "node:path";
 import type { Connect } from "vite";
 
-const MAX_BYTES = 128 * 2 ** 20;
+import {
+  MAX_ASSET_BYTES,
+  MAX_MEDIA_SNAPSHOT_BYTES,
+} from "../src/engine/media/limits";
 
 /** Serve public MP4 snapshots so validators always describe the bytes sent. */
 export function mediaResponse(root: string): Connect.NextHandleFunction {
@@ -44,7 +47,7 @@ export function mediaResponse(root: string): Connect.NextHandleFunction {
       try {
         const stat = await handle.stat();
         if (!stat.isFile()) return next();
-        if (stat.size > MAX_BYTES) {
+        if (stat.size > MAX_ASSET_BYTES) {
           res.statusCode = 413;
           res.end();
           return;
@@ -68,12 +71,12 @@ export function mediaResponse(root: string): Connect.NextHandleFunction {
           let total = 0;
           for (;;) {
             const chunk = Buffer.alloc(
-              Math.min(256 * 1024, MAX_BYTES + 1 - total),
+              Math.min(256 * 1024, MAX_ASSET_BYTES + 1 - total),
             );
             const { bytesRead } = await handle.read(chunk);
             if (!bytesRead) break;
             total += bytesRead;
-            if (total > MAX_BYTES) {
+            if (total > MAX_ASSET_BYTES) {
               res.statusCode = 413;
               res.end();
               return;
@@ -97,7 +100,10 @@ export function mediaResponse(root: string): Connect.NextHandleFunction {
               retained -= old.bytes.length;
               snapshots.delete(file);
             }
-            while (retained + bytes.length > MAX_BYTES && snapshots.size) {
+            while (
+              retained + bytes.length > MAX_MEDIA_SNAPSHOT_BYTES &&
+              snapshots.size
+            ) {
               const oldest = snapshots.keys().next().value!;
               retained -= snapshots.get(oldest)!.bytes.length;
               snapshots.delete(oldest);

@@ -1,7 +1,8 @@
 import { parseMp4Metadata, type Mp4Input } from "../decode/formats/mp4";
 import { fetchAssetRange, MAX_RANGE_BYTES } from "./byte-range";
 import { readMp4Metadata } from "./mp4-metadata";
-import { MAX_ASSET_BYTES, resolveAssetUrl } from "./resource";
+import { resolveAssetUrl } from "./resource";
+import { MAX_FULL_ASSET_BYTES } from "./limits";
 
 const BLOCK_BYTES = 256 * 1024;
 const CACHE_BYTES = 8 * 2 ** 20;
@@ -24,7 +25,7 @@ async function createByteSource(url: string, signal?: AbortSignal) {
     throw error;
   }
   let full = metadata.full;
-  if (full && fullBytes + full.byteLength > MAX_ASSET_BYTES) {
+  if (full && fullBytes + full.byteLength > MAX_FULL_ASSET_BYTES) {
     signal?.removeEventListener("abort", forwardAbort);
     throw Error("Shared full asset budget exceeded.");
   }

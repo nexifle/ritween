@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [22.18.0, 22, 24]
+        node: ["22.x", "24.x"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

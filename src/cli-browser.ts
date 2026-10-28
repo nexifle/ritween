@@ -2,7 +2,7 @@
 import { project as sourceProject } from "virtual:ritween-project";
 import { resolveMediaProject } from "./engine/media/project";
 import { Renderer } from "./engine/render/renderer";
-import { exportVideo } from "./engine/export";
+import { exportMp4 as exportVideo } from "./engine/export/formats/mp4/export-mp4";
 import {
   resolveExportRequest,
   type ExportOverrides,

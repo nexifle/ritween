@@ -1,4 +1,4 @@
-import { PREVIEW_VOLUME_DB } from "../../engine/audio";
+import { PREVIEW_VOLUME_DB } from "../../engine/render/audio";
 import { TL_ZOOM_MIN, TL_ZOOM_MAX, clamp } from "../utils/view-utils";
 import {
   browserStorage,

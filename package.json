@@ -4,14 +4,14 @@
   "description": "Code-first WebGPU video framework. Preview, render a PNG frame, and export H.264 MP4 from a project manifest.",
   "type": "module",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build && npm run build:types",
+    "build": "tsc -b && tsc -p tsconfig.cli.json && node scripts/build-runtime.mjs && npm run build:types",
     "build:types": "node scripts/build-types.mjs",
-    "prepack": "npm run build:types",
-    "preview": "vite preview --host 0.0.0.0",
+    "prepack": "npm run build",
+    "preview": "node bin/ritween.mjs preview --demo",
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "node scripts/validate-browser.mjs",
     "test:media": "node scripts/validate-media.mjs",
@@ -55,16 +55,13 @@
   "exports": {
     ".": {
       "types": "./types/index.d.ts",
-      "default": "./src/index.ts"
+      "default": "./dist/index.js"
     }
   },
   "files": [
     "types",
     "bin",
-    "cli",
-    "public",
-    "src",
-    "index.html",
+    "dist",
     "README.md",
     "LOGO.md",
     "CLI.md",

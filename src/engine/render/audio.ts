@@ -2,11 +2,11 @@ import {
   audibleAudioTracks,
   mutedAudioClipIds,
   mutedAudioTrackIds,
-} from "./project-settings";
+} from "../project-settings";
 import { LiveMix, prepareOfflineAudio, AUDIO_LIMITS } from "./live-mix";
-import { resolveMediaProject } from "./media/project";
-import { frameCount, validateProject } from "./timeline";
-import type { Project } from "./types";
+import { resolveMediaProject } from "../media/project";
+import { frameCount, validateProject } from "../timeline";
+import type { Project } from "../types";
 
 /** 24, 30, and 60 all divide this, so audio length matches an exact frame count. */
 export const SAMPLE_RATE = 48_000;

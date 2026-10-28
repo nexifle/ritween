@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { startServer } from "../cli/server.mjs";
-import { resolveProject } from "../cli/project.mjs";
+import { startServer } from "../cli/server.ts";
+import { resolveProject } from "../cli/project.ts";
 
 const runtimeRoot = process.cwd();
 const project = await resolveProject(
@@ -68,8 +68,8 @@ try {
     button.textContent = "Validate audio";
     button.onclick = () => {
       window.audioValidation = (async () => {
-        const { LiveMix } = await import("/src/engine/live-mix.ts");
-        const { PreviewAudio } = await import("/src/engine/audio.ts");
+        const { LiveMix } = await import("/src/engine/render/live-mix.ts");
+        const { PreviewAudio } = await import("/src/engine/render/audio.ts");
         const { project: original } =
           await import("/@id/virtual:ritween-project");
         const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

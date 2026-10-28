@@ -4,18 +4,18 @@ A code-first video framework. External AI agents write scene modules and registe
 
 ## Run
 
-Requires Node.js 22.12+ (or 20.19+), a current Chrome/Edge with WebGPU and H.264 WebCodecs encoding, and GPU acceleration.
+Requires Node.js 22.18.0+, a current Chrome/Edge with WebGPU and H.264 WebCodecs encoding, and GPU acceleration.
 
 ```sh
 npm install
 npm run dev
 ```
 
-Open http://localhost:5173. WebGPU needs localhost or HTTPS. Vite hot reloads scene and manifest changes. `npm run build` creates `dist`; `npm run preview` serves that build.
+Open http://localhost:5173. WebGPU needs localhost or HTTPS. Vite hot reloads scene and manifest changes. `npm run build` compiles the runtime into `dist` and declarations into `types`; `npm run preview` opens the built studio with the bundled demo. The npm package excludes framework sources; Vite compiles only user-authored project modules at runtime.
 
 ## CLI
 
-Install the Node executable, then run it from any directory. Node.js 22.12+ (or 20.19+) stays on the machine; Chrome stays external.
+Install the Node executable, then run it from any directory. Node.js 22.18.0+ stays on the machine; Chrome stays external.
 
 ```sh
 npm install -g ritween
@@ -80,7 +80,7 @@ These choices are project data; they are not stored in localStorage.
 
 The schema, entity policy, disk commands, and studio integration live in
 `src/engine/project-settings-schema.js`, `src/engine/project-settings.ts`,
-`cli/project-settings.mjs`, and `src/preview/state/use-project-settings.ts`.
+`cli/project-settings.ts`, and `src/preview/state/use-project-settings.ts`.
 Audio mute and export controls are implemented. Future scene controls can add their own
 `scenes[id]` settings and commands, with separate policies for visibility and
 inclusion in the timeline. They must define timing behavior explicitly; audio
@@ -109,10 +109,10 @@ settings in the source-controlled sidecar, independent of these preferences.
 
 - `src/engine/types.ts`: reusable Scene, Project, RenderContext and future Compositor contracts.
 - `src/engine/timeline.ts`: stateless absolute-time evaluation, frame schedules and manifest validation.
-- `src/engine/renderer.ts`: GPU lifecycle and renderer shared by preview and export. Each renderer owns independent scene instances and device resources.
-- `src/engine/audio.ts`: export and preview compile the same managed clip schedule. Preview prepares once alongside GPU initialization, then keeps a short lookahead of live nodes. Preview track mutes use gain buses; export omits muted tracks.
-- `src/engine/export.ts`: WebGPU → OffscreenCanvas → VideoFrame → native H.264 VideoEncoder, plus AAC from that mix, → MP4.
-- `src/engine/mp4.ts`: custom ISO BMFF muxer. AVC configuration is preserved in `avcC`. An optional AAC track stores `esds`, sample sizes, chunk offsets and durations. Video uses Baseline AVC I/P frames, real sync-sample tables, and fast-start metadata.
+- `src/engine/render/renderer.ts`: GPU lifecycle and renderer shared by preview and export. Each renderer owns independent scene instances and device resources.
+- `src/engine/render/audio.ts`: export and preview compile the same managed clip schedule. Preview prepares once alongside GPU initialization, then keeps a short lookahead of live nodes. Preview track mutes use gain buses; export omits muted tracks.
+- `src/engine/export/formats/mp4/export-mp4.ts`: WebGPU → OffscreenCanvas → VideoFrame → native H.264 VideoEncoder, plus AAC from that mix, → MP4.
+- `src/engine/export/formats/mp4/muxer.ts`: custom ISO BMFF muxer. AVC configuration is preserved in `avcC`. An optional AAC track stores `esds`, sample sizes, chunk offsets and durations. Video uses Baseline AVC I/P frames, real sync-sample tables, and fast-start metadata.
 - `src/project/manifest.ts`: the entire composition, independent of the engine.
 - `src/project/scenes/`: separate TS, TSX and JS example modules. Fullscreen WGSL shaders render procedural orbital geometry and GPU bitmap lettering.
 

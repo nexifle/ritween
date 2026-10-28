@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { startServer } from "../cli/server.mjs";
-import { resolveProject } from "../cli/project.mjs";
+import { startServer } from "../cli/server.ts";
+import { resolveProject } from "../cli/project.ts";
 const runtimeRoot = process.cwd();
 const project = await resolveProject(".", true, runtimeRoot);
 const { server, url } = await startServer({ runtimeRoot, project });
@@ -19,9 +19,11 @@ try {
   await page.waitForFunction(() => !!window.ritween);
   const report = await page.evaluate(async () => {
     const { project: demo } = await import("/@id/virtual:ritween-project");
-    const { exportVideo } = await import("/src/engine/export.ts");
-    const { Renderer } = await import("/src/engine/renderer.ts");
-    const { MP4Muxer } = await import("/src/engine/mp4.ts");
+    const { exportMp4: exportVideo } =
+      await import("/src/engine/export/formats/mp4/export-mp4.ts");
+    const { Renderer } = await import("/src/engine/render/renderer.ts");
+    const { MP4Muxer } =
+      await import("/src/engine/export/formats/mp4/muxer.ts");
     let created = 0,
       disposed = 0,
       finalized = 0;

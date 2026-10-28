@@ -4,7 +4,7 @@ Ritween serves source-authored video projects, renders a timestamp to PNG, and e
 
 ## Run from source
 
-Requires Node.js 22.12+ (or 20.19+) and an installed Chrome. Run `npm install`, then:
+Requires Node.js 22.18.0+ and an installed Chrome. In a checkout, run `npm install` and `npm run build`, then:
 
 ```sh
 # Serve the current project, with live source reload
@@ -26,6 +26,8 @@ node bin/ritween.mjs export -o artifacts/video.mp4 --resolution 1080p --fps 60
 `npm run cli -- <arguments>` is equivalent. No command automatically installs a browser.
 
 ## Install the command
+
+The published package ships compiled JavaScript in `dist/` and SDK declarations in `types/`, not the framework's `src/`. The SDK resolves to `dist/index.js`; the command runs `dist/cli.js`. Studio, renderer, and demo modules are built before publishing. Vite remains responsible for compiling user-authored TS/TSX projects, not framework sources. Built preview reloads the page after project or settings changes.
 
 The published package is a Node program. `npm install -g` links `ritween` to `bin/ritween.mjs`, which runs on the Node.js already on the machine. npm installs the runtime dependencies for that platform, including Vite, React, Tailwind, and Playwright Core. It does not download a browser and it does not embed a second JavaScript runtime.
 

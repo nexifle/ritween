@@ -1,13 +1,5 @@
 import { waitForEncoderCapacity } from "../encoder-queue";
-/** AAC-LC frame size. Encoder delay is measured in the browser and applied as an edit list. */
-export const AAC_FRAME_SAMPLES = 1024;
-export const AAC_BITRATE = 128_000;
-export const AAC_CODEC = "mp4a.40.2";
-/**
- * Chrome's AAC-LC encoder emits 2112 silent warmup samples before the signal.
- * The audio edit list skips them so a note at composition time 0 stays in sync.
- */
-export const AAC_PRIMING_SAMPLES = 2112;
+import { AAC_FRAME_SAMPLES, AAC_BITRATE, AAC_CODEC } from "../../codecs/aac";
 
 export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
   if (typeof AudioEncoder === "undefined" || typeof AudioData === "undefined")

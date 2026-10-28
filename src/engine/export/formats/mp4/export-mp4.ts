@@ -1,6 +1,6 @@
 import { runExportPipelines } from "../../pipeline";
 import { resolveMediaProject } from "../../../media/project";
-import { renderAudio, SAMPLE_RATE } from "../../../audio";
+import { renderAudio, SAMPLE_RATE } from "../../../render/audio";
 import { resolveEncodingOptions } from "../../settings";
 import { assertExportSize } from "./sizes";
 import { MP4Muxer } from "./muxer";
@@ -8,13 +8,14 @@ import { frameCount } from "../../../timeline";
 import type { Project } from "../../../types";
 import type { ExportOptions } from "../../types";
 import { exportStage } from "../../stage";
-import { encodeVideoTrack } from "../../codecs/h264";
+import { encodeVideoTrack } from "../../encoders/h264";
 import {
-  encodeAac,
   AAC_PRIMING_SAMPLES,
   AAC_FRAME_SAMPLES,
   AAC_BITRATE,
-} from "../../codecs/aac";
+} from "../../../codecs/aac";
+import { encodeAac } from "../../encoders/aac";
+import { H264_CODEC } from "../../../codecs/h264";
 
 export async function exportMp4(project: Project, options: ExportOptions) {
   project = resolveMediaProject(project);
@@ -31,7 +32,7 @@ export async function exportMp4(project: Project, options: ExportOptions) {
     );
   const encoding = resolveEncodingOptions(width, height, fps, options);
   const config: VideoEncoderConfig = {
-    codec: "avc1.42002a",
+    codec: H264_CODEC,
     width,
     height,
     framerate: fps,

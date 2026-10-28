@@ -1,17 +1,27 @@
-import { fileURLToPath } from "node:url";
 import {
   readProjectSettings,
   settingsPath,
   projectSettingsMiddleware,
-} from "./project-settings.mjs";
+} from "./project-settings.ts";
+import type { Plugin } from "vite";
+import type { ProjectSettings } from "../src/engine/types";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-export async function resolveProject(input = ".", demo = false, runtimeRoot) {
+export interface ResolvedProject {
+  manifest: string;
+  directory: string;
+}
+
+export async function resolveProject(
+  input = ".",
+  demo = false,
+  runtimeRoot: string,
+): Promise<ResolvedProject> {
   if (demo)
     return {
-      manifest: resolve(runtimeRoot, "src/project/manifest.ts"),
-      directory: runtimeRoot,
+      manifest: resolve(runtimeRoot, "dist/demo/manifest.js"),
+      directory: resolve(runtimeRoot, "dist"),
     };
   const location = resolve(input);
   let info;
@@ -55,12 +65,12 @@ const SOURCE_EXTENSIONS = new Set([
   ".mts",
   ".cts",
 ]);
-function insideRoot(root, file) {
+function insideRoot(root: string, file: string) {
   const rel = relative(root, file);
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 /** Scene `source` is a path next to the manifest. Reject anything that leaves that directory. */
-export function resolveSceneSource(manifest, source) {
+export function resolveSceneSource(manifest: string, source: unknown) {
   if (typeof source !== "string") return null;
   const label = source.replaceAll("\\", "/").trim();
   if (!label || label.includes("\0") || label.startsWith("/")) return null;
@@ -86,15 +96,15 @@ export function resolveSceneSource(manifest, source) {
   }
 }
 /** Read each literal `source:` path in the manifest. Missing files are null. */
-export function sceneSources(manifest) {
+export function sceneSources(manifest: string) {
   let text = "";
   try {
     text = readFileSync(manifest, "utf8");
   } catch {
     return { sources: {}, files: [] };
   }
-  const sources = {};
-  const files = new Set();
+  const sources: Record<string, string | null> = {};
+  const files = new Set<string>();
   for (const match of text.matchAll(/source\s*:\s*(['"`])([^'"`]+)\1/g)) {
     const label = match[2];
     if (Object.hasOwn(sources, label)) continue;
@@ -113,7 +123,11 @@ export function sceneSources(manifest) {
   }
   return { sources, files: [...files] };
 }
-export function projectPlugin(manifest) {
+export function projectPlugin(
+  manifest: string,
+  schema: string,
+  reloadOnSettings = false,
+): Plugin {
   return {
     name: "ritween-project",
     resolveId(id) {
@@ -122,17 +136,17 @@ export function projectPlugin(manifest) {
     },
     configureServer(server) {
       const file = settingsPath(manifest);
-      const publish = (settings) => {
+      const publish = (settings: ProjectSettings) => {
         const module = server.moduleGraph.getModuleById("\0ritween-project");
         if (module) server.moduleGraph.invalidateModule(module);
-        server.ws.send({
-          type: "custom",
-          event: "ritween:settings",
-          data: settings,
-        });
+        server.ws.send(
+          reloadOnSettings
+            ? { type: "full-reload" }
+            : { type: "custom", event: "ritween:settings", data: settings },
+        );
       };
       server.watcher.add(file);
-      const changed = (path) => {
+      const changed = (path: string) => {
         if (path !== file) return;
         try {
           publish(readProjectSettings(manifest));
@@ -140,7 +154,7 @@ export function projectPlugin(manifest) {
           server.ws.send({
             type: "custom",
             event: "ritween:settings-error",
-            data: error.message,
+            data: error instanceof Error ? error.message : String(error),
           });
         }
       };
@@ -158,9 +172,6 @@ export function projectPlugin(manifest) {
         // A new project has no sidecar until its first edit.
         if (existsSync(settingsPath(manifest)))
           this.addWatchFile(settingsPath(manifest));
-        const schema = fileURLToPath(
-          new URL("../src/engine/project-settings-schema.js", import.meta.url),
-        );
         return `import * as module from ${JSON.stringify(manifest)};
           import { mergeProjectSettings } from ${JSON.stringify(schema)};
           const authored = Object.assign({}, module).project ?? Object.assign({}, module).default;

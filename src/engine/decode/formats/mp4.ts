@@ -11,6 +11,9 @@
  * pixel aspect, and clean-aperture sizing are rejected. Input is capped at 512 MiB
  * and one million total samples. Sample offsets refer to the original ArrayBuffer.
  */
+import { AAC_CODEC } from "../../codecs/aac";
+import { h264CodecString } from "../../codecs/h264";
+
 export interface Mp4Sample {
   offset: number;
   size: number;
@@ -565,9 +568,7 @@ function parseAvcDescription(
   if (!avcC) invalid("avc1 is missing avcC configuration.");
   validateAvcConfiguration(view, avcC);
   const description = readDescriptionBytes(view, avcC);
-  const codec = `avc1.${description[1].toString(16).padStart(2, "0")}${description[2]
-    .toString(16)
-    .padStart(2, "0")}${description[3].toString(16).padStart(2, "0")}`;
+  const codec = h264CodecString(description);
   return { description, codec, width, height };
 }
 
@@ -734,7 +735,7 @@ function parseAacDescription(
   const parsed = readAudioSpecificConfig(view, asc.start, asc.end);
   if (parsed.channels !== channels || parsed.sampleRate !== sampleRate)
     invalid("AAC configuration does not match mp4a sample entry.");
-  return { ...parsed, codec: "mp4a.40.2" };
+  return { ...parsed, codec: AAC_CODEC };
 }
 
 function readEditMapping(

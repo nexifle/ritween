@@ -6,8 +6,8 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import os from "node:os";
-import { startServer } from "../cli/server.mjs";
-import { resolveProject } from "../cli/project.mjs";
+import { startServer } from "../cli/server.ts";
+import { resolveProject } from "../cli/project.ts";
 const repeats = Number(process.env.BENCH_REPEATS ?? 3);
 if (!Number.isInteger(repeats) || repeats < 1)
   throw Error("BENCH_REPEATS must be positive.");
@@ -109,8 +109,9 @@ try {
         const result = await page.evaluate(
           async ({ pipeline, cache, width, height }) => {
             const { project } = await import("/@id/virtual:ritween-project");
-            const { exportVideo } = await import("/src/engine/export.ts");
-            const { renderAudio } = await import("/src/engine/audio.ts");
+            const { exportMp4: exportVideo } =
+              await import("/src/engine/export/formats/mp4/export-mp4.ts");
+            const { renderAudio } = await import("/src/engine/render/audio.ts");
             // A new weak-cache key every run, including warm runs. No old PCM survives GC.
             const composition = { ...project };
             let preparationMs = 0;

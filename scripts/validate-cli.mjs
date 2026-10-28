@@ -221,7 +221,7 @@ try {
         20000,
       ).unref();
     });
-    assert.match(await (await fetch(event.url)).text(), /src\/main.tsx/);
+    assert.match(await (await fetch(event.url)).text(), /studio\.js/);
     const webBrowser = await chromium.launch({
       channel: "chrome",
       headless: true,
@@ -248,6 +248,13 @@ try {
       await tab.getByText("Runtime connected", { exact: true }).waitFor();
       const canvas = tab.locator("canvas");
       assert.equal(await canvas.getAttribute("width"), "320");
+      const reloaded = tab.waitForEvent("load");
+      const saved = await tab.request.patch(`${event.url}/__ritween/settings`, {
+        data: { type: "update-export-settings", patch: { fps: 60 } },
+      });
+      assert.ok(saved.ok());
+      await reloaded;
+      await tab.getByText("Runtime connected", { exact: true }).waitFor();
     } finally {
       await webBrowser.close();
     }

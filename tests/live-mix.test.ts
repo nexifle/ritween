@@ -6,7 +6,7 @@ import {
   offsetAfterElapsed,
   valueAt,
   type MixNode,
-} from "../src/engine/live-mix";
+} from "../src/engine/render/live-mix";
 import type { Project } from "../src/engine/types";
 
 const node = (

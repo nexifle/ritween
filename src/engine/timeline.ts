@@ -1,4 +1,4 @@
-import { parseProjectSettings } from "./project-settings-schema.js";
+import { parseProjectSettings } from "./project-settings-schema";
 import type { Project } from "./types";
 import { resolveMediaProject } from "./media/project";
 export function validateProject(p: Project) {

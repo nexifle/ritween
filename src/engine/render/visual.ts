@@ -6,9 +6,9 @@ import type {
   SceneEntry,
   SetupContext,
 } from "../types";
-import { fetchAsset } from "./resource";
-import { openVideo } from "./video-resource";
-import { validateMediaClip } from "./project";
+import { fetchAsset } from "../media/resource";
+import { openVideo } from "../decode/video-resource";
+import { validateMediaClip } from "../media/project";
 
 export interface ImageTexture {
   readonly texture: GPUTexture;

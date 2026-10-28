@@ -1,6 +1,6 @@
 import { chromium } from "playwright-core";
-import { startServer } from "../cli/server.mjs";
-import { resolveProject } from "../cli/project.mjs";
+import { startServer } from "../cli/server.ts";
+import { resolveProject } from "../cli/project.ts";
 
 const runtimeRoot = process.cwd();
 const project = await resolveProject(
@@ -20,7 +20,7 @@ try {
   await page.waitForFunction(() => !!window.ritween);
   const report = await page.evaluate(async () => {
     const { project } = await import("/@id/virtual:ritween-project");
-    const { PreviewAudio } = await import("/src/engine/audio.ts");
+    const { PreviewAudio } = await import("/src/engine/render/audio.ts");
     let schedules = 0;
     const clips = [];
     for (const track of project.audioTracks ?? []) {

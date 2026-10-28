@@ -9,7 +9,7 @@ import {
 } from "react";
 import { usePersistentLayout } from "./hooks/use-persistent-layout";
 import { saveStudioPreferences } from "./state/studio-preferences";
-import { PreviewAudio } from "../engine/audio";
+import { PreviewAudio } from "../engine/render/audio";
 import { exportSizes } from "../engine/export/formats/mp4/sizes";
 import { Renderer } from "../engine/render/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
@@ -390,7 +390,8 @@ export function App() {
     };
     const [width, height] = exportResolution.split("x").map(Number);
     try {
-      const { exportVideo } = await import("../engine/export");
+      const { exportMp4: exportVideo } =
+        await import("../engine/export/formats/mp4/export-mp4");
       const result = await exportVideo(project, {
         width,
         height,

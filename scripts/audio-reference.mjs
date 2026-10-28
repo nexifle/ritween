@@ -11,7 +11,7 @@ function windowClip(param, start, duration) {
 /** Test-only eager native renderer: deliberately bypasses managed graph compilation. */
 export async function renderEagerAudio(project, mutedIds, fps) {
   const { audioSampleCount, SAMPLE_RATE } =
-    await import("../src/engine/audio.ts");
+    await import("../src/engine/render/audio.ts");
   const muted = new Set(mutedIds);
   const tracks = (project.audioTracks ?? []).filter(
     (track) => !muted.has(track.id),
@@ -39,15 +39,13 @@ export async function renderEagerAudio(project, mutedIds, fps) {
       const bus = new GainNode(ctx, { gain: 0 });
       bus.connect(master);
       windowClip(bus.gain, clip.start, clip.duration);
-      await clip
-        .create()
-        .schedule({
-          context: ctx,
-          destination: bus,
-          start: clip.start,
-          duration: clip.duration,
-          at: (local) => clip.start + local,
-        });
+      await clip.create().schedule({
+        context: ctx,
+        destination: bus,
+        start: clip.start,
+        duration: clip.duration,
+        at: (local) => clip.start + local,
+      });
     }
   return ctx.startRendering();
 }

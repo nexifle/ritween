@@ -1,10 +1,10 @@
 import type { Project } from "../../../types";
 
-import { fitsH264Level42 } from "./size-constraints.js";
+import { fitsH264Level42 } from "./size-constraints";
 export {
   fitsH264Level42,
   H264_LEVEL_42_MAX_MACROBLOCKS,
-} from "./size-constraints.js";
+} from "./size-constraints";
 
 /** Short side of each offered export step. The other side keeps the project aspect. */
 export const EXPORT_SHORT_SIDES = [360, 720, 1080] as const;

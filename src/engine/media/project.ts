@@ -1,5 +1,5 @@
 import type { MediaClip, Project } from "../types";
-import { footageAudio } from "./audio-file";
+import { footageAudio } from "../decode/audio-file";
 
 const FOOTAGE_TRACK = "__ritween_footage__";
 

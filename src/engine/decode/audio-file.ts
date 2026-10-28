@@ -1,6 +1,7 @@
+import { aacDecoderConfig } from "../codecs/aac";
 import type { AudioClipSource, AudioHost } from "../types";
-import { parseMp4, type Mp4Sample, type Mp4Track } from "./mp4-input";
-import { fetchAsset } from "./resource";
+import { parseMp4, type Mp4Sample, type Mp4Track } from "./formats/mp4";
+import { fetchAsset } from "../media/resource";
 
 const MAX_PCM_BYTES = 128 * 2 ** 20;
 const MAX_INPUT_SAMPLES = 250_000;
@@ -297,12 +298,7 @@ export async function decodeVideoAudio(
       "AudioDecoder is unavailable. Use a current browser with WebCodecs support.",
     );
 
-  const config: AudioDecoderConfig = {
-    codec: track.codec,
-    sampleRate,
-    numberOfChannels: channels,
-    description: track.description.slice(),
-  };
+  const config = aacDecoderConfig(track.description, sampleRate, channels);
   const support = await waitFor(AudioDecoder.isConfigSupported(config), signal);
   signal?.throwIfAborted();
   if (!support.supported)

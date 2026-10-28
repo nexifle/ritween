@@ -205,6 +205,10 @@ try {
     [...prefix, "preview", "--project", directory, "--port", "0", "--json"],
     { cwd: directory, stdio: ["ignore", "pipe", "pipe"] },
   );
+  let previewStderr = "";
+  preview.stderr.on("data", (data) => {
+    previewStderr += data;
+  });
   try {
     const event = await new Promise((resolve, reject) => {
       let text = "";
@@ -221,7 +225,7 @@ try {
         20000,
       ).unref();
     });
-    assert.match(await (await fetch(event.url)).text(), /src\/main.tsx/);
+    assert.match(await (await fetch(event.url)).text(), /studio\.js/);
     const webBrowser = await chromium.launch({
       channel: "chrome",
       headless: true,
@@ -248,6 +252,13 @@ try {
       await tab.getByText("Runtime connected", { exact: true }).waitFor();
       const canvas = tab.locator("canvas");
       assert.equal(await canvas.getAttribute("width"), "320");
+      const reloaded = tab.waitForEvent("load");
+      const saved = await tab.request.patch(`${event.url}/__ritween/settings`, {
+        data: { type: "update-export-settings", patch: { fps: 60 } },
+      });
+      assert.ok(saved.ok());
+      await reloaded;
+      await tab.getByText("Runtime connected", { exact: true }).waitFor();
     } finally {
       await webBrowser.close();
     }
@@ -255,6 +266,7 @@ try {
     preview.kill("SIGINT");
     // Windows terminates the process instead of delivering POSIX SIGINT.
     assert.equal(await closed, process.platform === "win32" ? null : 0);
+    assert.doesNotMatch(previewStderr, /\[BABEL\].*deoptimised/);
   } finally {
     if (preview.exitCode === null) preview.kill("SIGTERM");
   }

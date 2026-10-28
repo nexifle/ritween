@@ -1,7 +1,7 @@
 /** Separate repeatability check, deliberately excluded from timing benchmarks. */
 import { chromium } from "playwright-core";
-import { startServer } from "../cli/server.mjs";
-import { resolveProject } from "../cli/project.mjs";
+import { startServer } from "../cli/server.ts";
+import { resolveProject } from "../cli/project.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 const root = process.cwd();
 const project = await resolveProject(
@@ -25,7 +25,8 @@ try {
   );
   const results = await page.evaluate(async () => {
     const { project } = await import("/@id/virtual:ritween-project");
-    const { exportVideo } = await import("/src/engine/export.ts");
+    const { exportMp4: exportVideo } =
+      await import("/src/engine/export/formats/mp4/export-mp4.ts");
     const OriginalData = globalThis.AudioData,
       OriginalEncoder = globalThis.AudioEncoder;
     const composition = { ...project },

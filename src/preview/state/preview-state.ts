@@ -1,5 +1,5 @@
 import { readStudioPreferences } from "./studio-preferences";
-import { PREVIEW_VOLUME_DB } from "../../engine/audio";
+import { PREVIEW_VOLUME_DB } from "../../engine/render/audio";
 import { projectExportSettings } from "../../engine/export/project-settings";
 import { frameCount } from "../../engine/timeline";
 import { project } from "virtual:ritween-project";

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
-import { startServer } from "../cli/server.mjs";
+import { startServer } from "../cli/server.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "ritween-studio-preferences-"));
 const manifest = join(directory, "manifest.js");

@@ -9,14 +9,14 @@ import {
   audibleAudioTracks,
   mutedAudioClipIds,
 } from "../src/engine/project-settings";
-import { renderAudio } from "../src/engine/audio";
+import { renderAudio } from "../src/engine/render/audio";
 import type { Project } from "../src/engine/types";
 import {
   settingsPath,
   readProjectSettings,
   writeSettingsCommand,
   parseSettingsCommand,
-} from "../cli/project-settings.mjs";
+} from "../cli/project-settings.ts";
 
 const project: Project = {
   name: "Settings",
@@ -291,7 +291,7 @@ test("settings writes cannot follow a symlink to a different file", async (t) =>
 test("settings endpoint serializes concurrent edits and rejects cross-origin writes", async () => {
   const { createServer } = await import("node:http");
   const { projectSettingsMiddleware } =
-    await import("../cli/project-settings.mjs");
+    await import("../cli/project-settings.ts");
   const directory = await mkdtemp(join(tmpdir(), "ritween-settings-http-"));
   const manifest = join(directory, "manifest.ts");
   const middleware = projectSettingsMiddleware(manifest, () => {});
@@ -405,7 +405,7 @@ test("invalid export settings and patch fields are rejected", () => {
 });
 
 test("CLI export flags override persisted settings only when explicitly provided", async () => {
-  const { parseOptions } = await import("../cli/options.mjs");
+  const { parseOptions } = await import("../cli/options.ts");
   const { resolveExportRequest } =
     await import("../src/engine/export/project-settings");
   const effective = {

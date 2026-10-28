@@ -5,8 +5,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
-import { startServer } from "../cli/server.mjs";
-import { settingsPath } from "../cli/project-settings.mjs";
+import { startServer } from "../cli/server.ts";
+import { settingsPath } from "../cli/project-settings.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "ritween-settings-browser-"));
 const manifest = join(directory, "manifest.js");
@@ -206,7 +206,7 @@ try {
   await page.waitForFunction(() => !!window.ritween);
   const report = await page.evaluate(async () => {
     const { project } = await import("/@id/virtual:ritween-project");
-    const { renderAudio } = await import("/src/engine/audio.ts");
+    const { renderAudio } = await import("/src/engine/render/audio.ts");
     globalThis.schedules = {};
     const mix = await renderAudio(project, [], 30);
     const partial = {
@@ -223,7 +223,8 @@ try {
     };
     globalThis.schedules = {};
     const silent = await renderAudio(allMuted, [], 30);
-    const { exportVideo } = await import("/src/engine/export.ts");
+    const { exportMp4: exportVideo } =
+      await import("/src/engine/export/formats/mp4/export-mp4.ts");
     const videoOnly = await exportVideo(allMuted, {
       width: 64,
       height: 64,

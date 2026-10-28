@@ -11,11 +11,11 @@ import {
   fadeGain,
   pcmChunkRange,
   pcmClipRange,
-} from "../src/engine/media/audio-file";
+} from "../src/engine/decode/audio-file";
 import {
   forwardAbortSignals,
   frameOverlapsPresentation,
-} from "../src/engine/media/video-resource";
+} from "../src/engine/decode/video-resource";
 
 async function withBrowserFetch<T>(
   implementation: typeof fetch,

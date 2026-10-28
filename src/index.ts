@@ -17,24 +17,27 @@ export type {
   ProjectExportSettings,
 } from "./engine/types";
 export { Renderer } from "./engine/render/renderer";
-export { audioFile } from "./engine/media/audio-file";
-export type { AudioFileOptions } from "./engine/media/audio-file";
+export { audioFile } from "./engine/decode/audio-file";
+export type { AudioFileOptions } from "./engine/decode/audio-file";
 export {
   imageScene,
   videoClip,
   videoResource,
   loadImageTexture,
   loadVideoTexture,
-} from "./engine/media/visual";
+} from "./engine/render/visual";
 export type {
   ImageTexture,
   VideoTexture,
   MediaTransform,
   VisualOptions,
-} from "./engine/media/visual";
+} from "./engine/render/visual";
 export { resolveMediaProject } from "./engine/media/project";
-export { exportVideo, exportMp4 } from "./engine/export";
-export type { ExportOptions, ExportStage } from "./engine/export";
+export {
+  exportMp4,
+  exportMp4 as exportVideo,
+} from "./engine/export/formats/mp4/export-mp4";
+export type { ExportOptions, ExportStage } from "./engine/export/types";
 export type { EncodingOptions } from "./engine/export/settings";
 export { resolveEncodingOptions } from "./engine/export/settings";
 export {

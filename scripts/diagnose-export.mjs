@@ -1,6 +1,6 @@
 import { chromium } from "playwright-core";
-import { startServer } from "../cli/server.mjs";
-import { resolveProject } from "../cli/project.mjs";
+import { startServer } from "../cli/server.ts";
+import { resolveProject } from "../cli/project.ts";
 const runtimeRoot = process.cwd();
 const track = process.argv[3];
 const seconds = Number(process.argv[4]) || 90;
@@ -26,9 +26,9 @@ try {
   await page.evaluate(
     async ({ track, seconds, compare }) => {
       const { project } = await import("/@id/virtual:ritween-project");
-      const { renderAudio } = await import("/src/engine/audio.ts");
-      const { encodeAac } = await import("/src/engine/export.ts");
-      const { Renderer } = await import("/src/engine/renderer.ts");
+      const { renderAudio } = await import("/src/engine/render/audio.ts");
+      const { encodeAac } = await import("/src/engine/export/encoders/aac.ts");
+      const { Renderer } = await import("/src/engine/render/renderer.ts");
       const NativeOffline = globalThis.OfflineAudioContext;
       globalThis.OfflineAudioContext = class extends NativeOffline {
         constructor(channels, length, rate) {

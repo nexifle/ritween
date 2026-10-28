@@ -45,7 +45,8 @@ try {
   });
   const run = (options) =>
     page.evaluate(async (options) => {
-      const { exportVideo } = await import("/src/engine/export.ts");
+      const { exportMp4: exportVideo } =
+        await import("/src/engine/export/formats/mp4/export-mp4.ts");
       const { project } = await import("/src/project/manifest.ts");
       const start = performance.now();
       const output = await exportVideo(project, options);

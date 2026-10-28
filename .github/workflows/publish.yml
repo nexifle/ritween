@@ -24,7 +24,7 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: "24.x"
           cache: npm
           registry-url: https://registry.npmjs.org
       - name: Install npm with trusted publishing support
@@ -52,8 +52,8 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `dist-tag=${prerelease ? "next" : "latest"}\n`);
           NODE
       - run: npm ci
-      - run: npm test
       - run: npm run build
+      - run: npm test
       - run: npm pack --dry-run
       - name: Publish with OIDC authentication
         run: npm publish --access public --provenance --tag "${{ steps.release.outputs.dist-tag }}"

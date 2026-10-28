@@ -45,7 +45,9 @@ Options:
 Requires Chrome/Chromium with WebGPU; MP4 also requires native H.264 encoding.
 Ctrl+C stops the server or cancels rendering. Existing files are kept on failure.
 `;
-export function parseOptions(argv) {
+import type { ExportOverrides } from "../src/engine/export/project-settings";
+
+export function parseOptions(argv: string[]) {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -72,13 +74,14 @@ export function parseOptions(argv) {
       version: { type: "boolean", short: "v" },
     },
   });
-  if (values.help || values.version) return values;
+  if (values.help || values.version)
+    return { help: !!values.help, version: !!values.version } as const;
   let [command, positionalProject, ...extra] = positionals;
   if (!command) {
     // --demo and --open only apply to preview, so they select that command.
     if (values.demo || values.open || values.port !== undefined)
       command = "preview";
-    else return { ...values, help: true };
+    else return { help: true, version: false } as const;
   }
   if (!["preview", "frame", "export"].includes(command))
     throw Error(`Unknown command: ${command}. Use --help.`);
@@ -118,7 +121,7 @@ export function parseOptions(argv) {
       "--bitrate must be an integer between 1 and 100000000 bits/second.",
     );
   const latencyMode = values["latency-mode"] ?? "quality";
-  if (!["quality", "realtime"].includes(latencyMode))
+  if (latencyMode !== "quality" && latencyMode !== "realtime")
     throw Error("--latency-mode must be quality or realtime.");
   const keyFrameInterval = Number(values["keyframe-interval"] ?? 2);
   if (
@@ -131,7 +134,7 @@ export function parseOptions(argv) {
     );
   if (
     command !== "export" &&
-    ["bitrate", "latency-mode", "keyframe-interval"].some(
+    (["bitrate", "latency-mode", "keyframe-interval"] as const).some(
       (key) => values[key] !== undefined,
     )
   )
@@ -151,7 +154,7 @@ export function parseOptions(argv) {
   const resolution = values.resolution;
   let width, height;
   if (resolution) {
-    const presets = {
+    const presets: Record<string, string> = {
       "360p": "640x360",
       "720p": "1280x720",
       "1080p": "1920x1080",
@@ -191,7 +194,9 @@ export function parseOptions(argv) {
       ...(values["keyframe-interval"] !== undefined
         ? { keyFrameInterval }
         : {}),
-    },
+    } satisfies ExportOverrides,
+    help: false,
+    version: false,
     fps,
     bitrate,
     latencyMode,

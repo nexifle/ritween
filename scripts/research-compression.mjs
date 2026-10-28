@@ -1,8 +1,8 @@
 // Research harness: elementary H.264 only; does not modify production export.
 import { chromium } from "playwright";
 import { writeFile, mkdir } from "node:fs/promises";
-import { resolveProject } from "../cli/project.mjs";
-import { startServer } from "../cli/server.mjs";
+import { resolveProject } from "../cli/project.ts";
+import { startServer } from "../cli/server.ts";
 import os from "node:os";
 const root = process.cwd(),
   full = process.env.RESEARCH_FULL === "1",
@@ -55,7 +55,7 @@ try {
       const result = await page
         .evaluate(
           async ({ test, segments, secondsPerSegment, projectModule }) => {
-            const { Renderer } = await import("/src/engine/renderer.ts");
+            const { Renderer } = await import("/src/engine/render/renderer.ts");
             const { project } = await import(projectModule);
             if (
               project.duration !== 90 ||

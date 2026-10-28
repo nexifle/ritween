@@ -1,29 +1,44 @@
+import type { Connect } from "vite";
+import type { ProjectSettings } from "../src/engine/types";
 import { lstat, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import {
   parseProjectSettings,
   parseExportSettings,
-} from "../src/engine/project-settings-schema.js";
+} from "../src/engine/project-settings-schema.ts";
 
-export const settingsPath = (manifest) =>
+export const settingsPath = (manifest: string) =>
   manifest.replace(/\.[^.\/]+$/, "") + ".settings.json";
 
-export function readProjectSettings(manifest) {
+export function readProjectSettings(manifest: string): ProjectSettings {
   try {
     return parseProjectSettings(
       JSON.parse(readFileSync(settingsPath(manifest), "utf8")),
     );
   } catch (error) {
-    if (error.code === "ENOENT") return { version: 1 };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return { version: 1 };
     throw error;
   }
 }
 
 /** Narrow commands keep UI mutations independent of the persisted document shape. */
-export function parseSettingsCommand(value) {
-  if (value?.type === "update-export-settings") {
-    const patch = parseExportSettings(value.patch);
+export function parseSettingsCommand(value: unknown):
+  | {
+      type: "update-export-settings";
+      patch: ReturnType<typeof parseExportSettings>;
+    }
+  | {
+      type: "set-audio-track-muted" | "set-audio-clip-muted";
+      id: string;
+      muted: boolean;
+    } {
+  if (!value || typeof value !== "object")
+    throw Error("Expected a settings command.");
+  const command = value as Record<string, unknown>;
+  if (command.type === "update-export-settings") {
+    const patch = parseExportSettings(command.patch);
     if (
       Object.keys(patch).some(
         (key) =>
@@ -38,25 +53,25 @@ export function parseSettingsCommand(value) {
       !Object.keys(patch).length
     )
       throw Error("Expected supported export settings fields.");
-    return { type: value.type, patch };
+    return { type: "update-export-settings", patch } as const;
   }
   if (
-    !value ||
-    !["set-audio-track-muted", "set-audio-clip-muted"].includes(value.type) ||
-    typeof value.id !== "string" ||
-    !value.id ||
-    value.id.length > 512 ||
-    typeof value.muted !== "boolean"
+    (command.type !== "set-audio-track-muted" &&
+      command.type !== "set-audio-clip-muted") ||
+    typeof command.id !== "string" ||
+    !command.id ||
+    command.id.length > 512 ||
+    typeof command.muted !== "boolean"
   ) {
     throw Error(
       "Expected a set-audio-track-muted or set-audio-clip-muted command with an ID and boolean muted.",
     );
   }
-  return { type: value.type, id: value.id, muted: value.muted };
+  return { type: command.type, id: command.id, muted: command.muted };
 }
 
 /** Read/modify/write a single entity; preserve unrelated and future settings. */
-export async function writeSettingsCommand(manifest, input) {
+export async function writeSettingsCommand(manifest: string, input: unknown) {
   const command = parseSettingsCommand(input);
   const path = settingsPath(manifest);
   const existing = await lstat(path).catch((error) => {
@@ -69,7 +84,7 @@ export async function writeSettingsCommand(manifest, input) {
     if (error.code === "ENOENT") return null;
     throw error;
   });
-  const settings =
+  const settings: ProjectSettings =
     baseline === null
       ? { version: 1 }
       : parseProjectSettings(JSON.parse(baseline));
@@ -118,7 +133,10 @@ export async function writeSettingsCommand(manifest, input) {
   return next;
 }
 
-export function projectSettingsMiddleware(manifest, onSaved) {
+export function projectSettingsMiddleware(
+  manifest: string,
+  onSaved: (settings: ProjectSettings) => void,
+): Connect.NextHandleFunction {
   let queue = Promise.resolve();
   return async (req, res, next) => {
     if (req.url?.split("?")[0] !== "/__ritween/settings") return next();
@@ -156,13 +174,20 @@ export function projectSettingsMiddleware(manifest, onSaved) {
       }
       const command = parseSettingsCommand(JSON.parse(body));
       const saving = queue.then(() => writeSettingsCommand(manifest, command));
-      queue = saving.catch(() => {});
+      queue = saving.then(
+        () => {},
+        () => {},
+      );
       const settings = await saving;
       onSaved(settings);
       res.end(JSON.stringify(settings));
     } catch (error) {
       res.statusCode = 400;
-      res.end(JSON.stringify({ error: error.message }));
+      res.end(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
     }
   };
 }

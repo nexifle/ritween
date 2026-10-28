@@ -1,4 +1,4 @@
-# Engine: rendering and export
+# Engine: rendering, codecs, and media
 
 Rendering produces pixels. Codecs turn those pixels or mixed audio into encoded
 samples. Format implementations orchestrate tracks and package the result. Keep
@@ -6,18 +6,31 @@ these responsibilities separate so a new output format does not change the GPU
 renderer or the existing MP4 path.
 
 ```text
-render/
-  renderer.ts              GPU scene rendering, shared by preview and offline output
+codecs/                    Shared codec definitions; no rendering/export dependencies
+  aac.ts                   AAC-LC constants and decoder configuration
+  h264.ts                  AVC codec strings and decoder configuration
+decode/                    Encoded input → decoded frames / PCM
+  formats/mp4.ts           Defensive MP4 demuxing and input validation
+  audio-file.ts            Audio decode scheduling and PCM placement
+  video-resource.ts        Video decode scheduling, seeking and frame ownership
+render/                    Decoded media + scenes → pixels / mixed audio
+  renderer.ts              GPU scene rendering for preview and offline output
   frame-source.ts          Offline canvas lifecycle and GPU completion
+  visual.ts                Media textures and footage scenes
+  audio.ts                 Offline audio rendering and preview audio transport
+  live-mix.ts              Shared audio graph scheduling and resource limits
+media/                     Shared asset/project integration, not a decoding layer
+  resource.ts              Asset fetching, cancellation and caching
+  project.ts               Media clip validation and footage audio track mapping
 export/
   types.ts                 Existing MP4 export options and stage callbacks
   stage.ts                 Stage start/completion notifications
   pipeline.ts              Parallel/sequential jobs, cancellation and cleanup
   encoder-queue.ts         WebCodecs backpressure
   settings.ts              Video encoding controls and validation
-  codecs/
-    aac.ts                 AAC encoding and priming constants
-    h264.ts                AVC encoding into an EncodedVideoSink
+  encoders/
+    aac.ts                 PCM → AAC samples
+    h264.ts                Rendered frames → AVC samples via EncodedVideoSink
   formats/mp4/
     export-mp4.ts           MP4 orchestration and codec capability checks
     muxer.ts               ISO BMFF container writer
@@ -28,9 +41,24 @@ export/
 
 The package exports `Renderer`, `FrameSource`, and `exportMp4`. `exportVideo` is
 an alias of `exportMp4`, preserving the existing SDK behavior and result shape.
-The original flat engine modules remain compatibility re-exports; add new
-implementation code under the directories above. Internal callers should use
-the canonical paths rather than the compatibility modules.
+Import implementations directly from the directories above. There are no flat
+compatibility modules; public SDK exports are declared in `src/index.ts`.
+
+## Codec boundaries
+
+Both import and export use `codecs/`. Shared codec modules describe the supported
+bitstream and build decoder configurations without depending on the container or
+export pipeline. Encoder implementations live in `export/encoders/`, while
+`decode/` owns decode scheduling, seeking, cancellation, and output lifetime.
+Input container parsing lives in `decode/formats/`; output muxing lives in
+`export/formats/`. Only H.264/AVC and AAC-LC are implemented.
+
+Dependency direction is `export → render → decode → codecs`, with shared
+`media/` integration available where needed. Decode must not import rendering
+or export, rendering must not import export, and codec definitions must not
+import any of these layers. `tests/engine-boundaries.test.ts` checks these direct
+import boundaries. Project types, timeline, and project settings remain shared
+at the engine root.
 
 ## Adding another output format
 

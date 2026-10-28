@@ -338,7 +338,7 @@ try {
     "Mobile must not overflow horizontally",
   );
   const offlineAudio = await page.evaluate(async () => {
-    const { renderAudio } = await import("/src/engine/audio.ts");
+    const { renderAudio } = await import("/src/engine/render/audio.ts");
     const { project } = await import("/src/project/manifest.ts");
     const times = [0, 0.1, 0.5, 0.5001, 0.7499, 1, 1.25, 1.5, 1.999];
     const { renderEagerAudio } = await import("/scripts/audio-reference.mjs");

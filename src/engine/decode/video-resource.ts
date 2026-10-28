@@ -1,5 +1,6 @@
-import { parseMp4, type Mp4Sample, type Mp4Track } from "./mp4-input";
-import { fetchAsset } from "./resource";
+import { h264DecoderConfig } from "../codecs/h264";
+import { parseMp4, type Mp4Sample, type Mp4Track } from "./formats/mp4";
+import { fetchAsset } from "../media/resource";
 
 const MAX_GOP_SAMPLES = 2_048;
 const MAX_DECODE_QUEUE = 12;
@@ -261,12 +262,7 @@ export async function openVideo(
             visibleFrameDurations.set(pts, duration);
         }
         const { start, end } = decodeRange(track.samples, targetTime);
-        const config: VideoDecoderConfig = {
-          codec: track.codec,
-          codedWidth: width,
-          codedHeight: height,
-          description: track.description.slice(),
-        };
+        const config = h264DecoderConfig(track.description, width, height);
         const support = await waitFor(
           VideoDecoder.isConfigSupported(config),
           decodeSignal,

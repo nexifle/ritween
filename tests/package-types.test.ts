@@ -56,7 +56,26 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
       readFileSync(join(installed, "package.json"), "utf8"),
     );
     assert.equal(manifest.exports["."].types, "./types/index.d.ts");
+    assert.equal(manifest.exports["."].default, "./dist/index.js");
+    assert.ok(
+      !packed[0].files.some((entry: { path: string }) =>
+        /^(src|cli|public)\//.test(entry.path),
+      ),
+    );
+    run(process.execPath, [
+      "--input-type=module",
+      "-e",
+      `import { exportVideo, exportMp4, validateProject } from ${JSON.stringify(new URL(`file://${join(installed, "dist/index.js")}`).href)}; if (exportVideo !== exportMp4 || typeof validateProject !== 'function') process.exit(1);`,
+    ]);
     for (const file of [
+      "dist/index.js",
+      "dist/cli.js",
+      "dist/studio.js",
+      "dist/studio.css",
+      "dist/renderer.js",
+      "dist/schema.js",
+      "dist/demo/manifest.js",
+      "dist/index.html",
       "types/index.d.ts",
       "types/engine/project-settings-schema.d.ts",
       "types/engine/export/formats/mp4/size-constraints.d.ts",

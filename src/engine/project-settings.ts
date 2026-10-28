@@ -2,7 +2,7 @@ import type { AudioClip, Project } from "./types";
 export {
   parseProjectSettings,
   mergeProjectSettings,
-} from "./project-settings-schema.js";
+} from "./project-settings-schema";
 
 /** Entity policy shared by preview, offline mix, and CLI exports. */
 export function mutedAudioTrackIds(project: Project): string[] {

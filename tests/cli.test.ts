@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseOptions } from "../cli/options.mjs";
+import { parseOptions } from "../cli/options.ts";
 import {
   resolveProject,
   resolveSceneSource,
   sceneSources,
-} from "../cli/project.mjs";
+} from "../cli/project.ts";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 test("CLI resolves web preview, PNG preview alias, frame indices and export presets", () => {

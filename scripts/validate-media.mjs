@@ -2,8 +2,8 @@ import { chromium } from "playwright";
 import assert from "node:assert/strict";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { startServer } from "../cli/server.mjs";
-import { resolveProject } from "../cli/project.mjs";
+import { startServer } from "../cli/server.ts";
+import { resolveProject } from "../cli/project.ts";
 
 const base = process.env.BASE_URL ?? "http://localhost:5173";
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -21,7 +21,8 @@ try {
   const page = await browser.newPage();
   await page.goto(base);
   const fixture = await page.evaluate(async () => {
-    const { exportMp4 } = await import("/src/engine/export.ts");
+    const { exportMp4 } =
+      await import("/src/engine/export/formats/mp4/export-mp4.ts");
     const project = {
       name: "Native media fixture",
       resolution: [320, 180],
@@ -172,8 +173,9 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
     const { resolveMediaProject } =
       await import("/src/engine/media/project.ts");
     const { Renderer } = await import("/src/engine/render/renderer.ts");
-    const { renderAudio } = await import("/src/engine/audio.ts");
-    const { exportMp4 } = await import("/src/engine/export.ts");
+    const { renderAudio } = await import("/src/engine/render/audio.ts");
+    const { exportMp4 } =
+      await import("/src/engine/export/formats/mp4/export-mp4.ts");
     const project = resolveMediaProject(authored);
     const canvas = new OffscreenCanvas(320, 180);
     const renderer = await Renderer.create(canvas, project);
@@ -219,7 +221,7 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
     const peak = mix
       ? Math.max(...mix.getChannelData(0).subarray(5000, 10000).map(Math.abs))
       : 0;
-    const { audioFile } = await import("/src/engine/media/audio-file.ts");
+    const { audioFile } = await import("/src/engine/decode/audio-file.ts");
     const wavMix = await renderAudio(
       {
         ...project,
@@ -249,7 +251,7 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
         )
       : 0;
     const { loadVideoTexture, videoResource } =
-      await import("/src/engine/media/visual.ts");
+      await import("/src/engine/render/visual.ts");
     const descriptors = [0.25, 1.25].map((offset, i) =>
       videoResource({
         id: `layer-${i}`,

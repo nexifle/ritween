@@ -2,9 +2,9 @@ import {
   audibleAudioTracks,
   mutedAudioClipIds,
   mutedAudioTrackIds,
-} from "./project-settings";
-import { validateProject } from "./timeline";
-import type { AudioClip, Project } from "./types";
+} from "../project-settings";
+import { validateProject } from "../timeline";
+import type { AudioClip, Project } from "../types";
 
 /** Notes that start together share one voice. Wider fans are mix buses. */
 const CLUSTER_SPAN_SECONDS = 0.05;

@@ -6,7 +6,7 @@ import {
   frameTiming,
   validateProject,
 } from "../src/engine/timeline";
-import { audioSampleCount } from "../src/engine/audio";
+import { audioSampleCount } from "../src/engine/render/audio";
 import {
   assertExportSize,
   defaultExportSize,

@@ -2,8 +2,8 @@
 import { chromium } from "playwright";
 import { writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { resolveProject } from "../cli/project.mjs";
-import { startServer } from "../cli/server.mjs";
+import { resolveProject } from "../cli/project.ts";
+import { startServer } from "../cli/server.ts";
 const root = process.cwd(),
   dir = `${root}/artifacts/compression-research`;
 const project = await resolveProject("../video9", false, root);
@@ -20,7 +20,7 @@ try {
   await page.waitForFunction(() => !!window.ritween);
   const images = await page.evaluate(
     async ({ times, projectModule }) => {
-      const { Renderer } = await import("/src/engine/renderer.ts");
+      const { Renderer } = await import("/src/engine/render/renderer.ts");
       const { project } = await import(projectModule);
       const canvas = new OffscreenCanvas(1080, 1920);
       const r = await Renderer.create(canvas, project);

@@ -9,7 +9,7 @@ import {
   imageScene,
   videoClip,
   videoResource,
-} from "../src/engine/media/visual";
+} from "../src/engine/render/visual";
 
 const emptyScene = (): Scene => ({ setup() {}, render() {}, dispose() {} });
 const base = (): Project => ({

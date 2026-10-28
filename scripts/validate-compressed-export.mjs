@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import { mkdir, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { startServer } from "../cli/server.mjs";
-import { resolveProject } from "../cli/project.mjs";
+import { startServer } from "../cli/server.ts";
+import { resolveProject } from "../cli/project.ts";
 const root = process.cwd(),
   directory = `${root}/artifacts/compressed-export`;
 await mkdir(directory, { recursive: true });
@@ -31,8 +31,9 @@ try {
       page.waitForEvent("download"),
       page.evaluate(async (fps) => {
         const { project: demo } = await import("/@id/__x00__ritween-project");
-        const { exportVideo } = await import("/src/engine/export.ts");
-        const { renderAudio } = await import("/src/engine/audio.ts");
+        const { exportMp4: exportVideo } =
+          await import("/src/engine/export/formats/mp4/export-mp4.ts");
+        const { renderAudio } = await import("/src/engine/render/audio.ts");
         const project = {
           ...demo,
           duration: 3,

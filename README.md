@@ -36,7 +36,7 @@ Built for developers and workflows where external AI coding agents author scene 
 
 ### Requirements
 
-- Node.js **20.19+ within the 20.x line**, or **22.12+**.
+- Node.js **22.18.0+**.
 - A current Chrome or Edge with **WebGPU**, **WebCodecs H.264 encoding**, and GPU acceleration. Audio export also requires AAC encoding support.
 - **HTTPS or localhost** for WebGPU. The CLI requires a separately installed compatible browser; it does not download one.
 
@@ -251,7 +251,9 @@ npm test
 npm run build
 ```
 
-Use `npm run preview` to serve the production build. From this checkout, `npm run cli -- <arguments>` runs the CLI without a global install, and `npm install -g .` installs the local checkout as the `ritween` command.
+`npm run build` compiles the SDK, studio, CLI renderer, Node CLI, and bundled demo into `dist/`, and generates SDK declarations in `types/`. Published packages contain these build outputs, not `src/`. Vite still compiles user-authored projects at runtime.
+
+After building, use `npm run preview` to open the built studio with the bundled demo. It defaults to port 5173 and selects the next free port if busy. Set a port with `npm run preview -- --port 8080`, or use `--port 0` for an automatically assigned port. From this checkout, `npm run cli -- <arguments>` runs the built CLI without a global install. `npm install -g .` builds and installs the checkout as the `ritween` command.
 
 Additional validation is available for the studio and native browser pipeline:
 

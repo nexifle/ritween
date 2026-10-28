@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseMp4 } from "../src/engine/media/mp4-input";
+import { parseMp4 } from "../src/engine/decode/formats/mp4";
 
 type SampleSpec = {
   data: Uint8Array;

@@ -3,6 +3,17 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to stage, for example v0.2.1"
+        required: true
+        type: string
+      prerelease:
+        description: "Stage prerelease versions with the next dist-tag"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -21,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: "24.x"
@@ -32,8 +43,8 @@ jobs:
       - name: Validate release version and choose npm dist-tag
         id: release
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease || inputs.prerelease || false }}
         run: |
           node --input-type=module <<'NODE'
           import fs from "node:fs";
@@ -47,7 +58,7 @@ jobs:
           }
           const prerelease = pkg.version.includes("-");
           if (prerelease !== (process.env.RELEASE_PRERELEASE === "true")) {
-            throw new Error("GitHub prerelease status must match the package version");
+            throw new Error("Release prerelease status must match the package version");
           }
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `dist-tag=${prerelease ? "next" : "latest"}\n`);
           NODE
@@ -55,5 +66,5 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm pack --dry-run
-      - name: Publish with OIDC authentication
-        run: npm publish --access public --provenance --tag "${{ steps.release.outputs.dist-tag }}"
+      - name: Stage package with OIDC authentication
+        run: npm stage publish --access public --provenance --tag "${{ steps.release.outputs.dist-tag }}"

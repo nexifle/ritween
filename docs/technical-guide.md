@@ -159,6 +159,35 @@ policy; cross-device calibration and any configurable/default budget change are
 separate work. The accounting excludes render targets, decoder surfaces, audio,
 driver allocation overhead, and all other browser memory.
 
+## Imported MP4 compatibility
+
+The native MP4 reader accepts non-fragmented H.264 (`avc1`/`avc3`),
+HEVC/H.265 (`hvc1`/`hev1`), and AV1 (`av01`), with optional AAC-LC audio.
+`VideoDecoder.isConfigSupported()` checks the input profile on the current
+browser/device; HEVC in particular is platform-dependent. There is no implicit
+transcoding or new third-party runtime decoder. Export remains H.264/AAC.
+
+Both full-resource and Range loading validate `stsz`/`stz2` sample sizes,
+`stss` sync flags, and optional `sdtp` dependency metadata. AAC `roll`/`prol`
+sample groups support `sgpd` versions 0/1/2 and `sbgp` versions 0/1, with
+backward or zero recovery distances, bounded run counts, and checked description
+indexes/defaults. Audio decoding already starts at the track's first sample,
+so backward dependencies are included before edit/trim clipping; no extra
+priming compensation is applied. Unknown/video groups, encryption, positive
+recovery distances, fragments, multiple descriptions, rotation/transforms,
+non-square pixels, and clean-aperture sizing remain explicitly unsupported.
+Existing media-memory limits are unchanged.
+
+After `npm run build`, run `npm run test:mp4-input` and
+`RITWEEN_RANGE_MEDIA=1 npm run test:mp4-input`. This suite starts its own server
+and Chrome, and requires local FFmpeg with `libx264`, `libx265`, `libaom-av1`, and
+AAC encoding for fixture generation only. It checks front/trailing `moov`,
+full/metadata parsing equivalence, sequential/random frame decoding and backward
+seeks, and trimmed AAC against an independent FFmpeg PCM reference without
+stripping sample groups. HEVC decoding is explicitly reported as unavailable
+when the browser does not support it; parser validation still runs. Generated
+fixtures, studio screenshots, and reports stay under ignored `artifacts/`.
+
 ## Internal Range loading for imported media
 
 Phase 3 provides opt-in loading through `--media-loading range` on the CLI

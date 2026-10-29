@@ -15,6 +15,7 @@
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "node scripts/validate-browser.mjs",
     "test:media": "node --import tsx scripts/validate-media.mjs",
+    "test:mp4-input": "node --import tsx scripts/validate-mp4-input.mjs",
     "test:preview": "node --import tsx scripts/validate-preview.mjs",
     "test:live-preview": "node scripts/validate-live-preview.mjs",
     "test:project-settings": "node --import tsx scripts/validate-project-settings.mjs",

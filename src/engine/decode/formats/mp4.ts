@@ -1,10 +1,9 @@
 /**
  * Defensive reader for progressive, non-fragmented ISO BMFF with local media data,
- * one `avc1`/`avcC` H.264 or `mp4a`/AAC-LC description per track, and at most one
- * video plus one audio track. It supports stts, ctts v0/v1, stsc, stsz, stco/co64,
- * stss, version-0/1 movie/media headers, and rate-1 edit lists containing one media
- * edit with an optional leading empty edit. Decode samples, including preroll before
- * the edit's media time, are preserved and mapped to the movie timeline.
+ * one H.264, HEVC, AV1 or AAC-LC description per track, and at most two media tracks.
+ * Supports stts, ctts v0/v1, stsc, stsz/stz2, stco/co64, stss, sdtp, audio roll/prol
+ * groups, version-0/1 headers, and one rate-1 media edit with an optional empty edit.
+ * Decode samples, including preroll, are preserved and mapped to the movie timeline.
  *
  * Fragments, encryption, external data references, other codecs/sample tables,
  * multiple sample descriptions/media edits, non-identity track matrices, non-square
@@ -12,7 +11,10 @@
  * and one million total samples. Sample offsets refer to the original ArrayBuffer.
  */
 import { AAC_CODEC } from "../../codecs/aac";
+import { av1CodecString } from "../../codecs/av1";
 import { h264CodecString } from "../../codecs/h264";
+import { hevcCodecString } from "../../codecs/hevc";
+import { validateSampleGroups } from "./mp4-sample-groups";
 
 export interface Mp4Sample {
   offset: number;
@@ -29,9 +31,9 @@ export interface Mp4Sample {
 export interface Mp4Track {
   id: number;
   kind: "video" | "audio";
-  /** WebCodecs-compatible AVC (`avc1.PPCCLL`) or AAC (`mp4a.40.2`) codec string. */
+  /** WebCodecs-compatible H.264, HEVC, AV1 or AAC codec string. */
   codec: string;
-  /** avcC box payload for AVC, AudioSpecificConfig extracted from esds for AAC. */
+  /** Codec configuration payload (avcC, hvcC, av1C or AAC AudioSpecificConfig). */
   description: Uint8Array;
   width?: number;
   height?: number;
@@ -374,7 +376,34 @@ function expandTimeRuns(
 
 function readSampleSizes(view: DataView, box: Box, budget: number): number[] {
   readFullBox(view, box, [0]);
-  if (box.end - box.payload < 12) invalid("truncated stsz box.");
+  if (box.end - box.payload < 12) invalid(`truncated ${box.type} box.`);
+  if (box.type === "stz2") {
+    const fieldSize = view.getUint8(box.payload + 7);
+    if (
+      view.getUint16(box.payload + 4) !== 0 ||
+      view.getUint8(box.payload + 6) !== 0 ||
+      ![4, 8, 16].includes(fieldSize)
+    )
+      invalid("invalid stz2 reserved bits or field size.");
+    const count = view.getUint32(box.payload + 8);
+    if (count === 0) invalid("stz2 contains no samples.");
+    if (count > budget || count > MAX_SAMPLES)
+      invalid("sample count exceeds parser limit.");
+    expectLength(box, 12 + Math.ceil((count * fieldSize) / 8), "stz2 table");
+    const sizes = new Array<number>(count);
+    for (let i = 0; i < count; i++) {
+      const offset = box.payload + 12 + Math.floor((i * fieldSize) / 8);
+      const size =
+        fieldSize === 16
+          ? view.getUint16(offset)
+          : fieldSize === 8
+            ? view.getUint8(offset)
+            : (view.getUint8(offset) >> (i % 2 === 0 ? 4 : 0)) & 0xf;
+      if (size === 0) invalid("stz2 contains an empty sample.");
+      sizes[i] = size;
+    }
+    return sizes;
+  }
   const fixedSize = view.getUint32(box.payload + 4);
   const count = view.getUint32(box.payload + 8);
   if (count === 0) invalid("stsz contains no samples.");
@@ -469,6 +498,28 @@ function readSyncSamples(
   return sync;
 }
 
+function validateSampleDependencies(
+  view: DataView,
+  box: Box | undefined,
+  syncSamples: boolean[],
+): void {
+  if (!box) return;
+  readFullBox(view, box, [0]);
+  expectLength(box, 4 + syncSamples.length, "sdtp table");
+  for (let i = 0; i < syncSamples.length; i++) {
+    const dependency = view.getUint8(box.payload + 4 + i);
+    const dependsOn = (dependency >> 4) & 3;
+    if (
+      dependsOn === 3 ||
+      ((dependency >> 2) & 3) === 3 ||
+      (dependency & 3) === 3
+    )
+      invalid("sdtp contains reserved dependency values.");
+    if (syncSamples[i] && dependsOn === 1)
+      invalid("sdtp dependency contradicts sync sample status.");
+  }
+}
+
 function readDescriptionBytes(view: DataView, box: Box): Uint8Array {
   return new Uint8Array(
     view.buffer,
@@ -477,7 +528,11 @@ function readDescriptionBytes(view: DataView, box: Box): Uint8Array {
   ).slice();
 }
 
-function validateAvcConfiguration(view: DataView, box: Box): void {
+function validateAvcConfiguration(
+  view: DataView,
+  box: Box,
+  inBandParameterSets: boolean,
+): void {
   const length = box.end - box.payload;
   if (length < 7) invalid("avcC configuration is truncated.");
   if (view.getUint8(box.payload) !== 1)
@@ -501,11 +556,13 @@ function validateAvcConfiguration(view: DataView, box: Box): void {
     }
   };
   const spsCount = spsField & 0x1f;
-  if (spsCount === 0) invalid("avcC contains no sequence parameter sets.");
+  if (spsCount === 0 && !inBandParameterSets)
+    invalid("avcC contains no sequence parameter sets.");
   readParameterSets(spsCount, 7);
   if (offset >= box.end) invalid("avcC is missing its PPS count.");
   const ppsCount = view.getUint8(offset++);
-  if (ppsCount === 0) invalid("avcC contains no picture parameter sets.");
+  if (ppsCount === 0 && !inBandParameterSets)
+    invalid("avcC contains no picture parameter sets.");
   readParameterSets(ppsCount, 8);
 
   if (offset < box.end) {
@@ -531,7 +588,7 @@ function validateAvcConfiguration(view: DataView, box: Box): void {
     invalid("avcC has trailing or malformed configuration data.");
 }
 
-function parseAvcDescription(
+function parseVideoDescription(
   view: DataView,
   sampleEntry: Box,
   budget: ParseBudget,
@@ -541,16 +598,25 @@ function parseAvcDescription(
   width: number;
   height: number;
 } {
-  if (sampleEntry.type !== "avc1")
+  const configurations: Record<string, string> = {
+    avc1: "avcC",
+    avc3: "avcC",
+    hvc1: "hvcC",
+    hev1: "hvcC",
+    av01: "av1C",
+  };
+  const configType = configurations[sampleEntry.type];
+  if (!configType)
     invalid(`unsupported video sample entry ${sampleEntry.type}.`);
-  if (sampleEntry.end - sampleEntry.start < 86)
-    invalid("truncated avc1 sample entry.");
-  const width = view.getUint16(sampleEntry.start + 32);
-  const height = view.getUint16(sampleEntry.start + 34);
-  if (width === 0 || height === 0) invalid("avc1 has zero dimensions.");
+  if (sampleEntry.end - sampleEntry.payload < 78)
+    invalid(`truncated ${sampleEntry.type} sample entry.`);
+  const width = view.getUint16(sampleEntry.payload + 24);
+  const height = view.getUint16(sampleEntry.payload + 26);
+  if (width === 0 || height === 0)
+    invalid(`${sampleEntry.type} has zero dimensions.`);
   const configBoxes = parseBoxes(
     view,
-    sampleEntry.start + 86,
+    sampleEntry.payload + 78,
     sampleEntry.end,
     budget,
   );
@@ -568,11 +634,16 @@ function parseAvcDescription(
   }
   if (one(configBoxes, "clap", false))
     invalid("clean-aperture display sizing is unsupported.");
-  const avcC = one(configBoxes, "avcC");
-  if (!avcC) invalid("avc1 is missing avcC configuration.");
-  validateAvcConfiguration(view, avcC);
-  const description = readDescriptionBytes(view, avcC);
-  const codec = h264CodecString(description);
+  const configuration = one(configBoxes, configType)!;
+  if (configType === "avcC")
+    validateAvcConfiguration(view, configuration, sampleEntry.type === "avc3");
+  const description = readDescriptionBytes(view, configuration);
+  const codec =
+    configType === "avcC"
+      ? h264CodecString(description).replace("avc1.", `${sampleEntry.type}.`)
+      : configType === "hvcC"
+        ? hevcCodecString(description, sampleEntry.type as "hvc1" | "hev1")
+        : av1CodecString(description);
   return { description, codec, width, height };
 }
 
@@ -889,12 +960,19 @@ function parseTrack(
     "ctts",
     "stsc",
     "stsz",
+    "stz2",
     "stco",
     "co64",
     "stss",
+    "sdtp",
+    "sgpd",
+    "sbgp",
   ]);
-  if (stblBoxes.some((table) => !supportedSampleTables.has(table.type)))
-    invalid("unsupported sample table box.");
+  const unsupportedTable = stblBoxes.find(
+    (table) => !supportedSampleTables.has(table.type),
+  );
+  if (unsupportedTable)
+    invalid(`unsupported sample table box ${unsupportedTable.type}.`);
   const stsd = one(stblBoxes, "stsd");
   readFullBox(view, stsd!, [0]);
   if (stsd!.end - stsd!.payload < 8) invalid("truncated stsd box.");
@@ -908,20 +986,32 @@ function parseTrack(
   validateLocalDataReference(view, minfBoxes, sampleEntry, budget);
   const mediaDescription =
     handler === "vide"
-      ? parseAvcDescription(view, sampleEntry, budget)
+      ? parseVideoDescription(view, sampleEntry, budget)
       : parseAacDescription(view, sampleEntry, budget);
   if (handler === "vide" && "width" in mediaDescription) {
     if (
       trackHeader.width !== mediaDescription.width * 65536 ||
       trackHeader.height !== mediaDescription.height * 65536
     )
-      invalid("tkhd display dimensions differing from avc1 are unsupported.");
+      invalid(
+        "tkhd display dimensions differing from the video sample entry are unsupported.",
+      );
   } else if (trackHeader.width !== 0 || trackHeader.height !== 0) {
     invalid("non-zero audio tkhd display dimensions are unsupported.");
   }
 
-  const sizes = readSampleSizes(view, one(stblBoxes, "stsz")!, sampleBudget);
+  const stsz = one(stblBoxes, "stsz", false);
+  const stz2 = one(stblBoxes, "stz2", false);
+  if (Boolean(stsz) === Boolean(stz2))
+    invalid("exactly one stsz or stz2 table is required.");
+  const sizes = readSampleSizes(view, (stsz ?? stz2)!, sampleBudget);
   const sampleCount = sizes.length;
+  validateSampleGroups(
+    view,
+    stblBoxes,
+    sampleCount,
+    handler === "vide" ? "video" : "audio",
+  );
   const stts = readTimeRuns(view, one(stblBoxes, "stts")!, false);
   const durations = expandTimeRuns(stts, sampleCount, "stts", 0);
   const cttsBox = one(stblBoxes, "ctts", false);
@@ -942,6 +1032,7 @@ function parseTrack(
     one(stblBoxes, "stss", false),
     sampleCount,
   );
+  validateSampleDependencies(view, one(stblBoxes, "sdtp", false), syncSamples);
   const stco = one(stblBoxes, "stco", false);
   const co64 = one(stblBoxes, "co64", false);
   if (Boolean(stco) === Boolean(co64))
@@ -1036,7 +1127,7 @@ function parseTrack(
   };
 }
 
-/** Parse a non-fragmented H.264/AAC MP4 without browser or third-party APIs. */
+/** Parse a supported non-fragmented MP4 without browser or third-party APIs. */
 export function parseMp4(bytes: ArrayBuffer): Mp4Input {
   if (!(bytes instanceof ArrayBuffer)) invalid("input must be an ArrayBuffer.");
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_INPUT_BYTES)

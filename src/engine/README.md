@@ -15,6 +15,8 @@ renderer or the existing MP4 path.
 codecs/                    Shared codec definitions; no rendering/export dependencies
   aac.ts                   AAC-LC constants and decoder configuration
   h264.ts                  AVC codec strings and decoder configuration
+  hevc.ts                  HEVC configuration validation and codec strings
+  av1.ts                   AV1 configuration validation and codec strings
 decode/                    Encoded input → decoded frames / PCM
   formats/mp4.ts           Defensive MP4 demuxing and input validation
   audio-file.ts            Audio decode scheduling and PCM placement
@@ -60,7 +62,23 @@ bitstream and build decoder configurations without depending on the container or
 export pipeline. Encoder implementations live in `export/encoders/`, while
 `decode/` owns decode scheduling, seeking, cancellation, and output lifetime.
 Input container parsing lives in `decode/formats/`; output muxing lives in
-`export/formats/`. Only H.264/AVC and AAC-LC are implemented.
+`export/formats/`. MP4 input supports H.264 (`avc1`/`avc3`), HEVC
+(`hvc1`/`hev1`), AV1 (`av01`), and optional AAC-LC. Decoder configuration preserves
+its input codec; actual availability is checked through WebCodecs on the current
+browser/device. AV1 samples carry their sequence headers; its container `av1C`
+record is validated but is not passed as AVC/HEVC decoder extradata. Export
+remains H.264/AVC with optional AAC-LC; no new encoders or runtime dependencies
+are added.
+
+Input remains non-fragmented, unencrypted, and limited to two media tracks with
+one description each. Both full and metadata-only parsing accept `stsz` or
+compact `stz2` sizes and validate `sdtp` without replacing `stss` sync flags.
+AAC `roll`/`prol` descriptions (`sgpd` v0/v1/v2, `sbgp` v0/v1) support backward
+or zero recovery distances. Audio decoding always submits samples from the
+track start through the clip end, so those dependencies are already included;
+PCM trimming and edit-list mapping remain unchanged. Positive recovery distances,
+unknown/video sample groups (including encryption groups), malformed indexes,
+and unsupported transforms still fail explicitly.
 
 Dependency direction is `export → render → decode → codecs`, with shared
 `media/` integration available where needed. Decode must not import rendering

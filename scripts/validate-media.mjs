@@ -162,7 +162,7 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
   server = await startServer({
     runtimeRoot: root,
     project,
-    watch: false,
+    watch: true,
     mediaLoading: process.env.RITWEEN_RANGE_MEDIA === "1" ? "range" : "full",
     mediaActivation:
       process.env.RITWEEN_ACTIVE_MEDIA === "1" ? "active-only" : "eager",

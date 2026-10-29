@@ -124,11 +124,11 @@ buffers, native decoder memory, PCM, and GPU resources. It is not a total RAM ca
 
 ## Format limits and validation
 
-No third-party media decoder dependency is required. Video input uses the internal MP4 reader and browser WebCodecs; the supported input targets non-fragmented H.264 MP4 with optional AAC. This does not guarantee every MP4 can be read. Encrypted files, unsupported structures, and unavailable codecs must produce explicit errors.
+No third-party media decoder dependency is required. Video input uses the internal MP4 reader and browser WebCodecs. Non-fragmented MP4 supports H.264 (`avc1`/`avc3`), HEVC/H.265 (`hvc1`/`hev1`), and AV1 (`av01`), with optional AAC-LC (`mp4a.40.2`). Decoding depends on the current browser/device's WebCodecs support; accepting a container does not guarantee that its codec is available. Unsupported codecs produce explicit errors, not implicit transcoding or a third-party fallback. Export remains H.264 with optional AAC.
 
-The reader accepts at most one H.264 `avc1` track and one AAC-LC `mp4a.40.2` track, each with one sample description. Edit lists are limited to one rate-1 media edit with an optional leading empty edit. Fragmented MP4, encryption, track rotation/transforms, non-square pixel aspect, clean aperture, and other unsupported structures are explicitly rejected. Normalize such assets outside Ritween before use.
+The reader is limited to two media tracks, each with one sample description. Use one video and optional audio track. Edit lists are limited to one rate-1 media edit with an optional leading empty edit. Standard `stsz` and compact `stz2` (4/8/16-bit) sample sizes are supported. `sdtp` dependency metadata is validated without turning dependent samples into keyframes. AAC `roll`/`prol` sample groups are supported for backward or zero recovery distances; audio decoding includes preroll from the track start and trims PCM to the presentation interval. Unknown/video sample groups and positive recovery distances remain unsupported.
 
-Files without audio must still display. Do not assume AAC is available merely because H.264 video decodes. Standalone audio files use browser decoding through the managed audio context; available formats depend on the browser.
+Fragmented MP4, encryption, track rotation/transforms, non-square pixel aspect, clean aperture, and other unsupported structures are explicitly rejected. Normalize such assets outside Ritween before use. Files without audio must still display. Do not assume AAC is available merely because video decodes. Standalone audio files use browser decoding through the managed audio context; available formats depend on the browser.
 
 Resource limits:
 

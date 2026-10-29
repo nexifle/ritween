@@ -1,4 +1,4 @@
-# Preview and export — Ritween 0.2.2
+# Preview and export — Ritween 0.2.3
 
 The examples assume `ritween` is available on `PATH`, normally after `npm install -g ritween`. Run from the consumer project; replace paths with the actual manifest and output locations. Create the output directory first if needed. For an intentionally local dependency, use a package-manager script that exposes its executable.
 

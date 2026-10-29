@@ -174,7 +174,7 @@ Helper tersebut menghasilkan scene lima detik dan audio footage terkait. Mute pe
 
 Untuk beberapa gambar/video, posisi 2D/3D, mask, atau shader khusus, gunakan resource texture dalam scene sendiri. Daftarkan descriptor video di `project.mediaClips` atau `scene.mediaClips` untuk audio terkait. Scene dengan `prepareFrame` asinkron menggunakan `Renderer.renderAsync`; `render` tetap sinkron.
 
-Input video memakai pembaca MP4 internal dan WebCodecs browser, tanpa dependency media pihak ketiga baru. Cakupan awal adalah MP4 non-fragmented H.264/AAC dengan batas memori; format/struktur yang tidak didukung ditolak eksplisit. Lihat [panduan aset media](skills/ritween/references/media-assets.md) untuk contoh lengkap dan batas validasi.
+Input video memakai pembaca MP4 internal dan WebCodecs browser, tanpa dependency media pihak ketiga. MP4 non-fragmented mendukung H.264 (`avc1`/`avc3`), HEVC/H.265 (`hvc1`/`hev1`), dan AV1 (`av01`), dengan AAC-LC opsional. Parser juga menerima compact sample table `stz2`, metadata dependensi `sdtp`, serta sample groups AAC `roll`/`prol` dengan dependensi mundur, termasuk keluaran FFmpeg yang umum. Kemampuan decode mengikuti browser/perangkat; fragmented MP4, enkripsi, rotasi track, dan struktur yang belum didukung tetap ditolak eksplisit. Ekspor tetap H.264/AAC. Lihat [panduan aset media](skills/ritween/references/media-assets.md) untuk contoh lengkap dan batas validasi.
 
 ## Use the studio
 
@@ -265,6 +265,8 @@ npm run test:project-settings
 npm run test:studio-preferences
 npm run test:cli
 npm run test:live-preview # Build first; starts its own CLI server and Chrome.
+npm run test:mp4-input # Build first; requires FFmpeg with libx264/libx265/libaom-av1 and Chrome.
+RITWEEN_RANGE_MEDIA=1 npm run test:mp4-input
 
 # Start npm run dev in another terminal; Google Chrome must be installed.
 npm run test:browser

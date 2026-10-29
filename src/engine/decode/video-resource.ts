@@ -1,4 +1,3 @@
-import { h264DecoderConfig } from "../codecs/h264";
 import { parseMp4, type Mp4Sample, type Mp4Track } from "./formats/mp4";
 import { fetchAsset } from "../media/resource";
 import { openByteSource } from "../media/byte-source";
@@ -295,7 +294,14 @@ export async function openVideo(
           throw Error(
             `Video GOP exceeds the ${MAX_GOP_SAMPLES}-sample seek limit.`,
           );
-        const config = h264DecoderConfig(track.description, width, height);
+        const config: VideoDecoderConfig = {
+          codec: track.codec,
+          codedWidth: width,
+          codedHeight: height,
+          ...(track.codec.startsWith("av01.")
+            ? {}
+            : { description: track.description.slice() }),
+        };
         const support = await waitFor(
           VideoDecoder.isConfigSupported(config),
           decodeSignal,

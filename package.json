@@ -1,6 +1,6 @@
 {
   "name": "ritween",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Code-first WebGPU video framework. Preview, render a PNG frame, and export H.264 MP4 from a project manifest.",
   "type": "module",
   "engines": {
@@ -15,17 +15,17 @@
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "node scripts/validate-browser.mjs",
     "test:media": "node --import tsx scripts/validate-media.mjs",
+    "test:mp4-input": "node --import tsx scripts/validate-mp4-input.mjs",
     "test:preview": "node --import tsx scripts/validate-preview.mjs",
     "test:live-preview": "node scripts/validate-live-preview.mjs",
     "test:project-settings": "node --import tsx scripts/validate-project-settings.mjs",
     "test:studio-preferences": "node --import tsx scripts/validate-studio-preferences.mjs",
-    "benchmark:preview": "node scripts/diagnose-preview.mjs",
+    "benchmark:preview": "node --import tsx scripts/diagnose-preview.mjs",
     "benchmark:export": "node scripts/benchmark-export.mjs",
     "cli": "node bin/ritween.mjs",
     "test:cli": "node scripts/validate-cli.mjs",
-    "benchmark:pipelines": "node scripts/benchmark-pipelines.mjs",
-    "test:export": "node scripts/validate-export-pipeline.mjs",
-    "test:compression": "node scripts/validate-compressed-export.mjs"
+    "test:export": "node --import tsx scripts/validate-export-pipeline.mjs",
+    "test:compression": "node --import tsx scripts/validate-compressed-export.mjs"
   },
   "dependencies": {
     "@hugeicons/core-free-icons": "^4.3.5",

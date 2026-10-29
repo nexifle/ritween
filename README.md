@@ -11,6 +11,7 @@ A code-first video framework powered by WebGPU and native browser codecs.
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![WebGPU](https://img.shields.io/badge/rendering-WebGPU-005A9C)](https://gpuweb.github.io/gpuweb/)
+[![Publish to npm](https://github.com/nexifle/ritween/actions/workflows/publish.yml/badge.svg)](https://github.com/nexifle/ritween/actions/workflows/publish.yml)
 
 **Engineered by [Nexifle Lab](https://nexifle.com).**
 

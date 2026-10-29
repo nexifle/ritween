@@ -39,7 +39,8 @@ Options:
   --open                   Open the web preview in your default browser
   --channel NAME           Browser channel (default: chrome; msedge/chromium)
   --browser PATH           Explicit Chrome/Chromium executable path
-  --timeout SECONDS        Render/export timeout (default: 120)
+  --timeout SECONDS        Frame/export timeout (default: 120);
+                           Studio jobs have no render limit unless specified
   --force                  Replace an existing output
   --json                   Machine-readable result on stdout; progress on stderr
   --help, -h               Show help
@@ -224,6 +225,7 @@ export function parseOptions(argv: string[]) {
     frame,
     port,
     timeout,
+    previewExportTimeout: values.timeout === undefined ? undefined : timeout,
     width,
     height,
     output,

@@ -265,6 +265,7 @@ npm run test:project-settings
 npm run test:studio-preferences
 npm run test:cli
 npm run test:live-preview # Build first; starts its own CLI server and Chrome.
+npm run test:preview-exports # Build first; validates backend export and recovery.
 npm run test:mp4-input # Build first; requires FFmpeg with libx264/libx265/libaom-av1 and Chrome.
 RITWEEN_RANGE_MEDIA=1 npm run test:mp4-input
 
@@ -289,7 +290,9 @@ See the [preview organization guide](src/preview/README.md) before adding studio
 
 Ritween currently supports sequential, gapless scenes with hard cuts. Overlapping transitions, clip dragging, microphone input, and HTML/DOM rasterization are not implemented.
 
-Export keeps encoded samples in memory rather than streaming to disk; files of 4 GiB or more are rejected. Encoding runs asynchronously on the UI thread, so demanding compositions can affect preview responsiveness. Browser and platform codec support determine which exports are available.
+Studio exports run in a backend-owned headless Chrome/Chromium, not in the user's tab. Progress survives page refresh and tab closure while the server runs. Temporary results appear in **Server exports** for download or deletion; normal server shutdown removes them, while completed files left after a crash can be recovered on the next preview. Download videos you want to keep before stopping the server. See [Studio export jobs and temporary files](CLI.md#studio-export-jobs-and-temporary-files) for retention and limits.
+
+Export still keeps encoded samples in memory rather than streaming the muxer output to disk; files of 4 GiB or more are rejected. Moving encoding to a headless browser isolates the Studio tab but does not guarantee lower total RAM/GPU use. Browser and platform codec support determine which exports are available.
 
 ## Contributing
 

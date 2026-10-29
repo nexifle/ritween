@@ -1,4 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
+import type { ExportJob } from "../../engine/export/job";
+import { ExportFiles } from "./export-files";
 import { resolveEncodingOptions } from "../../engine/export/settings";
 import type { ExportSize } from "../../engine/export/formats/mp4/sizes";
 import { frameCount } from "../../engine/timeline";
@@ -9,7 +11,11 @@ export function ExportPanel({
   ready,
   exporting,
   savingSettings,
-  stage,
+  job,
+  jobs,
+  connected,
+  onDelete,
+  onCancelJob,
   resolution,
   sizes,
   aspectRatio,
@@ -38,7 +44,11 @@ export function ExportPanel({
   ready: boolean;
   exporting: boolean;
   savingSettings?: boolean;
-  stage: string;
+  job?: ExportJob;
+  jobs: readonly ExportJob[];
+  connected: boolean;
+  onDelete: (id: string) => void;
+  onCancelJob: (id: string) => void;
   resolution: string;
   sizes: readonly ExportSize[];
   aspectRatio: readonly [number, number];
@@ -81,38 +91,28 @@ export function ExportPanel({
       behavior: "instant",
     });
   }, [exporting, result, collapsed]);
-  const started = useRef(0);
-  const firstFrame = useRef<{ time: number; frames: number } | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const [remaining, setRemaining] = useState<number | null>(null);
-  useEffect(() => {
-    if (!exporting) return;
-    started.current = performance.now();
-    firstFrame.current = null;
-    setElapsed(0);
-    setRemaining(null);
-    const timer = window.setInterval(() => {
-      setElapsed((performance.now() - started.current) / 1000);
-    }, 1000);
-    return () => {
-      window.clearInterval(timer);
-      setElapsed((performance.now() - started.current) / 1000);
-    };
-  }, [exporting]);
-  useEffect(() => {
-    if (!exporting || done <= 0) return;
-    const now = performance.now();
-    if (!firstFrame.current) firstFrame.current = { time: now, frames: done };
-    const sample = firstFrame.current;
-    const seconds = (now - sample.time) / 1000;
-    if (seconds >= 2 && done > sample.frames) {
-      setRemaining(((total - done) * seconds) / (done - sample.frames));
-    }
-  }, [done, total, exporting]);
+  const elapsed = job?.elapsedSeconds ?? 0;
+  const remaining = job?.etaSeconds ?? null;
+  const stageLabels: Record<string, string> = {
+    "audio-mix": "Mixing audio",
+    "audio-encode": "Encoding audio",
+    "scene-setup": "Preparing scenes",
+    "video-encode": "Encoding video",
+    mux: "Finalizing MP4",
+  };
+  const stage =
+    job?.status === "preparing"
+      ? "Preparing source snapshot…"
+      : job?.status === "queued"
+        ? "Waiting for the previous export…"
+        : job?.status === "saving"
+          ? "Saving MP4 on the server…"
+          : job?.stages
+              .map((value) => stageLabels[value] ?? value)
+              .join(" + ") || "Starting headless renderer…";
   const complete = Boolean(result && download && !exporting);
-  const finalizing = done >= total && total > 0;
-  const percent =
-    total > 0 ? Math.min(99, Math.floor((done / total) * 100)) : 0;
+  const finalizing = job?.status === "saving" || (done >= total && total > 0);
+  const percent = job?.percent ?? 0;
   const resultParts = useMemo(() => {
     if (!result || !result.includes("·")) return { summary: result, size: "" };
     const segments = result.split("·").map((s) => s.trim());
@@ -140,6 +140,11 @@ export function ExportPanel({
       onToggleCollapse={onToggleCollapse}
       contentClassName="p-3"
     >
+      {!connected && (
+        <p role="status" className="mb-2 text-[11px] text-meta">
+          Connecting to export server… Running exports continue on the server.
+        </p>
+      )}
       {savingSettings && (
         <p role="status" className="mb-2 text-[11px] text-meta">
           Saving settings…
@@ -452,7 +457,8 @@ export function ExportPanel({
             </div>
 
             <p className="text-[11px] leading-tight text-muted-foreground">
-              Download started automatically.
+              Your video is stored temporarily on the server. Download it before
+              stopping the server.
             </p>
 
             <div className="flex items-center gap-1.5 pt-0.5">
@@ -478,6 +484,7 @@ export function ExportPanel({
           </section>
         )}
       </div>
+      <ExportFiles jobs={jobs} onDelete={onDelete} onCancel={onCancelJob} />
     </SidebarPanel>
   );
 }

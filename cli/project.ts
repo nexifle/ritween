@@ -123,7 +123,11 @@ export function sceneSources(manifest: string) {
   }
   return { sources, files: [...files] };
 }
-export function projectPlugin(manifest: string, schema: string): Plugin {
+export function projectPlugin(
+  manifest: string,
+  schema: string,
+  snapshotSettings?: ProjectSettings,
+): Plugin {
   return {
     name: "ritween-project",
     resolveId(id) {
@@ -213,7 +217,7 @@ export function projectPlugin(manifest: string, schema: string): Plugin {
           const authored = Object.assign({}, module).project ?? Object.assign({}, module).default;
           if (!authored) throw new Error('Manifest must export project or a default Project.');
           export const authoredSettings = authored.settings;
-          export const savedSettings = ${JSON.stringify(readProjectSettings(manifest))};
+          export const savedSettings = ${JSON.stringify(snapshotSettings ?? readProjectSettings(manifest))};
           export const project = { ...authored, settings: mergeProjectSettings(authoredSettings, savedSettings) };`;
       }
       if (id === "\0ritween-sources") {

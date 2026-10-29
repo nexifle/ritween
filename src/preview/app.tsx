@@ -21,6 +21,8 @@ import { useProjectSettings } from "./state/use-project-settings";
 import { CompositionViewer } from "./composition/composition-viewer";
 import { ErrorBanner } from "./components/error-banner";
 import { ExportPanel } from "./export/export-panel";
+import { useExportJobs } from "./export/use-export-jobs";
+import { exportJobDownload } from "../engine/export/job";
 import { ProjectHeading } from "./layout/project-heading";
 import {
   dockPaneStyle,
@@ -80,8 +82,15 @@ export function App() {
   const [state, dispatch] = useReducer(reducer, initial, createInitialState);
   const canvas = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<Renderer | null>(null);
-  const abort = useRef<AbortController | null>(null);
-  const resultUrl = useRef("");
+  const exports = useExportJobs();
+  const exportJob = exports.current;
+  useEffect(() => {
+    patch({
+      exporting: exports.exporting,
+      ...(exports.exporting ? { playing: false } : {}),
+    });
+    if (exports.exporting) audio.current?.stop();
+  }, [exports.exporting]);
   const alive = useRef(true);
   const audio = useRef<PreviewAudio | null>(null);
   const timeRef = useRef(0);
@@ -189,12 +198,10 @@ export function App() {
       appliedRevision.current = -1;
       previewRequest.current = null;
       previewAbort.current?.abort();
-      abort.current?.abort();
       renderer.current?.dispose();
       renderer.current = null;
       audio.current?.dispose();
       audio.current = null;
-      if (resultUrl.current) URL.revokeObjectURL(resultUrl.current);
     };
   }, []);
   useEffect(() => {
@@ -269,8 +276,6 @@ export function App() {
       );
       renderedPreviewTime.current = null;
       timeRef.current = time;
-      if (resultUrl.current) URL.revokeObjectURL(resultUrl.current);
-      resultUrl.current = "";
       appliedRevision.current = incoming.revision;
       setCommitted({ ...incoming, project: next });
       dispatch({
@@ -447,84 +452,14 @@ export function App() {
     if (
       savingSettings ||
       state.updating ||
-      state.exporting ||
+      exports.exporting ||
+      !exports.connected ||
       !exportResolution
     )
       return;
-    const controller = new AbortController();
-    abort.current = controller;
     audio.current?.stop();
-    patch({
-      playing: false,
-      exporting: true,
-      exportStage: "Preparing export…",
-      done: 0,
-      total: frameCount(project.duration, exportFps),
-      error: "",
-      result: "",
-      download: "",
-    });
-    const activeStages = new Set<string>();
-    const stageLabels: Record<string, string> = {
-      "audio-mix": "Mixing audio",
-      "audio-encode": "Encoding audio",
-      "scene-setup": "Preparing scenes",
-      "video-encode": "Encoding video",
-      mux: "Finalizing MP4",
-    };
-    const showStages = () => {
-      if (alive.current && activeStages.size)
-        patch({
-          exportStage:
-            [...activeStages].map((stage) => stageLabels[stage]).join(" + ") +
-            "…",
-        });
-    };
-    const [width, height] = exportResolution.split("x").map(Number);
-    try {
-      const { exportMp4: exportVideo } =
-        await import("../engine/export/formats/mp4/export-mp4");
-      const result = await exportVideo(project, {
-        width,
-        height,
-        fps: exportFps,
-        bitrate: exportBitrate || undefined,
-        latencyMode: exportLatencyMode,
-        keyFrameInterval: exportKeyFrameInterval,
-        signal: controller.signal,
-        onStage: (stage) => {
-          activeStages.add(stage);
-          showStages();
-        },
-        onStageComplete: (stage) => {
-          activeStages.delete(stage);
-          showStages();
-        },
-        onProgress: (done, total) => {
-          if (alive.current) patch({ done, total });
-        },
-      });
-      if (!alive.current) return;
-      if (resultUrl.current) URL.revokeObjectURL(resultUrl.current);
-      const url = URL.createObjectURL(result.blob);
-      resultUrl.current = url;
-      patch({
-        result: `${result.frames} frames · ${result.duration.toFixed(2)} seconds · ${(result.blob.size / 1048576).toFixed(1)} MB`,
-        download: url,
-      });
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.click();
-    } catch (e) {
-      if (alive.current) {
-        if (controller.signal.aborted) patch({ result: "Export cancelled." });
-        else patch({ error: e instanceof Error ? e.message : String(e) });
-      }
-    } finally {
-      if (alive.current) patch({ exporting: false });
-      abort.current = null;
-    }
+    patch({ playing: false, error: "" });
+    await exports.start(project.name, project.settings ?? { version: 1 });
   }
   const active = evaluate(project, state.time).entry;
   const pinSource = useCallback(
@@ -566,10 +501,16 @@ export function App() {
 
   const renderExport = (collapsed: boolean, borderTop = false) => (
     <ExportPanel
-      ready={state.ready && !state.updating && !savingSettings}
+      ready={
+        state.ready && !state.updating && !savingSettings && exports.connected
+      }
       savingSettings={savingSettings}
-      exporting={state.exporting}
-      stage={state.exportStage}
+      exporting={exports.exporting}
+      job={exportJob}
+      jobs={exports.jobs}
+      connected={exports.connected}
+      onDelete={(id) => void exports.remove(id)}
+      onCancelJob={(id) => void exports.cancel(id)}
       resolution={exportResolution}
       sizes={sizes}
       aspectRatio={project.aspectRatio}
@@ -590,11 +531,19 @@ export function App() {
       hasAudio={audibleAudioTracks(project).some((track) =>
         track.clips.some((clip) => !mutedClipIds.includes(clip.id)),
       )}
-      done={state.done}
-      total={state.total}
-      result={state.result}
-      download={state.download}
-      filename={filename}
+      done={exportJob?.done ?? 0}
+      total={exportJob?.total ?? 0}
+      result={
+        exportJob && !exports.exporting
+          ? exportJob.status === "completed"
+            ? `${exportJob.done} frames · ${exportJob.elapsedSeconds.toFixed(1)} seconds elapsed · ${(exportJob.bytes / 1048576).toFixed(1)} MB`
+            : exportJob.error
+          : ""
+      }
+      download={
+        exportJob?.status === "completed" ? exportJobDownload(exportJob.id) : ""
+      }
+      filename={exportJob?.filename ?? filename}
       collapsed={collapsed}
       borderTop={borderTop}
       onToggleCollapse={(next) => setExportCollapsed(next)}
@@ -604,7 +553,9 @@ export function App() {
       }}
       onFps={(fps) => void updateExportSettings({ fps: fps as 24 | 30 | 60 })}
       onExport={() => void startExport()}
-      onCancel={() => abort.current?.abort()}
+      onCancel={() => {
+        if (exportJob) void exports.cancel(exportJob.id);
+      }}
     />
   );
 
@@ -709,7 +660,7 @@ export function App() {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <StudioHeader />
-      <ErrorBanner error={state.error || settingsError} />
+      <ErrorBanner error={state.error || settingsError || exports.error} />
       <main className="min-h-0 flex-1">
         <StudioDock
           viewer={

@@ -99,6 +99,11 @@ export async function main(argv = process.argv.slice(2)) {
         watch: activeOptions.command === "preview",
         mediaLoading: activeOptions.mediaLoading,
         mediaActivation: activeOptions.mediaActivation,
+        exports: {
+          browser: activeOptions.browser,
+          channel: activeOptions.channel,
+          timeout: activeOptions.previewExportTimeout,
+        },
       });
       server = serving.server;
       if (cancelled || interrupted) throw Error("Cancelled.");

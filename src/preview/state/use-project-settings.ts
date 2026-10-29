@@ -29,22 +29,8 @@ export function useProjectSettings(
   const mutedClipIds = useMemo(() => mutedAudioClipIds(project), [project]);
 
   useEffect(() => {
-    const receive = (value: unknown) => {
-      try {
-        setSaved(parseProjectSettings(value));
-        setError("");
-      } catch (error) {
-        setError(String(error));
-      }
-    };
-    const failed = (message: string) => setError(message);
-    import.meta.hot?.on("ritween:settings", receive);
-    import.meta.hot?.on("ritween:settings-error", failed);
-    return () => {
-      import.meta.hot?.off("ritween:settings", receive);
-      import.meta.hot?.off("ritween:settings-error", failed);
-    };
-  }, []);
+    setSaved(initialSaved);
+  }, [initialSaved]);
 
   const saveCommand = useCallback(async (command: object, label: string) => {
     if (busy.current) return;

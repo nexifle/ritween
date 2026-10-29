@@ -294,6 +294,16 @@ scenes: [videoClip({id:"footage",name:"Footage",source:"manifest.ts",url:"/sourc
     });
     assert.equal(event.mediaLoading, "range");
     assert.match(await (await fetch(event.url)).text(), /studio\.js/);
+    const favicon = await fetch(`${event.url}/favicon.svg`);
+    assert.equal(favicon.status, 200);
+    assert.match(
+      favicon.headers.get("content-type") ?? "",
+      /^image\/svg\+xml\b/,
+    );
+    assert.equal(
+      await favicon.text(),
+      await readFile(join(root, "public/favicon.svg"), "utf8"),
+    );
     const webBrowser = await chromium.launch({
       channel: "chrome",
       headless: true,
@@ -303,6 +313,14 @@ scenes: [videoClip({id:"footage",name:"Footage",source:"manifest.ts",url:"/sourc
       const tab = await webBrowser.newPage();
       await tab.goto(event.url);
       await tab.getByText("Runtime connected", { exact: true }).waitFor();
+      assert.ok(
+        await tab.evaluate(async () => {
+          const icon = new Image();
+          icon.src = document.querySelector('link[rel="icon"]').href;
+          await icon.decode();
+          return icon.naturalWidth > 0 && icon.naturalHeight > 0;
+        }),
+      );
       await tab
         .getByRole("heading", { name: "External fixture", exact: true })
         .waitFor();
@@ -320,19 +338,30 @@ scenes: [videoClip({id:"footage",name:"Footage",source:"manifest.ts",url:"/sourc
       await tab.getByText("Runtime connected", { exact: true }).waitFor();
       const canvas = tab.locator("canvas");
       assert.equal(await canvas.getAttribute("width"), "320");
-      const reloaded = tab.waitForEvent("load");
+      const documentToken = await tab.evaluate(
+        () => (globalThis.cliDocument = crypto.randomUUID()),
+      );
       const saved = await tab.request.patch(`${event.url}/__ritween/settings`, {
         data: { type: "update-export-settings", patch: { fps: 60 } },
       });
       assert.ok(saved.ok());
-      await reloaded;
+      await tab.waitForFunction(
+        () =>
+          document
+            .querySelector('[aria-label="Playback scrubber"]')
+            ?.getAttribute("step") === String(1 / 60),
+      );
+      assert.equal(
+        await tab.evaluate(() => globalThis.cliDocument),
+        documentToken,
+      );
       await tab.getByText("Runtime connected", { exact: true }).waitFor();
       await mkdir(join(directory, "public"), { recursive: true });
       await writeFile(
         join(directory, "public/source.mp4"),
         await readFile(join(mediaProject, "public/source.mp4")),
       );
-      // Restarting is unnecessary: preview reloads the updated manifest.
+      // Restarting is unnecessary: preview applies the updated manifest live.
       const partial = tab.waitForResponse(
         (response) =>
           response.url().endsWith("/source.mp4") && response.status() === 206,
@@ -368,7 +397,8 @@ scenes: [videoClip({id:"footage",name:"Footage",source:"manifest.ts",url:"/sourc
       "timeout cleanup",
       "240-frame MP4 export",
       "native playback and seeking",
-      "web preview, external source reload, and signal shutdown",
+      "studio SVG favicon with project public assets",
+      "web preview, external source HMR, and signal shutdown",
     ],
   };
   await writeFile(

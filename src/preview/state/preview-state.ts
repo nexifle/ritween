@@ -1,8 +1,5 @@
 import { readStudioPreferences } from "./studio-preferences";
 import { PREVIEW_VOLUME_DB } from "../../engine/render/audio";
-import { projectExportSettings } from "../../engine/export/project-settings";
-import { frameCount } from "../../engine/timeline";
-import { project } from "virtual:ritween-project";
 import {
   clamp,
   COMP_ZOOM_MAX,
@@ -13,6 +10,8 @@ import {
 
 export type State = {
   time: number;
+  duration: number;
+  updating: boolean;
   playing: boolean;
   ready: boolean;
   error: string;
@@ -36,13 +35,15 @@ export type State = {
 
 export const initial: State = {
   time: 0,
+  duration: 0,
+  updating: false,
   playing: false,
   ready: false,
   error: "",
   exporting: false,
   exportStage: "",
   done: 0,
-  total: frameCount(project.duration, projectExportSettings(project).fps),
+  total: 0,
   result: "",
   download: "",
   volumeDb: PREVIEW_VOLUME_DB,
@@ -79,6 +80,13 @@ export function createInitialState(): State {
 }
 
 export type Action =
+  | {
+      type: "project";
+      duration: number;
+      total: number;
+      sceneIds: readonly string[];
+      playing: boolean;
+    }
   | { type: "patch"; value: Partial<State> }
   | { type: "seek"; time: number }
   | { type: "tick"; delta: number }
@@ -94,13 +102,32 @@ export type Action =
   | { type: "setSourceOpen"; open: boolean };
 
 export function reducer(s: State, a: Action): State {
+  if (a.type === "project") {
+    const time = Math.min(s.time, a.duration);
+    return {
+      ...s,
+      time,
+      duration: a.duration,
+      total: a.total,
+      pinnedSourceId:
+        s.pinnedSourceId && a.sceneIds.includes(s.pinnedSourceId)
+          ? s.pinnedSourceId
+          : null,
+      playing: a.playing && time < a.duration,
+      ready: true,
+      updating: false,
+      error: "",
+      result: "",
+      download: "",
+    };
+  }
   if (a.type === "patch") return { ...s, ...a.value };
   if (a.type === "pause") return { ...s, playing: false };
   if (a.type === "toggle")
     return {
       ...s,
       playing: !s.playing,
-      time: s.time >= project.duration ? 0 : s.time,
+      time: s.time >= s.duration ? 0 : s.time,
     };
   if (a.type === "toggleMasterMute")
     return { ...s, masterMuted: !s.masterMuted };
@@ -119,13 +146,13 @@ export function reducer(s: State, a: Action): State {
   if (a.type === "followSource") return { ...s, pinnedSourceId: null };
   if (a.type === "setSourceOpen") return { ...s, sourceOpen: a.open };
   if (a.type === "seek" || a.type === "sync") {
-    const time = Math.max(0, Math.min(project.duration, a.time));
+    const time = Math.max(0, Math.min(s.duration, a.time));
     return {
       ...s,
       time,
-      playing: a.type === "sync" ? time < project.duration : s.playing,
+      playing: a.type === "sync" ? time < s.duration : s.playing,
     };
   }
-  const time = Math.min(project.duration, s.time + a.delta);
-  return { ...s, time, playing: time < project.duration };
+  const time = Math.min(s.duration, s.time + a.delta);
+  return { ...s, time, playing: time < s.duration };
 }

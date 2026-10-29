@@ -297,3 +297,82 @@ test("preparation failures reject and leave the async render queue usable", asyn
   assert.deepEqual(rendered, [1]);
   renderer.dispose();
 });
+
+test("preview canvas handoff leaves the replacement context owned by its new renderer", () => {
+  const originalUsage = globalThis.GPUTextureUsage;
+  globalThis.GPUTextureUsage = {
+    RENDER_ATTACHMENT: 16,
+    COPY_SRC: 1,
+  } as typeof GPUTextureUsage;
+  try {
+    let unconfigured = 0;
+    let configured = 0;
+    const context = {
+      configure: () => {
+        configured++;
+      },
+      unconfigure: () => {
+        unconfigured++;
+      },
+    } as unknown as GPUCanvasContext;
+    const canvas = {
+      width: 1,
+      height: 1,
+      getContext: () => context,
+    } as unknown as HTMLCanvasElement;
+    const previous = createTestRenderer(testScene(() => {}));
+    const candidate = createTestRenderer(testScene(() => {}));
+    previous.attachCanvas(canvas);
+    previous.detachCanvas();
+    candidate.attachCanvas(canvas);
+    previous.dispose();
+    assert.equal(configured, 2);
+    assert.equal(
+      unconfigured,
+      1,
+      "Old disposal must not unconfigure the replacement",
+    );
+    assert.equal(canvas.width, 320);
+    assert.equal(canvas.height, 240);
+    candidate.dispose();
+    assert.equal(unconfigured, 2);
+  } finally {
+    if (originalUsage === undefined)
+      Reflect.deleteProperty(globalThis, "GPUTextureUsage");
+    else globalThis.GPUTextureUsage = originalUsage;
+  }
+});
+
+test("scene cleanup failures do not leak sibling scenes or the GPU device", (t) => {
+  const reported: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => reported.push(args));
+  let released = 0;
+  let destroyed = 0;
+  const renderer = createTestRenderer(
+    testScene(
+      () => {},
+      undefined,
+      () => {
+        throw Error("cleanup failed");
+      },
+    ),
+  );
+  (renderer as unknown as { scenes: Map<string, Scene> }).scenes.set(
+    "sibling",
+    testScene(
+      () => {},
+      undefined,
+      () => {
+        released++;
+      },
+    ),
+  );
+  renderer.device.destroy = () => {
+    destroyed++;
+  };
+  renderer.dispose();
+  renderer.dispose();
+  assert.equal(released, 1);
+  assert.equal(destroyed, 1);
+  assert.equal(reported.length, 1);
+});

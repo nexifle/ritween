@@ -7,7 +7,7 @@ Ritween serves source-authored video projects, renders a timestamp to PNG, and e
 Requires Node.js 22.18.0+ and an installed Chrome. In a checkout, run `npm install` and `npm run build`, then:
 
 ```sh
-# Serve the current project, with live source reload
+# Serve the current project, with state-preserving live source updates
 node bin/ritween.mjs preview --open
 
 # PNG at an absolute timeline timestamp
@@ -27,7 +27,7 @@ node bin/ritween.mjs export -o artifacts/video.mp4 --resolution 1080p --fps 60
 
 ## Install the command
 
-The published package ships compiled JavaScript in `dist/` and SDK declarations in `types/`, not the framework's `src/`. The SDK resolves to `dist/index.js`; the command runs `dist/cli.js`. Studio, renderer, and demo modules are built before publishing. Vite remains responsible for compiling user-authored TS/TSX projects, not framework sources. Built preview reloads the page after project or settings changes.
+The published package ships compiled JavaScript in `dist/` and SDK declarations in `types/`, not the framework's `src/`. The SDK resolves to `dist/index.js`; the command runs `dist/cli.js`. Studio, renderer, and demo modules are built before publishing. Vite remains responsible for compiling user-authored TS/TSX projects, not framework sources. Built preview applies project and settings changes through a development-only HMR bridge, without reloading the studio. It preserves playback position, zoom/pan, layout, monitor controls, and surviving scene selections; shorter compositions clamp the playhead. A new runtime is prepared before replacing the active one, so syntax/import/setup errors leave the last working preview available. Rapid edits discard superseded candidates. Updates received during export are deferred until the export finishes. Changes to public assets or server configuration may still use Vite's full-reload/restart fallback.
 
 The published package is a Node program. `npm install -g` links `ritween` to `bin/ritween.mjs`, which runs on the Node.js already on the machine. npm installs the runtime dependencies for that platform, including Vite, React, Tailwind, and Playwright Core. It does not download a browser and it does not embed a second JavaScript runtime.
 
@@ -61,7 +61,7 @@ import type { Project, Scene } from "ritween";
 // Create your scene factories and export a Project; see AI_AUTHORING.md.
 ```
 
-Web preview binds only to `127.0.0.1`, defaults to port 5173, and reports the actual URL if that port is busy. `--port 0` chooses an available port. Source changes trigger HMR or reload. Ctrl+C closes the server. Frame and export commands start a temporary private server and headless browser, save the result and close both automatically.
+Web preview binds only to `127.0.0.1`, defaults to port 5173, and reports the actual URL if that port is busy. `--port 0` chooses an available port. Imported source changes trigger state-preserving HMR; public assets may trigger an automatic page reload. Ctrl+C closes the server. Frame and export commands start a temporary private server and headless browser, save the result and close both automatically.
 
 ## Imported video activation
 

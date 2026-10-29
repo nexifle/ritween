@@ -65,10 +65,12 @@ Use a small structure that requires neither framework source files nor a custom 
 
 ```text
 my-video/
-  package.json
-  manifest.ts
-  scenes/
-    main.ts
+  src/
+    scenes/
+      *.ts
+    audio/
+      *.ts
+    manifest.ts
   public/       # Optional user assets
 ```
 

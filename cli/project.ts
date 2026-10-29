@@ -123,27 +123,32 @@ export function sceneSources(manifest: string) {
   }
   return { sources, files: [...files] };
 }
-export function projectPlugin(
-  manifest: string,
-  schema: string,
-  reloadOnSettings = false,
-): Plugin {
+export function projectPlugin(manifest: string, schema: string): Plugin {
   return {
     name: "ritween-project",
     resolveId(id) {
       if (id === "virtual:ritween-project") return "\0ritween-project";
       if (id === "virtual:ritween-sources") return "\0ritween-sources";
+      if (id === "virtual:ritween-live") return "\0ritween-live";
     },
     configureServer(server) {
       const file = settingsPath(manifest);
+      let publishedSettings: string | undefined;
+      const failed = (error: unknown) => {
+        publishedSettings = undefined;
+        server.ws.send({
+          type: "custom",
+          event: "ritween:settings-error",
+          data: error instanceof Error ? error.message : String(error),
+        });
+      };
       const publish = (settings: ProjectSettings) => {
+        const serialized = JSON.stringify(settings);
+        // A PATCH and its filesystem event describe the same saved revision.
+        if (serialized === publishedSettings) return;
+        publishedSettings = serialized;
         const module = server.moduleGraph.getModuleById("\0ritween-project");
-        if (module) server.moduleGraph.invalidateModule(module);
-        server.ws.send(
-          reloadOnSettings
-            ? { type: "full-reload" }
-            : { type: "custom", event: "ritween:settings", data: settings },
-        );
+        if (module) void server.reloadModule(module).catch(failed);
       };
       server.watcher.add(file);
       const changed = (path: string) => {
@@ -151,11 +156,7 @@ export function projectPlugin(
         try {
           publish(readProjectSettings(manifest));
         } catch (error) {
-          server.ws.send({
-            type: "custom",
-            event: "ritween:settings-error",
-            data: error instanceof Error ? error.message : String(error),
-          });
+          failed(error);
         }
       };
       server.watcher.on("change", changed);
@@ -167,6 +168,41 @@ export function projectPlugin(
       if (context.file === settingsPath(manifest)) return [];
     },
     load(id) {
+      if (id === "\0ritween-live") {
+        // This bridge stays outside the production bundle so CLI previews retain HMR.
+        return `import * as initialProject from "virtual:ritween-project";
+          import * as initialSources from "virtual:ritween-sources";
+          let project = initialProject;
+          let sources = initialSources;
+          let snapshot = { ...project, sources: sources.sources, revision: 0, error: "" };
+          const listeners = new Set();
+          export const getSnapshot = () => snapshot;
+          export const subscribe = (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          };
+          const notify = () => { for (const listener of listeners) listener(); };
+          if (import.meta.hot) {
+            import.meta.hot.accept(["virtual:ritween-project", "virtual:ritween-sources"], (modules) => {
+              if (!modules.some(Boolean)) {
+                failed("Project update failed. Fix syntax or import errors to resume live updates; the last working preview is still available.");
+                return;
+              }
+              project = modules[0] ?? project;
+              sources = modules[1] ?? sources;
+              snapshot = { ...project, sources: sources.sources,
+                revision: snapshot.revision + (modules[0] ? 1 : 0),
+                error: modules[0] ? "" : snapshot.error };
+              notify();
+            });
+            const failed = (message) => {
+              snapshot = { ...snapshot, error: message };
+              notify();
+            };
+            import.meta.hot.on("vite:error", (event) => failed(event.err.message));
+            import.meta.hot.on("ritween:settings-error", failed);
+          }`;
+      }
       if (id === "\0ritween-project") {
         // Vite treats watched files as implicit imports during dev transforms.
         // A new project has no sidecar until its first edit.

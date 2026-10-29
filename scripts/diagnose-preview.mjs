@@ -1,4 +1,5 @@
 import { chromium } from "playwright-core";
+import { normalizePath } from "vite";
 import { startServer } from "../cli/server.ts";
 import { resolveProject } from "../cli/project.ts";
 
@@ -18,9 +19,9 @@ try {
   const page = await browser.newPage();
   await page.goto(`${url}/__ritween/render`);
   await page.waitForFunction(() => !!window.ritween);
-  const report = await page.evaluate(async () => {
+  const report = await page.evaluate(async (sourceRoot) => {
     const { project } = await import("/@id/virtual:ritween-project");
-    const { PreviewAudio } = await import("/src/engine/render/audio.ts");
+    const { PreviewAudio } = await import(`${sourceRoot}/engine/render/audio.ts`);
     let schedules = 0;
     const clips = [];
     for (const track of project.audioTracks ?? []) {
@@ -72,7 +73,7 @@ try {
       },
     };
     return { preparationMs };
-  });
+  }, `/@fs${normalizePath(runtimeRoot)}/src`);
   await page.evaluate(() => {
     const button = document.createElement("button");
     button.textContent = "Probe playback";

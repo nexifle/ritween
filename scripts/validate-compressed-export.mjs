@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
+import { normalizePath } from "vite";
 import { mkdir, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { startServer } from "../cli/server.ts";
@@ -29,11 +30,11 @@ try {
     const file = `${directory}/pulse-${fps}.mp4`;
     const [download, output] = await Promise.all([
       page.waitForEvent("download"),
-      page.evaluate(async (fps) => {
-        const { project: demo } = await import("/@id/__x00__ritween-project");
+      page.evaluate(async ({ fps, sourceRoot }) => {
+        const { project: demo } = await import("/@id/virtual:ritween-project");
         const { exportMp4: exportVideo } =
-          await import("/src/engine/export/formats/mp4/export-mp4.ts");
-        const { renderAudio } = await import("/src/engine/render/audio.ts");
+          await import(`${sourceRoot}/engine/export/formats/mp4/export-mp4.ts`);
+        const { renderAudio } = await import(`${sourceRoot}/engine/render/audio.ts`);
         const project = {
           ...demo,
           duration: 3,
@@ -92,7 +93,7 @@ try {
           reference,
           bytes: output.blob.size,
         };
-      }, fps),
+      }, { fps, sourceRoot: `/@fs${normalizePath(root)}/src` }),
     ]);
     await download.saveAs(file);
     assert.equal(output.frames, fps * 3);

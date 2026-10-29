@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
+import { normalizePath } from "vite";
 import { startServer } from "../cli/server.ts";
 import { resolveProject } from "../cli/project.ts";
 const runtimeRoot = process.cwd();
@@ -17,13 +18,13 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(`${url}/__ritween/render`);
   await page.waitForFunction(() => !!window.ritween);
-  const report = await page.evaluate(async () => {
+  const report = await page.evaluate(async (sourceRoot) => {
     const { project: demo } = await import("/@id/virtual:ritween-project");
     const { exportMp4: exportVideo } =
-      await import("/src/engine/export/formats/mp4/export-mp4.ts");
-    const { Renderer } = await import("/src/engine/render/renderer.ts");
+      await import(`${sourceRoot}/engine/export/formats/mp4/export-mp4.ts`);
+    const { Renderer } = await import(`${sourceRoot}/engine/render/renderer.ts`);
     const { MP4Muxer } =
-      await import("/src/engine/export/formats/mp4/muxer.ts");
+      await import(`${sourceRoot}/engine/export/formats/mp4/muxer.ts`);
     let created = 0,
       disposed = 0,
       finalized = 0;
@@ -237,7 +238,7 @@ try {
       Renderer.create = create;
       MP4Muxer.prototype.finalize = finalize;
     }
-  });
+  }, `/@fs${normalizePath(runtimeRoot)}/src`);
   for (const output of report.successful) {
     assert.equal(output.frames, 30);
     assert.equal(output.duration, 1);

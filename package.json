@@ -1,6 +1,6 @@
 {
   "name": "ritween",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Code-first WebGPU video framework. Preview, render a PNG frame, and export H.264 MP4 from a project manifest.",
   "type": "module",
   "engines": {

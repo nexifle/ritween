@@ -1,4 +1,5 @@
 import { projectExportSettings } from "../engine/export/project-settings";
+import { exportFilename } from "../engine/export/filename";
 import { audibleAudioTracks } from "../engine/project-settings";
 import {
   useCallback,
@@ -56,6 +57,7 @@ export function App() {
     saving: savingSettings,
     error: settingsError,
   } = useProjectSettings(sourceProject, authoredSettings, savedSettings);
+  const filename = exportFilename(project.name);
   const exportSettings = projectExportSettings(project);
   const exportFps = exportSettings.fps;
   const exportBitrate =
@@ -512,7 +514,7 @@ export function App() {
       });
       const a = document.createElement("a");
       a.href = url;
-      a.download = "source-to-motion.mp4";
+      a.download = filename;
       a.click();
     } catch (e) {
       if (alive.current) {
@@ -592,6 +594,7 @@ export function App() {
       total={state.total}
       result={state.result}
       download={state.download}
+      filename={filename}
       collapsed={collapsed}
       borderTop={borderTop}
       onToggleCollapse={(next) => setExportCollapsed(next)}

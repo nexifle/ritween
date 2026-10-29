@@ -46,6 +46,21 @@ test("CLI resolves web preview, PNG preview alias, frame indices and export pres
   assert.equal(demo.open, true);
   assert.equal(parseOptions([]).help, true);
 });
+test("CLI defers the default MP4 name to the manifest and preserves output overrides", () => {
+  assert.equal(parseOptions(["export"]).output, undefined);
+  assert.equal(parseOptions(["frame"]).output, "frame.png");
+  for (const flag of ["-o", "--output"]) {
+    assert.equal(
+      parseOptions(["export", flag, "renders/Custom Name.mp4"]).output,
+      "renders/Custom Name.mp4",
+    );
+    assert.throws(
+      () => parseOptions(["export", flag, "video.png"]),
+      /Output must have a .mp4 extension/,
+    );
+  }
+});
+
 test("CLI rejects ambiguous and unsupported options before browser startup", () => {
   for (const args of [
     ["unknown"],

@@ -15,7 +15,8 @@ Manifests export a named project or default Project; TS, TSX and JS work.
 Options:
   --project PATH           Explicit project directory or manifest
   --demo                   Use bundled eight-second example
-  --output, -o PATH        PNG for frame; MP4 for export
+  --output, -o PATH        Override output path (default: frame.png for frame;
+                           manifest project name for MP4 export)
   --time SECONDS           Frame timestamp (default: 0)
   --frame INDEX            Zero-based frame index, divided by --fps
   --resolution PRESET      360p, 720p, 1080p or WIDTHxHEIGHT
@@ -188,9 +189,10 @@ export function parseOptions(argv: string[]) {
       throw Error("Export dimensions must be even.");
   }
   const output =
-    values.output ?? (command === "frame" ? "frame.png" : "video.mp4");
+    values.output ?? (command === "frame" ? "frame.png" : undefined);
   if (
     command !== "preview" &&
+    output !== undefined &&
     !output.toLowerCase().endsWith(command === "frame" ? ".png" : ".mp4")
   )
     throw Error(

@@ -8,6 +8,7 @@ import {
   type ExportOverrides,
 } from "./engine/export/project-settings";
 import { validateProject } from "./engine/timeline";
+import { exportFilename } from "./engine/export/filename";
 const project = resolveMediaProject(sourceProject);
 validateProject(project);
 function download(blob: Blob, name: string) {
@@ -81,7 +82,7 @@ const api = {
         void window.ritweenProgress?.({ done, total });
       },
     });
-    download(result.blob, "video.mp4");
+    download(result.blob, exportFilename(project.name));
     return {
       frames: result.frames,
       duration: result.duration,

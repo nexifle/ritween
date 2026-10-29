@@ -290,7 +290,7 @@ See the [preview organization guide](src/preview/README.md) before adding studio
 
 Ritween currently supports sequential, gapless scenes with hard cuts. Overlapping transitions, clip dragging, microphone input, and HTML/DOM rasterization are not implemented.
 
-Studio exports run in a backend-owned headless Chrome/Chromium, not in the user's tab. Progress survives page refresh and tab closure while the server runs. Temporary results appear in **Server exports** for download or deletion; normal server shutdown removes them, while completed files left after a crash can be recovered on the next preview. Download videos you want to keep before stopping the server. See [Studio export jobs and temporary files](CLI.md#studio-export-jobs-and-temporary-files) for retention and limits.
+Studio exports run in a backend-owned headless Chrome/Chromium, not in the user's tab. Progress survives page refresh and tab closure while the server runs. Temporary results appear in the **Exports** tab for download or deletion; normal server shutdown removes them, while completed files left after a crash can be recovered on the next preview. Download videos you want to keep before stopping the server. See [Studio export jobs and temporary files](CLI.md#studio-export-jobs-and-temporary-files) for retention and limits.
 
 Export still keeps encoded samples in memory rather than streaming the muxer output to disk; files of 4 GiB or more are rejected. Moving encoding to a headless browser isolates the Studio tab but does not guarantee lower total RAM/GPU use. Browser and platform codec support determine which exports are available.
 

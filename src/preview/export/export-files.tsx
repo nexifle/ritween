@@ -1,9 +1,13 @@
-import { useState } from "react";
 import {
   exportJobActive,
   exportJobDownload,
   type ExportJob,
 } from "../../engine/export/job";
+import { Icon } from "../components/icon";
+import { exportStage, formatExportBytes } from "./export-format";
+
+const action =
+  "flex size-6 shrink-0 items-center justify-center rounded-[3px] text-control hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring";
 
 export function ExportFiles({
   jobs,
@@ -14,95 +18,123 @@ export function ExportFiles({
   onDelete: (id: string) => void;
   onCancel: (id: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  if (!jobs.length)
+    return (
+      <section
+        aria-label="Server exports"
+        className="flex h-full min-h-28 flex-col items-center justify-center gap-1 px-4 py-6 text-center"
+      >
+        <Icon name="film" size={20} className="mb-1 text-meta" />
+        <p className="text-[11px] text-label">No exports yet</p>
+        <p className="text-[10px] text-meta">
+          Export a video from Settings to see it here.
+        </p>
+      </section>
+    );
   const bytes = jobs.reduce((total, job) => total + job.bytes, 0);
   return (
-    <section
-      aria-label="Server exports"
-      className="mt-3 border-t border-border pt-2 text-[11px]"
-    >
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        className="flex w-full items-center justify-between gap-2 py-1 text-left font-semibold cursor-pointer"
-      >
-        <span>Server exports ({jobs.length})</span>
-        <span className="font-mono font-normal text-muted-foreground">
-          {(bytes / 1048576).toFixed(1)} MB {expanded ? "−" : "+"}
-        </span>
-      </button>
-      <p className="mt-1 text-muted-foreground leading-relaxed">
-        Temporary files are deleted when the server stops normally. Download
-        videos you want to keep. Files left after a crash can be downloaded or
-        deleted here. Keep at most 4 GiB of completed videos and 50 job records
-        per server session; delete older entries before starting more exports.
-      </p>
-      {expanded && (
-        <div className="mt-2 space-y-2">
-          {!jobs.length && (
-            <p className="text-muted-foreground">No server exports.</p>
-          )}
-          {jobs.map((job) => (
-            <article
-              key={job.id}
-              data-export-id={job.id}
-              className="rounded-sm border border-border bg-secondary/30 p-2"
-            >
-              <p className="truncate font-medium" title={job.filename}>
-                {job.filename}
-              </p>
-              <p className="mt-0.5 text-muted-foreground">
-                {job.status}
-                {job.recovered
-                  ? " · recovered after an unexpected shutdown"
-                  : ""}
-                {job.bytes > 0
-                  ? ` · ${(job.bytes / 1048576).toFixed(1)} MB`
-                  : ""}
-              </p>
-              <p className="mt-0.5 text-muted-foreground">
-                {new Date(job.createdAt).toLocaleString()}
-              </p>
-              {job.error && (
-                <p className="mt-1 break-words text-muted-foreground">
-                  {job.error}
-                </p>
-              )}
-              <div className="mt-1.5 flex gap-3">
-                {job.status === "completed" && (
-                  <a
-                    className="text-primary hover:underline"
-                    href={exportJobDownload(job.id)}
-                    download={job.filename}
+    <section aria-label="Server exports">
+      <div className="flex justify-between px-3 pb-1 pt-2 text-[10px] text-meta">
+        <span>Recent exports</span>
+        <span className="tabular-nums">{formatExportBytes(bytes)} / 4 GB</span>
+      </div>
+      <div className="divide-y divide-separator/60 px-3">
+        {jobs.map((job) => {
+          const active = exportJobActive(job);
+          const status = active
+            ? exportStage(job)
+            : job.status === "completed"
+              ? "Ready"
+              : job.status === "failed"
+                ? "Failed"
+                : job.status === "interrupted"
+                  ? "Interrupted"
+                  : "Cancelled";
+          return (
+            <article key={job.id} data-export-id={job.id} className="py-2.5">
+              <div className="flex items-center gap-2">
+                <Icon
+                  name={
+                    job.status === "completed"
+                      ? "film"
+                      : active
+                        ? "export"
+                        : "stop"
+                  }
+                  size={14}
+                  className="shrink-0 text-meta"
+                />
+                <div className="min-w-0 flex-1">
+                  <p
+                    className="truncate text-[11px] font-medium"
+                    title={job.filename}
                   >
-                    Download
-                  </a>
-                )}
-                {exportJobActive(job) ? (
+                    {job.filename}
+                  </p>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-1 text-[10px] text-meta">
+                    <span>
+                      {status}
+                      {active ? ` ${job.percent}%` : ""}
+                    </span>
+                    {job.bytes > 0 && (
+                      <span>· {formatExportBytes(job.bytes)}</span>
+                    )}
+                    <span>
+                      ·{" "}
+                      <time
+                        dateTime={new Date(job.createdAt).toISOString()}
+                        title={new Date(job.createdAt).toLocaleString()}
+                      >
+                        {new Date(job.createdAt).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                    </span>
+                    {job.recovered && (
+                      <span title="Recovered after an unexpected shutdown">
+                        · Recovered
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  {job.status === "completed" && (
+                    <a
+                      className={action}
+                      href={exportJobDownload(job.id)}
+                      download={job.filename}
+                      title={`Download ${job.filename}`}
+                      aria-label={`Download ${job.filename}`}
+                    >
+                      <Icon name="export" size={14} />
+                    </a>
+                  )}
                   <button
                     type="button"
-                    aria-label={`Cancel ${job.filename}`}
-                    className="text-muted-foreground hover:text-foreground cursor-pointer"
-                    onClick={() => onCancel(job.id)}
+                    title={`${active ? "Cancel" : "Delete"} ${job.filename}`}
+                    aria-label={`${active ? "Cancel" : "Delete"} ${job.filename}`}
+                    className={`${action} hover:bg-destructive hover:text-destructive-foreground`}
+                    onClick={() =>
+                      active ? onCancel(job.id) : onDelete(job.id)
+                    }
                   >
-                    Cancel
+                    <Icon name={active ? "cancel" : "delete"} size={14} />
                   </button>
-                ) : (
-                  <button
-                    type="button"
-                    aria-label={`Delete ${job.filename}`}
-                    className="text-destructive-foreground hover:underline cursor-pointer"
-                    onClick={() => onDelete(job.id)}
-                  >
-                    Delete
-                  </button>
-                )}
+                </div>
               </div>
+              {job.error && job.status !== "cancelled" && (
+                <details className="mt-1 pl-5 text-[10px] text-meta">
+                  <summary className="cursor-pointer">Error details</summary>
+                  <p className="mt-1 break-words text-destructive-foreground">
+                    {job.error}
+                  </p>
+                </details>
+              )}
             </article>
-          ))}
-        </div>
-      )}
+          );
+        })}
+      </div>
     </section>
   );
 }

@@ -83,7 +83,7 @@ ETA when available. The last rendered frame is not completion: progress stays be
   `--timeout SECONDS` bounds each headless render, not queueing or source bundling.
   Browser startup still has its own 120-second limit.
 - Results are temporary under `~/.ritween/exports/<manifest-path-hash>/session-*`.
-  **Server exports** lists jobs, file sizes, download links, cancellation, and deletion.
+  The **Exports** tab lists jobs, file sizes, download links, cancellation, and deletion.
   Completed videos are limited to 4 GiB total and history to 50 job records per
   server session. Delete older entries to free capacity; existing videos are never
   silently evicted to make space for a new result. Source bundles, browser download

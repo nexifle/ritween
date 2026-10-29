@@ -1,5 +1,4 @@
 import { projectExportSettings } from "../engine/export/project-settings";
-import { exportFilename } from "../engine/export/filename";
 import { audibleAudioTracks } from "../engine/project-settings";
 import {
   useCallback,
@@ -10,6 +9,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { usePanelRef } from "react-resizable-panels";
 import { usePersistentLayout } from "./hooks/use-persistent-layout";
 import { saveStudioPreferences } from "./state/studio-preferences";
 import { PreviewAudio } from "../engine/render/audio";
@@ -22,7 +22,6 @@ import { CompositionViewer } from "./composition/composition-viewer";
 import { ErrorBanner } from "./components/error-banner";
 import { ExportPanel } from "./export/export-panel";
 import { useExportJobs } from "./export/use-export-jobs";
-import { exportJobDownload } from "../engine/export/job";
 import { ProjectHeading } from "./layout/project-heading";
 import {
   dockPaneStyle,
@@ -59,7 +58,6 @@ export function App() {
     saving: savingSettings,
     error: settingsError,
   } = useProjectSettings(sourceProject, authoredSettings, savedSettings);
-  const filename = exportFilename(project.name);
   const exportSettings = projectExportSettings(project);
   const exportFps = exportSettings.fps;
   const exportBitrate =
@@ -108,6 +106,13 @@ export function App() {
     "export",
     "source",
   ]);
+  const exportPanelRef = usePanelRef();
+  const autoSizeExport = useRef(!inspectorLayout.defaultLayout);
+  const [exportPanelHeight, setExportPanelHeight] = useState<number>();
+  useEffect(() => {
+    if (autoSizeExport.current && exportPanelHeight)
+      exportPanelRef.current?.resize(`${exportPanelHeight}px`);
+  }, [exportPanelHeight, exportPanelRef]);
   useEffect(() => {
     saveStudioPreferences({
       tlZoom: state.tlZoom,
@@ -501,6 +506,7 @@ export function App() {
 
   const renderExport = (collapsed: boolean, borderTop = false) => (
     <ExportPanel
+      onPreferredHeight={setExportPanelHeight}
       ready={
         state.ready && !state.updating && !savingSettings && exports.connected
       }
@@ -531,19 +537,6 @@ export function App() {
       hasAudio={audibleAudioTracks(project).some((track) =>
         track.clips.some((clip) => !mutedClipIds.includes(clip.id)),
       )}
-      done={exportJob?.done ?? 0}
-      total={exportJob?.total ?? 0}
-      result={
-        exportJob && !exports.exporting
-          ? exportJob.status === "completed"
-            ? `${exportJob.done} frames · ${exportJob.elapsedSeconds.toFixed(1)} seconds elapsed · ${(exportJob.bytes / 1048576).toFixed(1)} MB`
-            : exportJob.error
-          : ""
-      }
-      download={
-        exportJob?.status === "completed" ? exportJobDownload(exportJob.id) : ""
-      }
-      filename={exportJob?.filename ?? filename}
       collapsed={collapsed}
       borderTop={borderTop}
       onToggleCollapse={(next) => setExportCollapsed(next)}
@@ -631,11 +624,16 @@ export function App() {
         id="ritween-inspector"
         orientation="vertical"
         defaultLayout={inspectorLayout.defaultLayout}
-        onLayoutChanged={inspectorLayout.onLayoutChanged}
+        onLayoutChanged={(layout, metadata) => {
+          if (metadata.isUserInteraction) autoSizeExport.current = false;
+          inspectorLayout.onLayoutChanged(layout, metadata);
+        }}
       >
         <ResizablePanel
           id="export"
-          defaultSize="48%"
+          panelRef={exportPanelRef}
+          groupResizeBehavior="preserve-pixel-size"
+          defaultSize="256px"
           minSize="20%"
           style={dockPaneStyle}
         >

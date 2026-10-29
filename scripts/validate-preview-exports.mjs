@@ -158,6 +158,68 @@ try {
   await page
     .getByRole("button", { name: "Export Video", exact: true })
     .waitFor();
+  const settingsTab = page.getByRole("tab", { name: "Settings", exact: true });
+  await settingsTab.focus();
+  await page.keyboard.press("End");
+  assert.equal(
+    await page
+      .getByRole("tab", { name: /^Exports/ })
+      .getAttribute("aria-selected"),
+    "true",
+  );
+  await page.keyboard.press("Home");
+  assert.equal(await settingsTab.getAttribute("aria-selected"), "true");
+  const compactLayout = () =>
+    page
+      .getByRole("tabpanel", { name: "Settings", exact: true })
+      .evaluate((element) => {
+        const content = element.firstElementChild;
+        return {
+          height: element.clientHeight,
+          content: content.getBoundingClientRect().height,
+          scroll: element.scrollHeight,
+        };
+      });
+  await until(async () => {
+    const layout = await compactLayout();
+    return Math.abs(layout.height - layout.content) <= 2;
+  }, "export panel fits its content instead of reserving empty space");
+  const compact = await compactLayout();
+  assert.ok(
+    compact.scroll <= compact.height + 1,
+    "Default settings need no scrolling",
+  );
+  const encoding = page.locator("summary").filter({ hasText: "Encoding" });
+  await encoding.click();
+  await until(async () => {
+    const layout = await compactLayout();
+    return (
+      layout.height > compact.height + 50 &&
+      Math.abs(layout.height - layout.content) <= 2
+    );
+  }, "export panel grows with encoding controls");
+  await page.screenshot({
+    path: join(directory, "encoding.png"),
+    fullPage: true,
+  });
+  await encoding.click();
+  await until(async () => {
+    const layout = await compactLayout();
+    return Math.abs(layout.height - compact.height) <= 2;
+  }, "closing encoding returns space to scene source");
+  await page
+    .getByRole("button", { name: "About exports", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "About exports", exact: true })
+    .waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal(await page.getByRole("dialog").count(), 0);
+  await page.getByText("Runtime connected", { exact: true }).waitFor();
+  await page.screenshot({
+    path: join(directory, "settings.png"),
+    fullPage: true,
+  });
   const submitted = page.waitForResponse(
     (response) =>
       response.url().endsWith("/__ritween/exports") &&
@@ -167,7 +229,13 @@ try {
   const created = await (await submitted).json();
   const id = created.job.id;
   assert.equal(await page.evaluate(() => window.exportEncoderCreations), 0);
+  await page.getByRole("progressbar", { name: "Export progress" }).waitFor();
+  await page.screenshot({
+    path: join(directory, "running.png"),
+    fullPage: true,
+  });
   await page.reload();
+  await page.getByRole("tab", { name: /^Exports/ }).click();
   await page.locator(`[data-export-id="${id}"]`).waitFor();
   await page.close();
   page = await context.newPage();
@@ -212,19 +280,55 @@ try {
   }, id);
   assert.equal(playback.duration, 2);
   assert.equal(playback.width, 64);
+  await page.getByText("Runtime connected", { exact: true }).waitFor();
   await page.screenshot({
     path: join(directory, "completed.png"),
     fullPage: true,
   });
+  await page.getByRole("button", { name: "Switch to light mode" }).click();
+  await page.screenshot({
+    path: join(directory, "completed-light.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Switch to dark mode" }).click();
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await until(async () => {
+    const layout = await compactLayout();
+    return Math.abs(layout.height - layout.content) <= 2;
+  }, "smaller sidebar retains the content height");
+  await page.screenshot({
+    path: join(directory, "completed-narrow.png"),
+    fullPage: true,
+  });
+  const downloadButton = await page
+    .getByRole("link", { name: "Download MP4", exact: true })
+    .boundingBox();
+  const panel = await page
+    .getByRole("tabpanel", { name: "Settings", exact: true })
+    .boundingBox();
+  assert.ok(
+    downloadButton &&
+      panel &&
+      downloadButton.y >= panel.y &&
+      downloadButton.y + downloadButton.height <= panel.y + panel.height + 1,
+    "Primary download remains visible in a smaller sidebar",
+  );
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   // Unexpected termination leaves completed files recoverable on the next preview.
   await stop("SIGKILL");
   await start();
   await page.goto(url);
+  await page.getByRole("tab", { name: /^Exports/ }).click();
   await page
     .locator(`[data-export-id="${id}"]`)
-    .getByText(/recovered after an unexpected shutdown/)
+    .getByText(/Recovered/)
     .waitFor();
+  await page.getByText("Runtime connected", { exact: true }).waitFor();
+  await page.screenshot({
+    path: join(directory, "recovered-files.png"),
+    fullPage: true,
+  });
   assert.equal(
     (await fetch(`${url}/__ritween/exports/${id}/file`)).status,
     200,
@@ -239,6 +343,7 @@ try {
   );
 
   // Cancel a real headless job and prove that the renderer queue remains usable.
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Export Video", exact: true }).click();
   const active = await until(
     async () => (await jobs()).find((job) => job.status === "running"),
@@ -287,6 +392,9 @@ try {
         playback,
         checks: [
           "real CLI",
+          "compact settings without scrolling",
+          "keyboard tab navigation and contextual help",
+          "light/dark and smaller sidebar layouts",
           "no tab-side encoding",
           "refresh and closed-tab survival",
           "MP4 download/playback",

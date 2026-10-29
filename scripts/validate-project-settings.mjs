@@ -111,7 +111,23 @@ try {
   };
   await choose("resolution", "360x360");
   await choose("fps", "24");
+  await page.locator("summary").filter({ hasText: "Encoding" }).click();
+  assert.equal(
+    await page.locator('#encoding-mode option[value="quality"]').textContent(),
+    "Quality · recommended",
+  );
+  assert.equal(
+    await page.locator('#keyframe-interval option[value="2"]').textContent(),
+    "Every 2s · recommended",
+  );
   await choose("video-bitrate", "2000000");
+  assert.equal(
+    (
+      await page.locator('#video-bitrate option[value="0"]').textContent()
+    ).trim(),
+    "Auto · 0.5 Mbps · recommended",
+    "Auto recommendation stays resolution-derived when a manual bitrate is selected",
+  );
   await choose("encoding-mode", "realtime");
   await choose("keyframe-interval", "4");
   const savedExport = {
@@ -135,6 +151,7 @@ try {
     ["keyframe-interval", "4"],
   ])
     assert.equal(await page.locator(`#${id}`).inputValue(), value);
+  await page.locator("summary").filter({ hasText: "Encoding" }).click();
   await choose("video-bitrate", "0");
   assert.equal(
     JSON.parse(await readFile(settingsPath(manifest), "utf8")).export.bitrate,

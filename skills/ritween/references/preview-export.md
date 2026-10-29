@@ -17,7 +17,7 @@ There is no scaffold command. Do not pass `--time` or `-o` to `preview` expectin
 Exporting from `ritween preview` runs in headless Chrome/Chromium on the server,
 not in the Studio tab. Refreshing or closing the tab does not cancel the job;
 reopen the same server to follow progress or download a completed result.
-**Server exports** lists retained jobs and offers download, cancel, and delete.
+The **Exports** tab lists retained jobs and offers download, cancel, and delete.
 
 Server files are temporary: download videos you want to keep before stopping the
 server. Normal shutdown deletes managed files, including recovered results, but

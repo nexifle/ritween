@@ -51,16 +51,7 @@ export async function startServer({
             ],
           },
         },
-        projectPlugin(project.manifest, join(builtRoot, "schema.js"), true),
-        {
-          name: "ritween-built-runtime-reload",
-          handleHotUpdate(context) {
-            if (!context.file.startsWith(builtRoot + "/")) {
-              context.server.ws.send({ type: "full-reload" });
-              return [];
-            }
-          },
-        },
+        projectPlugin(project.manifest, join(builtRoot, "schema.js")),
         react({
           exclude: [/\/node_modules\//, `${normalizePath(builtRoot)}/**`],
         }),

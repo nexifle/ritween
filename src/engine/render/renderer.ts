@@ -121,6 +121,29 @@ export class Renderer {
       throw error;
     }
   }
+  /** Release canvas ownership without destroying the prepared scenes. */
+  detachCanvas() {
+    if (this.configured) this.context.unconfigure();
+    this.configured = false;
+  }
+  /** Attach a prepared preview only after its replacement is ready to commit. */
+  attachCanvas(canvas: HTMLCanvasElement) {
+    if (this.disposed) throw Error("Renderer is disposed.");
+    const context = canvas.getContext("webgpu") as GPUCanvasContext | null;
+    if (!context) throw Error("Could not create the WebGPU canvas context.");
+    if (canvas.width !== this.resolution[0]) canvas.width = this.resolution[0];
+    if (canvas.height !== this.resolution[1])
+      canvas.height = this.resolution[1];
+    context.configure({
+      device: this.device,
+      format: this.format,
+      alphaMode: "opaque",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+    if (this.configured && this.context !== context) this.context.unconfigure();
+    this.context = context;
+    this.configured = true;
+  }
   render(time: number) {
     if (this.disposed) throw Error("Renderer is disposed.");
     const evaluation = evaluate(this.project, time);
@@ -212,7 +235,14 @@ export class Renderer {
       new DOMException("Renderer was disposed.", "AbortError"),
     );
     try {
-      for (const scene of this.scenes.values()) scene.dispose();
+      for (const [id, scene] of this.scenes) {
+        try {
+          scene.dispose();
+        } catch (error) {
+          // A custom scene must not prevent cleanup of the remaining resources.
+          console.error(`Could not dispose scene ${id}:`, error);
+        }
+      }
     } finally {
       this.scenes.clear();
       try {

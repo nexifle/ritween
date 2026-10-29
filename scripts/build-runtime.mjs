@@ -8,7 +8,11 @@ import { resolve, relative, dirname } from "node:path";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const outDir = resolve(root, "dist");
 await rm(outDir, { recursive: true, force: true });
-const virtual = ["virtual:ritween-project", "virtual:ritween-sources"];
+const virtual = [
+  "virtual:ritween-project",
+  "virtual:ritween-sources",
+  "virtual:ritween-live",
+];
 await build({
   configFile: false,
   root,
@@ -64,6 +68,8 @@ const html = (await readFile(resolve(root, "index.html"), "utf8"))
   .replace('src="/src/main.tsx"', 'src="/studio.js"')
   .replace("</head>", '<link rel="stylesheet" href="/studio.css"></head>');
 await writeFile(resolve(outDir, "index.html"), html);
+// Keep the studio icon available when a project supplies its own public directory.
+await cp(resolve(root, "public/favicon.svg"), resolve(outDir, "favicon.svg"));
 await cp(resolve(root, "public"), resolve(outDir, "public"), {
   recursive: true,
 });

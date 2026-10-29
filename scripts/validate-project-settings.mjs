@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { normalizePath } from "vite";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -204,42 +205,48 @@ try {
   // A fresh CLI renderer uses persisted settings without studio state/options.
   await page.goto(`${running.url}/__ritween/render`);
   await page.waitForFunction(() => !!window.ritween);
-  const report = await page.evaluate(async () => {
-    const { project } = await import("/@id/virtual:ritween-project");
-    const { renderAudio } = await import("/src/engine/render/audio.ts");
-    globalThis.schedules = {};
-    const mix = await renderAudio(project, [], 30);
-    const partial = {
-      schedules: { ...globalThis.schedules },
-      samples: mix.length,
-      audible: mix.getChannelData(0).some((value) => Math.abs(value) > 0.001),
-    };
-    const allMuted = {
-      ...project,
-      settings: {
-        version: 1,
-        audioTracks: { voice: { muted: true }, music: { muted: true } },
-      },
-    };
-    globalThis.schedules = {};
-    const silent = await renderAudio(allMuted, [], 30);
-    const { exportMp4: exportVideo } =
-      await import("/src/engine/export/formats/mp4/export-mp4.ts");
-    const videoOnly = await exportVideo(allMuted, {
-      width: 64,
-      height: 64,
-      fps: 30,
-    });
-    const mp4 = new TextDecoder("latin1").decode(
-      await videoOnly.blob.arrayBuffer(),
-    );
-    return {
-      partial,
-      noSoundtrack: silent === null,
-      videoOnly: mp4.includes("vide") && !mp4.includes("soun"),
-      silentSchedules: globalThis.schedules,
-    };
-  });
+  const report = await page.evaluate(
+    async (sourceRoot) => {
+      const { project } = await import("/@id/virtual:ritween-project");
+      const { renderAudio } = await import(
+        `${sourceRoot}/engine/render/audio.ts`
+      );
+      globalThis.schedules = {};
+      const mix = await renderAudio(project, [], 30);
+      const partial = {
+        schedules: { ...globalThis.schedules },
+        samples: mix.length,
+        audible: mix.getChannelData(0).some((value) => Math.abs(value) > 0.001),
+      };
+      const allMuted = {
+        ...project,
+        settings: {
+          version: 1,
+          audioTracks: { voice: { muted: true }, music: { muted: true } },
+        },
+      };
+      globalThis.schedules = {};
+      const silent = await renderAudio(allMuted, [], 30);
+      const { exportMp4: exportVideo } = await import(
+        `${sourceRoot}/engine/export/formats/mp4/export-mp4.ts`
+      );
+      const videoOnly = await exportVideo(allMuted, {
+        width: 64,
+        height: 64,
+        fps: 30,
+      });
+      const mp4 = new TextDecoder("latin1").decode(
+        await videoOnly.blob.arrayBuffer(),
+      );
+      return {
+        partial,
+        noSoundtrack: silent === null,
+        videoOnly: mp4.includes("vide") && !mp4.includes("soun"),
+        silentSchedules: globalThis.schedules,
+      };
+    },
+    `/@fs/${normalizePath(process.cwd())}/src`,
+  );
   assert.deepEqual(report.partial.schedules, { music: 1 });
   assert.equal(report.partial.samples, 48000);
   assert.equal(report.partial.audible, true);

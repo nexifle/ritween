@@ -26,6 +26,7 @@ export function ExportPanel({
   total,
   result,
   download,
+  filename,
   collapsed,
   onToggleCollapse,
   onResolution,
@@ -54,6 +55,7 @@ export function ExportPanel({
   total: number;
   result: string;
   download: string;
+  filename: string;
   collapsed?: boolean;
   onToggleCollapse?: (collapsed: boolean) => void;
   onResolution: (resolution: string) => void;
@@ -456,7 +458,7 @@ export function ExportPanel({
             <div className="flex items-center gap-1.5 pt-0.5">
               <a
                 href={download}
-                download="source-to-motion.mp4"
+                download={filename}
                 className="flex h-7.5 flex-1 items-center justify-center gap-1.5 rounded-sm bg-primary px-3 text-[11px] font-semibold text-primary-foreground shadow-xs transition-colors hover:bg-primary-hover"
               >
                 <Icon name="export" size={13} />

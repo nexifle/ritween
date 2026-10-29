@@ -62,7 +62,7 @@ Preview your own project by pointing Ritween to its directory or manifest:
 ritween preview --project /path/to/project --open
 ```
 
-The CLI prints the local studio URL. Source changes reload automatically.
+The CLI prints the local studio URL. Scene, helper, manifest, and project-settings edits update the preview without reloading the studio, preserving the playhead and view controls. Invalid updates keep the last working preview until the code is fixed; updates received during export are applied after it finishes.
 
 Visit **[ritween.nexifle.com](https://ritween.nexifle.com)** for the Ritween website.
 
@@ -244,7 +244,7 @@ npm ci
 npm run dev
 ```
 
-Open [localhost:5173](http://localhost:5173). Vite reloads changes to scenes and the manifest.
+Open [localhost:5173](http://localhost:5173). Scene and manifest edits update the composition while the studio stays mounted.
 
 Run tests and create a production build:
 
@@ -264,12 +264,13 @@ npm run test:preview
 npm run test:project-settings
 npm run test:studio-preferences
 npm run test:cli
+npm run test:live-preview # Build first; starts its own CLI server and Chrome.
 
 # Start npm run dev in another terminal; Google Chrome must be installed.
 npm run test:browser
 ```
 
-Browser validation requires actual GPU and codec support. `BASE_URL` and `CHROME_CHANNEL` override the browser validation defaults. Generated media and reports go into the ignored `artifacts/` directory.
+Browser validation requires actual GPU and codec support. `BASE_URL` and `CHROME_CHANNEL` override the browser validation defaults. Generated media and reports go into the ignored `artifacts/` directory. `test:live-preview` verifies visual scene/helper updates, state preservation, error recovery, superseded updates, and settings HMR; set `CLI_BINARY` to an independently installed Ritween executable to run the same checks against a packaged release.
 
 ```text
 src/engine/    Timeline, GPU rendering, audio, codecs, and MP4 muxing

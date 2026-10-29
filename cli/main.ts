@@ -15,10 +15,22 @@ import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { parseOptions, help } from "./options.ts";
+import { exportFilename } from "../src/engine/export/filename";
 import { resolveProject } from "./project.ts";
 import { startServer } from "./server.ts";
 import { chromium } from "playwright-core";
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+async function checkOutput(output: string, force?: boolean) {
+  if (force) return;
+  try {
+    await access(output);
+    throw Error(`Output exists: ${output}. Pass --force to replace it.`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
 export async function main(argv = process.argv.slice(2)) {
   let options:
     Extract<ReturnType<typeof parseOptions>, { command: string }> | undefined;
@@ -60,15 +72,11 @@ export async function main(argv = process.argv.slice(2)) {
       activeOptions.demo,
       runtimeRoot,
     );
-    const output = resolve(activeOptions.output);
-    if (activeOptions.command !== "preview" && !activeOptions.force) {
-      try {
-        await access(output);
-        throw Error(`Output exists: ${output}. Pass --force to replace it.`);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    }
+    if (
+      activeOptions.command !== "preview" &&
+      activeOptions.output !== undefined
+    )
+      await checkOutput(resolve(activeOptions.output), activeOptions.force);
     process.on("SIGINT", interrupt);
     process.on("SIGTERM", interrupt);
     if (activeOptions.command !== "preview")
@@ -213,6 +221,11 @@ export async function main(argv = process.argv.slice(2)) {
         );
       if (failures.length) throw Error(failures.join("\n"));
       const metadata = await page.evaluate(() => window.ritween.metadata());
+      const output = resolve(
+        activeOptions.output ?? exportFilename(metadata.name),
+      );
+      if (activeOptions.output === undefined)
+        await checkOutput(output, activeOptions.force);
       if (
         activeOptions.command === "frame" &&
         activeOptions.time > metadata.duration

@@ -7,7 +7,7 @@ Ritween serves source-authored video projects, renders a timestamp to PNG, and e
 Requires Node.js 22.18.0+ and an installed Chrome. In a checkout, run `npm install` and `npm run build`, then:
 
 ```sh
-# Serve the current project, with live source reload
+# Serve the current project, with state-preserving live source updates
 node bin/ritween.mjs preview --open
 
 # PNG at an absolute timeline timestamp
@@ -27,7 +27,7 @@ node bin/ritween.mjs export -o artifacts/video.mp4 --resolution 1080p --fps 60
 
 ## Install the command
 
-The published package ships compiled JavaScript in `dist/` and SDK declarations in `types/`, not the framework's `src/`. The SDK resolves to `dist/index.js`; the command runs `dist/cli.js`. Studio, renderer, and demo modules are built before publishing. Vite remains responsible for compiling user-authored TS/TSX projects, not framework sources. Built preview reloads the page after project or settings changes.
+The published package ships compiled JavaScript in `dist/` and SDK declarations in `types/`, not the framework's `src/`. The SDK resolves to `dist/index.js`; the command runs `dist/cli.js`. Studio, renderer, and demo modules are built before publishing. Vite remains responsible for compiling user-authored TS/TSX projects, not framework sources. Built preview applies project and settings changes through a development-only HMR bridge, without reloading the studio. It preserves playback position, zoom/pan, layout, monitor controls, and surviving scene selections; shorter compositions clamp the playhead. A new runtime is prepared before replacing the active one, so syntax/import/setup errors leave the last working preview available. Rapid edits discard superseded candidates. Updates received during export are deferred until the export finishes. Changes to public assets or server configuration may still use Vite's full-reload/restart fallback.
 
 The published package is a Node program. `npm install -g` links `ritween` to `bin/ritween.mjs`, which runs on the Node.js already on the machine. npm installs the runtime dependencies for that platform, including Vite, React, Tailwind, and Playwright Core. It does not download a browser and it does not embed a second JavaScript runtime.
 
@@ -61,7 +61,7 @@ import type { Project, Scene } from "ritween";
 // Create your scene factories and export a Project; see AI_AUTHORING.md.
 ```
 
-Web preview binds only to `127.0.0.1`, defaults to port 5173, and reports the actual URL if that port is busy. `--port 0` chooses an available port. Source changes trigger HMR or reload. Ctrl+C closes the server. Frame and export commands start a temporary private server and headless browser, save the result and close both automatically.
+Web preview binds only to `127.0.0.1`, defaults to port 5173, and reports the actual URL if that port is busy. `--port 0` chooses an available port. Imported source changes trigger state-preserving HMR; public assets may trigger an automatic page reload. Ctrl+C closes the server. Frame and export commands start a temporary private server and headless browser, save the result and close both automatically.
 
 ## Imported video activation
 
@@ -107,7 +107,7 @@ bytes or a guarantee that every asset used incremental loading.
 
 - `frame`: native WebGPU OffscreenCanvas → PNG via `convertToBlob`, at the project base resolution unless overridden with `--resolution WIDTHxHEIGHT` or 360p/720p/1080p. This is a single-image operation, not a screenshot-based video export.
 - `export`: the existing OffscreenCanvas → VideoFrame → H.264 VideoEncoder pipeline, plus a 48 kHz AAC mix from the project's audio tracks, written by the custom MP4 muxer. `360p`, `720p`, and `1080p` are only 640×360, 1280×720, and 1920×1080. Any other aspect uses even `WIDTHxHEIGHT` with the same aspect as the project. 9:16 full HD is `1080x1920`. Steps use a short side of 360, 720, or 1080 when the frame fits H.264 Level 4.2. Omitting `--resolution` exports the short-side 720 step at 30 FPS, which is not full HD. A mismatched aspect is an error. All frames are evaluated deterministically at frameIndex/FPS. A project with no audio tracks stays video-only. `frame` does not render audio.
-- Output defaults to `frame.png` or `video.mp4` in the invoking directory. Parents are created automatically. PNG and MP4 extensions are enforced. An existing output fails unless `--force` is provided. Rendering happens before committing the completed output; a failed render does not replace an existing file.
+- Output defaults to `frame.png` for frames, or a filename derived from the manifest's `project.name` for MP4 exports (for example, `Source to motion` → `source-to-motion.mp4`), in the invoking directory. Studio downloads use the same MP4 naming rule. Names are lowercased, separators and unsafe characters become hyphens, Unicode letters are preserved, and empty names fall back to `video.mp4`. Pass `-o` or `--output` to override the CLI output path. Parents are created automatically. PNG and MP4 extensions are enforced. An existing output fails unless `--force` is provided. Rendering happens before committing the completed output; a failed render does not replace an existing file.
 - `--time` is in seconds, between zero and composition duration inclusive. `--frame` is a nonnegative, zero-based index divided by `--fps`; it cannot be combined with `--time`.
 - `--json` emits one successful result object on stdout. Export progress is JSON Lines on stderr, followed by a result including output path, dimensions, FPS, frames, duration, bytes and elapsed seconds. Errors emit an `event: "error"` object on stderr and exit nonzero. Web preview emits its URL and remains running.
 - Exit codes: 0 success, 1 error/timeout, 130 cancelled frame/export. Ctrl+C on an idle web preview exits 0. `--timeout 120` bounds headless startup/render/export; browser resources are closed on timeout or interruption. Elapsed CLI time includes server/browser startup, rendering and file saving, unlike the earlier export-only benchmark.

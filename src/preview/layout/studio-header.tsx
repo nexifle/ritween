@@ -60,12 +60,8 @@ export function StudioHeader() {
           </svg>
         </span>
         ritween
-        <span className="ml-[3px] rounded-sm border border-badge px-1.5 py-0.5 text-[11px] font-medium tracking-normal text-badge-foreground">
-          dev preview
-        </span>
       </a>
       <div className="flex items-center gap-[22px] text-xs/normal text-muted-foreground">
-        <span className="hidden sm:inline">Code authored. Frame perfect.</span>
         <button
           type="button"
           aria-label={
@@ -78,14 +74,6 @@ export function StudioHeader() {
           <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
           {theme === "dark" ? "Light" : "Dark"}
         </button>
-        <a
-          href="https://github.com/gpuweb/gpuweb"
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-[7px] hover:text-accent-foreground"
-        >
-          <Icon name="code" size={15} /> WebGPU runtime
-        </a>
       </div>
     </header>
   );

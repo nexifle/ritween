@@ -1,10 +1,13 @@
 import { projectExportSettings } from "../engine/export/project-settings";
+import { exportFilename } from "../engine/export/filename";
 import { audibleAudioTracks } from "../engine/project-settings";
 import {
   useCallback,
   useEffect,
   useReducer,
   useRef,
+  useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { usePersistentLayout } from "./hooks/use-persistent-layout";
@@ -13,13 +16,8 @@ import { PreviewAudio } from "../engine/render/audio";
 import { exportSizes } from "../engine/export/formats/mp4/sizes";
 import { Renderer } from "../engine/render/renderer";
 import { evaluate, frameCount } from "../engine/timeline";
-import {
-  project as authoredProject,
-  authoredSettings,
-  savedSettings,
-} from "virtual:ritween-project";
+import { getSnapshot, subscribe } from "virtual:ritween-live";
 import { useProjectSettings } from "./state/use-project-settings";
-import { sources } from "virtual:ritween-sources";
 import { CompositionViewer } from "./composition/composition-viewer";
 import { ErrorBanner } from "./components/error-banner";
 import { ExportPanel } from "./export/export-panel";
@@ -41,9 +39,14 @@ import { Transport } from "./playback/transport";
 
 import { resolveMediaProject } from "../engine/media/project";
 
-const sourceProject = resolveMediaProject(authoredProject);
-
 export function App() {
+  const incoming = useSyncExternalStore(subscribe, getSnapshot);
+  const [committed, setCommitted] = useState(() => ({
+    ...incoming,
+    project: resolveMediaProject(incoming.project),
+  }));
+  const { project: sourceProject, authoredSettings, savedSettings } = committed;
+  const { sources } = incoming;
   const {
     project,
     mutedTrackIds,
@@ -54,6 +57,7 @@ export function App() {
     saving: savingSettings,
     error: settingsError,
   } = useProjectSettings(sourceProject, authoredSettings, savedSettings);
+  const filename = exportFilename(project.name);
   const exportSettings = projectExportSettings(project);
   const exportFps = exportSettings.fps;
   const exportBitrate =
@@ -81,6 +85,10 @@ export function App() {
   const alive = useRef(true);
   const audio = useRef<PreviewAudio | null>(null);
   const timeRef = useRef(0);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const appliedRevision = useRef(-1);
+  const resumeAfterUpdate = useRef(false);
   const previewRequest = useRef<number | null>(null);
   const previewAbort = useRef<AbortController | null>(null);
   const previewActiveTime = useRef<number | null>(null);
@@ -176,48 +184,11 @@ export function App() {
   timeRef.current = state.time;
   useEffect(() => {
     alive.current = true;
-    let cancelled = false;
-    const initialization = new AbortController();
-    const player = mix();
-    const picture = Renderer.create(
-      canvas.current!,
-      project,
-      (error) => {
-        if (!cancelled) patch({ error, playing: false, ready: false });
-      },
-      initialization.signal,
-    ).then(async (r) => {
-      if (cancelled) {
-        r.dispose();
-        return;
-      }
-      renderer.current = r;
-      await r.renderAsync(0, initialization.signal);
-      renderedPreviewTime.current = 0;
-    });
-    // Download/decode and record the score alongside GPU setup. Once the
-    // transport is enabled, first Play has the same prepared score as replay.
-    void Promise.all([picture, player.prepare(project)])
-      .then(() => {
-        if (!cancelled) patch({ ready: true });
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          patch({ error: String(e instanceof Error ? e.message : e) });
-          cancelled = true;
-          initialization.abort();
-          player.dispose();
-          renderer.current?.dispose();
-          renderer.current = null;
-        }
-      });
     return () => {
       alive.current = false;
-      cancelled = true;
-      initialization.abort();
+      appliedRevision.current = -1;
       previewRequest.current = null;
       previewAbort.current?.abort();
-      previewAbort.current = null;
       abort.current?.abort();
       renderer.current?.dispose();
       renderer.current = null;
@@ -227,6 +198,111 @@ export function App() {
     };
   }, []);
   useEffect(() => {
+    if (incoming.error) patch({ error: incoming.error });
+  }, [incoming.error]);
+  useEffect(() => {
+    // An export owns its project snapshot until it finishes. Only the latest
+    // incoming revision is prepared once the export releases its resources.
+    if (state.exporting || appliedRevision.current === incoming.revision)
+      return;
+    const initialization = new AbortController();
+    let candidate: Renderer | null = null;
+    const player = new PreviewAudio();
+    let installed = false;
+    if (!stateRef.current.updating)
+      resumeAfterUpdate.current = stateRef.current.playing;
+    patch({ updating: true, playing: false });
+    audio.current?.stop();
+    previewRequest.current = null;
+    previewAbort.current?.abort();
+
+    const prepare = async () => {
+      const next = resolveMediaProject(incoming.project);
+      const staging = document.createElement("canvas");
+      [staging.width, staging.height] = next.resolution;
+      let gpuError = "";
+      const picture = Renderer.create(
+        staging,
+        next,
+        (error) => {
+          gpuError = error;
+          if (installed && renderer.current === candidate)
+            patch({ error, playing: false });
+        },
+        initialization.signal,
+      ).then((value) => {
+        candidate = value;
+        if (initialization.signal.aborted) value.dispose();
+        initialization.signal.throwIfAborted();
+        return value;
+      });
+      await Promise.all([picture, player.prepare(next)]);
+      initialization.signal.throwIfAborted();
+      const time = Math.min(timeRef.current, next.duration);
+      await candidate!.renderAsync(time, initialization.signal);
+      initialization.signal.throwIfAborted();
+      if (gpuError) throw Error(gpuError);
+
+      // Setup and the first frame succeeded without touching the active canvas.
+      // Transfer ownership synchronously; disposal must not unconfigure its new owner.
+      const previous = renderer.current;
+      previous?.detachCanvas();
+      try {
+        candidate!.attachCanvas(canvas.current!);
+      } catch (error) {
+        candidate?.dispose();
+        candidate = null;
+        previous?.attachCanvas(canvas.current!);
+        renderedPreviewTime.current = null;
+        requestPreviewFrame(timeRef.current);
+        throw error;
+      }
+      renderer.current = candidate;
+      const previousAudio = audio.current;
+      audio.current = player;
+      installed = true;
+      previous?.dispose();
+      previousAudio?.dispose();
+      player.setMonitor(
+        stateRef.current.volumeDb,
+        stateRef.current.masterMuted,
+      );
+      renderedPreviewTime.current = null;
+      timeRef.current = time;
+      if (resultUrl.current) URL.revokeObjectURL(resultUrl.current);
+      resultUrl.current = "";
+      appliedRevision.current = incoming.revision;
+      setCommitted({ ...incoming, project: next });
+      dispatch({
+        type: "project",
+        duration: next.duration,
+        total: frameCount(next.duration, projectExportSettings(next).fps),
+        sceneIds: next.scenes.map((scene) => scene.id),
+        playing: resumeAfterUpdate.current,
+      });
+      if (getSnapshot().error) patch({ error: getSnapshot().error });
+    };
+    void prepare().catch((error) => {
+      if (!initialization.signal.aborted)
+        patch({
+          updating: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      initialization.abort();
+      if (!installed) {
+        candidate?.dispose();
+        player.dispose();
+      }
+    });
+    return () => {
+      if (!installed) {
+        initialization.abort();
+        candidate?.dispose();
+        player.dispose();
+      }
+    };
+  }, [incoming.revision, state.exporting]);
+  useEffect(() => {
     if (!state.ready) {
       previewRequest.current = null;
       previewAbort.current?.abort();
@@ -234,7 +310,7 @@ export function App() {
     }
     if (renderedPreviewTime.current !== state.time || previewRunning.current)
       requestPreviewFrame(state.time);
-  }, [state.time, state.ready]);
+  }, [state.time, state.ready, committed.revision]);
   const mutedKey = JSON.stringify([mutedTrackIds, mutedClipIds]);
   useEffect(() => {
     void audio.current?.setMuted(mutedTrackIds, mutedClipIds).catch((error) => {
@@ -245,12 +321,12 @@ export function App() {
           error: error instanceof Error ? error.message : String(error),
         });
     });
-  }, [mutedKey]);
+  }, [mutedKey, committed.revision]);
   useEffect(() => {
     const player = audio.current;
     if (!player) return;
     player.setMonitor(state.volumeDb, state.masterMuted);
-  }, [state.volumeDb, state.masterMuted]);
+  }, [state.volumeDb, state.masterMuted, committed.revision]);
   useEffect(() => {
     if (!state.playing) {
       audio.current?.stop();
@@ -288,16 +364,19 @@ export function App() {
       cancelAnimationFrame(id);
       player.stop();
     };
-  }, [state.playing]);
+  }, [state.playing, committed.revision]);
   useEffect(() => {
     const onHide = () => {
-      if (document.hidden) dispatch({ type: "pause" });
+      if (document.hidden) {
+        resumeAfterUpdate.current = false;
+        dispatch({ type: "pause" });
+      }
     };
     document.addEventListener("visibilitychange", onHide);
     return () => document.removeEventListener("visibilitychange", onHide);
   }, []);
   const toggle = () => {
-    if (!state.ready || state.exporting) return;
+    if (!state.ready || state.updating || state.exporting) return;
     if (
       !state.playing &&
       project.audioTracks?.some((track) => track.clips.length)
@@ -356,9 +435,22 @@ export function App() {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [state.time, state.playing, state.ready, exportFps, state.exporting]);
+  }, [
+    state.time,
+    state.playing,
+    state.ready,
+    state.updating,
+    exportFps,
+    state.exporting,
+  ]);
   async function startExport() {
-    if (savingSettings || state.exporting || !exportResolution) return;
+    if (
+      savingSettings ||
+      state.updating ||
+      state.exporting ||
+      !exportResolution
+    )
+      return;
     const controller = new AbortController();
     abort.current = controller;
     audio.current?.stop();
@@ -422,7 +514,7 @@ export function App() {
       });
       const a = document.createElement("a");
       a.href = url;
-      a.download = "source-to-motion.mp4";
+      a.download = filename;
       a.click();
     } catch (e) {
       if (alive.current) {
@@ -474,7 +566,7 @@ export function App() {
 
   const renderExport = (collapsed: boolean, borderTop = false) => (
     <ExportPanel
-      ready={state.ready && !savingSettings}
+      ready={state.ready && !state.updating && !savingSettings}
       savingSettings={savingSettings}
       exporting={state.exporting}
       stage={state.exportStage}
@@ -502,6 +594,7 @@ export function App() {
       total={state.total}
       result={state.result}
       download={state.download}
+      filename={filename}
       collapsed={collapsed}
       borderTop={borderTop}
       onToggleCollapse={(next) => setExportCollapsed(next)}
@@ -645,7 +738,7 @@ export function App() {
                 source={state.sourceOpen ? sceneSource : null}
               >
                 <Transport
-                  ready={state.ready && !state.exporting}
+                  ready={state.ready && !state.updating && !state.exporting}
                   playing={state.playing}
                   time={state.time}
                   duration={project.duration}

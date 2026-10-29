@@ -76,6 +76,7 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
       "dist/schema.js",
       "dist/demo/manifest.js",
       "dist/index.html",
+      "dist/favicon.svg",
       "types/index.d.ts",
       "types/engine/project-settings-schema.d.ts",
       "types/engine/export/formats/mp4/size-constraints.d.ts",

@@ -7,12 +7,12 @@ description: >-
   or MP4 export, even without an explicit request for a skill. Not intended for
   developing framework internals or working with other video frameworks.
 metadata:
-  ritween-version: "0.2.0"
+  ritween-version: "0.2.2"
 ---
 
 # Creating videos with Ritween
 
-Help the user produce a runnable project, not just code snippets. This skill targets Ritween 0.2.0. Check the installed version before using examples; for a different version, inspect its types and CLI help. Do not automatically change the user's dependency version.
+Help the user produce a runnable project, not just code snippets. This skill targets Ritween 0.2.2. Check the installed version before using examples; for a different version, inspect its types and CLI help. Do not automatically change the user's dependency version.
 
 ## Workflow
 
@@ -65,10 +65,12 @@ Use a small structure that requires neither framework source files nor a custom 
 
 ```text
 my-video/
-  package.json
-  manifest.ts
-  scenes/
-    main.ts
+  src/
+    scenes/
+      *.ts
+    audio/
+      *.ts
+    manifest.ts
   public/       # Optional user assets
 ```
 

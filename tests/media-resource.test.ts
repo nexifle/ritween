@@ -8,6 +8,7 @@ import {
 } from "../src/engine/media/resource";
 import {
   audioFile,
+  audioDecodeOriginUs,
   fadeGain,
   pcmChunkRange,
   pcmClipRange,
@@ -305,6 +306,45 @@ test("PCM clips audio to edit bounds while retaining leading empty-edit silence"
   assert.equal(emptyEdit.frameCount, 22_050);
   assert.equal(emptyEdit.audibleStartFrame >= emptyEdit.clipEndFrame, true);
   assert.equal(pcmChunkRange(0, 1_024, emptyEdit), null);
+});
+
+test("AAC preroll is decoded on a non-negative clock and PCM returns to movie time", () => {
+  const origin = audioDecodeOriginUs(-2112 / 48_000);
+  assert.equal(origin, -44_000);
+  const packetPts = [-44_000, -22_667, -1_333, 20_000];
+  const decoderPts = packetPts.map((pts) => pts - origin);
+  assert.equal(decoderPts[0], 0);
+  assert.ok(decoderPts.every((pts) => pts >= 0));
+  assert.deepEqual(
+    decoderPts.map((pts) => pts + origin),
+    packetPts,
+  );
+
+  const range = pcmClipRange(0.5, 2, 0, 3, 48_000);
+  assert.ok(range);
+  // A source pulse at 1.006 s must land at 0.506 s after a 0.5 s trim.
+  const nativeOutputPts = 1_006_000 - origin;
+  const mapped = pcmChunkRange(nativeOutputPts + origin, 1024, range);
+  assert.ok(mapped);
+  assert.equal(mapped.targetStart, Math.round(0.506 * 48_000));
+  const uncorrected = pcmChunkRange(nativeOutputPts, 1024, range);
+  assert.ok(uncorrected);
+  assert.equal(uncorrected.targetStart - mapped.targetStart, 2112);
+});
+
+test("AAC clock leaves non-negative PTS and leading empty edits unchanged", () => {
+  for (const first of [0, 0.5]) {
+    assert.equal(audioDecodeOriginUs(first), 0);
+  }
+  for (const first of [NaN, Infinity, -Infinity]) {
+    assert.throws(() => audioDecodeOriginUs(first), /timestamp/);
+  }
+  const range = pcmClipRange(0, 2, 0.5, 2, 48_000);
+  assert.ok(range);
+  assert.equal(pcmChunkRange(0, 1024, range), null);
+  const audible = pcmChunkRange(500_000, 1024, range);
+  assert.ok(audible);
+  assert.equal(audible.targetStart, 24_000);
 });
 
 test("PCM chunks map continuously on a nearest-sample 44.1 kHz grid", () => {

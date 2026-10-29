@@ -1,4 +1,46 @@
-export const MAX_ASSET_BYTES = 128 * 2 ** 20;
+import { MAX_ASSET_BYTES } from "./limits";
+
+export { MAX_ASSET_BYTES } from "./limits";
+
+const MAX_ASSET_REQUESTS = 4;
+let activeRequests = 0;
+const requestWaiters = new Set<() => void>();
+
+/** Hold the slot until the body is read, not just until headers arrive. */
+export async function withAssetRequest<T>(
+  signal: AbortSignal | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  while (activeRequests >= MAX_ASSET_REQUESTS) {
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        requestWaiters.delete(wake);
+        signal?.removeEventListener("abort", abort);
+      };
+      const wake = () => {
+        cleanup();
+        resolve();
+      };
+      const abort = () => {
+        cleanup();
+        reject(signal!.reason);
+      };
+      if (signal?.aborted) reject(signal.reason);
+      else {
+        requestWaiters.add(wake);
+        signal?.addEventListener("abort", abort, { once: true });
+      }
+    });
+  }
+  signal?.throwIfAborted();
+  activeRequests++;
+  try {
+    return await run();
+  } finally {
+    activeRequests--;
+    requestWaiters.values().next().value?.();
+  }
+}
 
 /** Resolve only same-origin HTTP(S) asset URLs; file URLs are never fetchable. */
 export function resolveAssetUrl(input: string, baseHref?: string) {
@@ -34,7 +76,9 @@ function contentLength(response: Response) {
   if (!Number.isSafeInteger(length))
     throw Error("Asset Content-Length exceeds the safe integer range.");
   if (length > MAX_ASSET_BYTES)
-    throw Error("Asset exceeds the 128 MiB encoded resource limit.");
+    throw Error(
+      `Asset exceeds the ${MAX_ASSET_BYTES / 2 ** 20} MiB encoded resource limit.`,
+    );
   return length;
 }
 
@@ -44,13 +88,13 @@ export async function readAssetResponse(
   signal?: AbortSignal,
   maxBytes = MAX_ASSET_BYTES,
 ) {
-  signal?.throwIfAborted();
-  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
-    throw Error("Asset byte limit must be a positive safe integer.");
-  if (!response.ok)
-    throw Error(`Asset request failed with HTTP ${response.status}.`);
   let advertised: number | null;
   try {
+    signal?.throwIfAborted();
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
+      throw Error("Asset byte limit must be a positive safe integer.");
+    if (!response.ok)
+      throw Error(`Asset request failed with HTTP ${response.status}.`);
     advertised = contentLength(response);
     if (advertised !== null && advertised > maxBytes)
       throw Error(
@@ -86,7 +130,15 @@ export async function readAssetResponse(
       length += value.byteLength;
     }
     signal?.throwIfAborted();
+    const encoding = response.headers.get("content-encoding");
+    if (
+      advertised !== null &&
+      (!encoding || encoding === "identity") &&
+      length !== advertised
+    )
+      throw Error("Asset response length does not match Content-Length.");
   } catch (error) {
+    await reader.cancel(error).catch(() => {});
     if (signal?.aborted) signal.throwIfAborted();
     throw error;
   } finally {
@@ -107,12 +159,13 @@ export async function readAssetResponse(
 export async function fetchAsset(url: string, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const resolved = resolveAssetUrl(url);
-  const response = await fetch(resolved, {
-    signal,
-    credentials: "same-origin",
-    mode: "same-origin",
-    redirect: "error",
+  return withAssetRequest(signal, async () => {
+    const response = await fetch(resolved, {
+      signal,
+      credentials: "same-origin",
+      mode: "same-origin",
+      redirect: "error",
+    });
+    return readAssetResponse(response, signal);
   });
-  signal?.throwIfAborted();
-  return readAssetResponse(response, signal);
 }

@@ -56,6 +56,8 @@ export interface AudioHost {
 }
 export interface AudioClipSource {
   schedule(host: AudioHost): void | Promise<void>;
+  /** Release source-owned caches after scheduling ends, including error/cancel. */
+  dispose?(): void;
 }
 export interface AudioClip {
   muted?: boolean;

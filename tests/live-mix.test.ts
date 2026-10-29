@@ -165,6 +165,7 @@ test("muted clips skip preview preparation and surface errors only when unmuted"
   };
   let mutedSchedules = 0;
   let audibleSchedules = 0;
+  let releases = 0;
   const previewProject: Project = {
     ...base,
     audioTracks: [
@@ -183,6 +184,9 @@ test("muted clips skip preview preparation and surface errors only when unmuted"
                 mutedSchedules++;
                 throw Error("unsupported asset");
               },
+              dispose() {
+                releases++;
+              },
             }),
           },
         ],
@@ -199,6 +203,9 @@ test("muted clips skip preview preparation and surface errors only when unmuted"
             create: () => ({
               schedule() {
                 audibleSchedules++;
+              },
+              dispose() {
+                releases++;
               },
             }),
           },
@@ -222,6 +229,11 @@ test("muted clips skip preview preparation and surface errors only when unmuted"
       /Audio clip "missing": unsupported asset/,
     );
     assert.equal(mutedSchedules, 1);
+    assert.equal(
+      releases,
+      2,
+      "release sources after successful and failed scheduling",
+    );
   } finally {
     mix.dispose();
     for (const [key, descriptor] of originals) {

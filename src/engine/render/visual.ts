@@ -6,6 +6,7 @@ import type {
   SceneEntry,
   SetupContext,
 } from "../types";
+import { MAX_TEXTURE_BYTES } from "../media/limits";
 import { fetchAsset } from "../media/resource";
 import { openVideo } from "../decode/video-resource";
 import { validateMediaClip } from "../media/project";
@@ -21,7 +22,10 @@ export interface VideoTexture extends ImageTexture {
     context: Pick<FramePreparationContext, "time" | "signal">,
   ): Promise<void>;
 }
-const MAX_TEXTURE_BYTES = 64 * 1024 * 1024;
+
+// Only built-in video scenes register reversible activation; custom scenes stay untouched.
+export const managedVideoScenes = new WeakMap<Scene, { deactivate(): void }>();
+
 const textureBytes = new WeakMap<GPUDevice, number>();
 const releases = new WeakMap<GPUTexture, () => void>();
 function releaseTexture(value: GPUTexture) {
@@ -38,7 +42,9 @@ function texture(device: GPUDevice, width: number, height: number) {
     height > device.limits.maxTextureDimension2D ||
     width * height * 4 + (textureBytes.get(device) ?? 0) > MAX_TEXTURE_BYTES
   )
-    throw Error("Media textures exceed the device or shared 64 MiB limit.");
+    throw Error(
+      `Media textures exceed the device or shared ${MAX_TEXTURE_BYTES / 2 ** 20} MiB limit.`,
+    );
   const bytes = width * height * 4;
   const result = device.createTexture({
     size: [width, height],
@@ -200,15 +206,47 @@ function visualScene(
   asynchronous = false,
 ): Scene {
   let resource: ImageTexture | VideoTexture | undefined;
-  let pipeline: GPURenderPipeline;
-  let bind: GPUBindGroup;
+  let pipeline: GPURenderPipeline | undefined;
+  let bind: GPUBindGroup | undefined;
   let uniform: GPUBuffer | undefined;
   const lifetime = new AbortController();
-  return {
+  let setupContext: SetupContext;
+  const activeOnly =
+    asynchronous &&
+    (globalThis as typeof globalThis & { __ritweenMediaActivation?: string })
+      .__ritweenMediaActivation === "active-only";
+  let activationGeneration = 0;
+  let activation: AbortController | undefined;
+  const deactivate = () => {
+    activationGeneration++;
+    activation?.abort();
+    activation = undefined;
+    resource?.dispose();
+    resource = undefined;
+    bind = undefined;
+  };
+  const bindResource = () => {
+    bind = setupContext.device.createBindGroup({
+      layout: pipeline!.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: resource!.texture.createView() },
+        {
+          binding: 1,
+          resource: setupContext.device.createSampler({
+            magFilter: "linear",
+            minFilter: "linear",
+          }),
+        },
+        { binding: 2, resource: { buffer: uniform! } },
+      ],
+    });
+  };
+  const scene: Scene = {
     async setup(context) {
-      resource = await load(context, lifetime.signal);
+      setupContext = context;
+      if (!activeOnly) resource = await load(context, lifetime.signal);
       if (lifetime.signal.aborted) {
-        resource.dispose();
+        deactivate();
         lifetime.signal.throwIfAborted();
       }
       try {
@@ -240,39 +278,66 @@ function visualScene(
           primitive: { topology: "triangle-list" },
         });
         lifetime.signal.throwIfAborted();
+        if (!resource && !activeOnly) throw Error("Media scene is disposed.");
         uniform = context.device.createBuffer({
           size: 48,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
-        bind = context.device.createBindGroup({
-          layout: pipeline.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: resource.texture.createView() },
-            {
-              binding: 1,
-              resource: context.device.createSampler({
-                magFilter: "linear",
-                minFilter: "linear",
-              }),
-            },
-            { binding: 2, resource: { buffer: uniform } },
-          ],
-        });
+        if (resource) bindResource();
       } catch (error) {
-        resource.dispose();
+        resource?.dispose();
+        resource = undefined;
         uniform?.destroy();
+        uniform = undefined;
+        bind = undefined;
+        pipeline = undefined;
         throw error;
       }
     },
     prepareFrame: asynchronous
       ? async (context: FramePreparationContext) => {
           lifetime.signal.throwIfAborted();
-          if (resource && "prepareFrame" in resource)
-            await resource.prepareFrame(context);
+          const generation = activationGeneration;
+          const assertActivation = () => {
+            lifetime.signal.throwIfAborted();
+            context.signal?.throwIfAborted();
+            if (generation !== activationGeneration)
+              throw new DOMException(
+                "Media activation was released.",
+                "AbortError",
+              );
+          };
+          try {
+            assertActivation();
+            if (!resource && activeOnly) {
+              activation = new AbortController();
+              const signal = AbortSignal.any([
+                activation.signal,
+                lifetime.signal,
+                ...(context.signal ? [context.signal] : []),
+              ]);
+              const loaded = await load(setupContext, signal);
+              try {
+                assertActivation();
+              } catch (error) {
+                loaded.dispose();
+                throw error;
+              }
+              resource = loaded;
+              bindResource();
+            }
+            if (resource && "prepareFrame" in resource)
+              await resource.prepareFrame(context);
+            assertActivation();
+          } catch (error) {
+            if (activeOnly && generation === activationGeneration) deactivate();
+            throw error;
+          }
         }
       : undefined,
     render(context) {
-      if (!resource || !uniform) throw Error("Media scene is not ready.");
+      if (!resource || !uniform || !pipeline || !bind)
+        throw Error("Media scene is not ready.");
       const reference = context.compositionResolution ?? context.resolution;
       const transform =
         typeof options.transform === "function"
@@ -333,11 +398,17 @@ function visualScene(
       pass.end();
     },
     dispose() {
+      if (lifetime.signal.aborted) return;
       lifetime.abort();
-      resource?.dispose();
+      deactivate();
       uniform?.destroy();
+      uniform = undefined;
+      bind = undefined;
+      pipeline = undefined;
     },
   };
+  if (activeOnly) managedVideoScenes.set(scene, { deactivate });
+  return scene;
 }
 
 export function imageScene(

@@ -150,6 +150,11 @@ function typeAt(view: DataView, offset: number): string {
   );
 }
 
+export function validateMp4BoxType(type: string): void {
+  if (FORBIDDEN_BOXES.has(type))
+    invalid(`unsupported fragmented or encrypted box ${type}.`);
+}
+
 function parseBoxes(
   view: DataView,
   start: number,
@@ -175,8 +180,7 @@ function parseBoxes(
     }
     if (size < headerSize) invalid(`${type} box is smaller than its header.`);
     if (size > end - offset) invalid(`${type} box extends past its parent.`);
-    if (FORBIDDEN_BOXES.has(type))
-      invalid(`unsupported fragmented or encrypted box ${type}.`);
+    validateMp4BoxType(type);
     if (budget.boxesRemaining <= 0) invalid("box count exceeds parser limit.");
     budget.boxesRemaining--;
     const boxEnd = safeAdd(offset, size, `${type} box end`);
@@ -1044,14 +1048,66 @@ export function parseMp4(bytes: ArrayBuffer): Mp4Input {
   };
   const topLevel = parseBoxes(view, 0, bytes.byteLength, budget);
   const moov = one(topLevel, "moov");
-  const moovBoxes = children(view, moov!, budget);
-  const mvhd = one(moovBoxes, "mvhd");
-  const movieClock = readMovieClock(view, mvhd!);
   const mdatBoxes = topLevel.filter((box) => box.type === "mdat");
   if (mdatBoxes.length === 0) invalid("missing mdat box.");
   const mdats = mdatBoxes
     .map((box) => ({ start: box.payload, end: box.end }))
     .sort((left, right) => left.start - right.start);
+  return parseMovie(view, moov!, mdats, budget);
+}
+
+/** Parse a complete moov box against validated absolute resource payload bounds. */
+export function parseMp4Metadata(
+  bytes: ArrayBuffer,
+  mdats: { start: number; end: number }[],
+  resourceLength: number,
+): Mp4Input {
+  if (
+    !(bytes instanceof ArrayBuffer) ||
+    bytes.byteLength === 0 ||
+    bytes.byteLength > MAX_INPUT_BYTES
+  )
+    invalid("metadata byte length is empty or exceeds parser limit.");
+  if (
+    !Number.isSafeInteger(resourceLength) ||
+    resourceLength <= 0 ||
+    resourceLength > MAX_INPUT_BYTES
+  )
+    invalid("resource length exceeds parser limit.");
+  if (!mdats.length || mdats.length > MAX_BOXES_PER_PARSE)
+    invalid("invalid mdat range count.");
+  let previousEnd = 0;
+  for (const range of mdats) {
+    if (
+      !Number.isSafeInteger(range.start) ||
+      !Number.isSafeInteger(range.end) ||
+      range.start < previousEnd ||
+      range.end < range.start ||
+      range.end > resourceLength
+    )
+      invalid("invalid mdat payload bounds.");
+    previousEnd = range.end;
+  }
+  const view = new DataView(bytes);
+  const budget: ParseBudget = {
+    boxesRemaining: MAX_BOXES_PER_PARSE,
+    descriptorsRemaining: MAX_DESCRIPTORS_PER_PARSE,
+  };
+  const boxes = parseBoxes(view, 0, bytes.byteLength, budget);
+  if (boxes.length !== 1 || boxes[0].type !== "moov")
+    invalid("metadata must contain exactly one moov box.");
+  return parseMovie(view, boxes[0], mdats, budget);
+}
+
+function parseMovie(
+  view: DataView,
+  moov: Box,
+  mdats: MdatRange[],
+  budget: ParseBudget,
+): Mp4Input {
+  const moovBoxes = children(view, moov, budget);
+  const mvhd = one(moovBoxes, "mvhd");
+  const movieClock = readMovieClock(view, mvhd!);
   const traks = moovBoxes.filter((box) => box.type === "trak");
   if (traks.length === 0) invalid("moov contains no media tracks.");
   if (traks.length > 2) invalid("at most two media tracks are supported.");

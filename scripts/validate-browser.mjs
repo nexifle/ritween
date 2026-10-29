@@ -58,15 +58,15 @@ try {
   await page.getByRole("button", { name: "Mute mix", exact: true }).click();
   await page.getByRole("button", { name: "Unmute mix", exact: true }).click();
   await page.getByRole("button", { name: "Play", exact: true }).click();
-  await page.waitForTimeout(200);
-  await page.getByRole("button", { name: "Pause", exact: true }).click();
-  assert.ok(
-    Number(
-      await page
-        .getByRole("slider", { name: "Playback scrubber" })
-        .inputValue(),
-    ) > 0,
+  // Playback holds the picture until audio preparation and context resume finish.
+  await page.waitForFunction(
+    () =>
+      Number(document.querySelector('[aria-label="Playback scrubber"]').value) >
+      0,
+    undefined,
+    { timeout: 10000 },
   );
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
   await page
     .getByLabel("Video bitrate", { exact: true })
     .selectOption("4000000");

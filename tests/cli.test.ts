@@ -62,6 +62,27 @@ test("CLI rejects ambiguous and unsupported options before browser startup", () 
   ])
     assert.throws(() => parseOptions(args), args.join(" "));
 });
+test("CLI exposes media loading for preview, frame and export with a compatible default", () => {
+  for (const command of ["preview", "frame", "export"]) {
+    assert.equal(parseOptions([command]).mediaLoading, "full");
+    for (const mode of ["full", "range"]) {
+      assert.equal(
+        parseOptions([command, "--media-loading", mode]).mediaLoading,
+        mode,
+      );
+    }
+    assert.throws(
+      () => parseOptions([command, "--media-loading", "auto"]),
+      /media-loading/,
+    );
+  }
+  assert.equal(
+    parseOptions(["preview", "--time", "1", "--media-loading", "range"])
+      .mediaLoading,
+    "range",
+  );
+});
+
 test("CLI discovers a project and reports absent manifests", async () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
   const found = await resolveProject(root, false, root);

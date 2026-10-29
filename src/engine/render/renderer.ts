@@ -1,5 +1,6 @@
 import type { Project, Scene } from "../types";
 import { evaluate, validateProject } from "../timeline";
+import { managedVideoScenes } from "./visual";
 /** Observe late setup failures even after a sibling pipeline cancels this wait. */
 function waitForSetup<T>(
   work: T | PromiseLike<T>,
@@ -135,7 +136,12 @@ export class Renderer {
         "AbortError",
       ),
     );
+    this.deactivateOtherMedia(scene);
     this.submitFrame(evaluation);
+  }
+  private deactivateOtherMedia(active: Scene) {
+    for (const scene of this.scenes.values())
+      if (scene !== active) managedVideoScenes.get(scene)?.deactivate();
   }
   async renderAsync(time: number, signal?: AbortSignal) {
     if (this.disposed) throw Error("Renderer is disposed.");
@@ -151,6 +157,7 @@ export class Renderer {
       this.assertCurrentFrame(generation, controller.signal);
       const evaluation = evaluate(this.project, time);
       const scene = this.scenes.get(evaluation.entry.id)!;
+      this.deactivateOtherMedia(scene);
       if (scene.prepareFrame)
         await scene.prepareFrame({
           time: evaluation.time,

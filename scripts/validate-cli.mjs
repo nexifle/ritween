@@ -160,6 +160,62 @@ try {
   assert.equal(exported.frames, 240);
   assert.equal(exported.duration, 8);
   assert.ok((await stat(video)).size > 100000);
+  // Reuse the native export as imported footage, without external fixtures.
+  const mediaProject = join(directory, "media-project");
+  await mkdir(join(mediaProject, "public"), { recursive: true });
+  const padding = Buffer.alloc(600_000);
+  padding.writeUInt32BE(padding.length, 0);
+  padding.write("free", 4);
+  await writeFile(
+    join(mediaProject, "public/source.mp4"),
+    Buffer.concat([await readFile(video), padding]),
+  );
+  await writeFile(
+    join(mediaProject, "manifest.ts"),
+    `import { videoClip } from "ritween";
+export default { name: "Imported media", resolution: [320,180], aspectRatio: [16,9], duration: 1,
+scenes: [videoClip({id:"footage",name:"Footage",source:"manifest.ts",url:"/source.mp4",start:0,trim:{in:1,out:2},audio:{muted:false}})] };`,
+  );
+  const mediaResults = [];
+  for (const mode of ["full", "range"]) {
+    for (const command of ["frame", "export"]) {
+      const output = join(
+        artifacts,
+        `imported-${mode}.${command === "frame" ? "png" : "mp4"}`,
+      );
+      const result = JSON.parse(
+        (
+          await run([
+            command,
+            "--project",
+            mediaProject,
+            "--media-loading",
+            mode,
+            ...(command === "frame"
+              ? ["--time", ".5"]
+              : ["--resolution", "640x360", "--fps", "24"]),
+            "-o",
+            output,
+            "--force",
+            "--json",
+          ])
+        ).stdout,
+      );
+      assert.equal(result.mediaLoading, mode);
+      assert.ok(
+        result.mediaRequests[
+          mode === "range" ? "partialResponses" : "fullResponses"
+        ] > 0,
+      );
+      assert.equal(result.mediaRequests.rangeRequests > 0, mode === "range");
+      if (command === "export") assert.equal(result.frames, 24);
+      mediaResults.push(result);
+    }
+  }
+  assert.deepEqual(
+    await readFile(join(artifacts, "imported-full.png")),
+    await readFile(join(artifacts, "imported-range.png")),
+  );
   const browser = await chromium.launch({
     channel: "chrome",
     headless: true,
@@ -200,9 +256,20 @@ try {
     await browser.close();
   }
   // Start the persistent preview against a separate source tree; check UI and graceful shutdown.
+  await mkdir(join(directory, "public"), { recursive: true });
   const preview = spawn(
     executable,
-    [...prefix, "preview", "--project", directory, "--port", "0", "--json"],
+    [
+      ...prefix,
+      "preview",
+      "--project",
+      directory,
+      "--port",
+      "0",
+      "--media-loading",
+      "range",
+      "--json",
+    ],
     { cwd: directory, stdio: ["ignore", "pipe", "pipe"] },
   );
   let previewStderr = "";
@@ -225,6 +292,7 @@ try {
         20000,
       ).unref();
     });
+    assert.equal(event.mediaLoading, "range");
     assert.match(await (await fetch(event.url)).text(), /studio\.js/);
     const webBrowser = await chromium.launch({
       channel: "chrome",
@@ -259,6 +327,23 @@ try {
       assert.ok(saved.ok());
       await reloaded;
       await tab.getByText("Runtime connected", { exact: true }).waitFor();
+      await mkdir(join(directory, "public"), { recursive: true });
+      await writeFile(
+        join(directory, "public/source.mp4"),
+        await readFile(join(mediaProject, "public/source.mp4")),
+      );
+      // Restarting is unnecessary: preview reloads the updated manifest.
+      const partial = tab.waitForResponse(
+        (response) =>
+          response.url().endsWith("/source.mp4") && response.status() === 206,
+      );
+      await writeFile(
+        manifestPath,
+        await readFile(join(mediaProject, "manifest.ts")),
+      );
+      const response = await partial;
+      assert.match(response.request().headers().range, /^bytes=/);
+      await tab.getByText("Runtime connected", { exact: true }).waitFor();
     } finally {
       await webBrowser.close();
     }
@@ -272,6 +357,7 @@ try {
   }
   const report = {
     executable,
+    mediaResults,
     passed: [
       "help",
       "PNG timestamp preview",

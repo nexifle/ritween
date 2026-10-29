@@ -1,5 +1,11 @@
 # Engine: rendering, codecs, and media
 
+Built-in video scenes support the CLI opt-in `--media-activation active-only`
+(default: `eager`). Inactive videos retain lightweight scene state only; the
+renderer releases their media before preparing the next scene. Frame preparation
+stays ordered for export. Images, custom scenes, and audio keep their existing
+contracts. See [activation details](../../CLI.md#imported-video-activation).
+
 Rendering produces pixels. Codecs turn those pixels or mixed audio into encoded
 samples. Format implementations orchestrate tracks and package the result. Keep
 these responsibilities separate so a new output format does not change the GPU
@@ -21,6 +27,9 @@ render/                    Decoded media + scenes → pixels / mixed audio
   live-mix.ts              Shared audio graph scheduling and resource limits
 media/                     Shared asset/project integration, not a decoding layer
   resource.ts              Asset fetching, cancellation and caching
+  byte-range.ts            HTTP Range and resource version validation
+  byte-source.ts           Shared ownership and cross-resource byte LRU
+  mp4-metadata.ts           Header/moov reads without downloading the entire mdat
   project.ts               Media clip validation and footage audio track mapping
 export/
   types.ts                 Existing MP4 export options and stage callbacks
@@ -88,3 +97,19 @@ and close each submitted AudioData/VideoFrame in `finally`. Encoder queues are
 bounded. MP4 owns the encoded sample buffers passed to its muxer. The pipeline
 waits for both jobs to clean up and preserves the first failure or cancellation
 reason before returning. Stage completion callbacks run even when a stage fails.
+
+Imported video builds a PTS/keyframe index once per resource. Tracks with strictly
+increasing microsecond PTS use persistent decoding when twelve source-sized RGBA
+frames fit within 96 MiB. Sessions read at most eight samples beyond the target,
+retain at most twelve frames / 96 MiB estimated RGBA bytes, and restart on backward
+seeks or incompatible discontinuities. Reordered tracks and larger frames use
+random-access decoding. A sequential failure releases the session and retries via
+random access; codec errors from that path remain visible. These budgets exclude
+native decoder memory, caller-owned frame clones, and GPU textures. EOF drains the
+decoder; disposal aborts active work and releases retained payload and frames.
+
+`AudioClipSource.dispose()` is optional and runs after source scheduling finishes,
+including error/cancellation, in both preview and offline compilation. It releases
+source-owned caches, not buffers already owned by scheduled nodes. Existing sources
+with only `schedule()` remain supported. AAC preroll is decoded on a non-negative
+clock and mapped back to movie timestamps before PCM trimming.

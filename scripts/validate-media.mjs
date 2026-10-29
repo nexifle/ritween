@@ -19,6 +19,11 @@ const browser = await chromium.launch({
 let server;
 try {
   const page = await browser.newPage();
+  if (process.env.RITWEEN_RANGE_MEDIA === "1") {
+    await page.addInitScript(() => {
+      globalThis.__ritweenRangeVideo = true;
+    });
+  }
   await page.goto(base);
   const fixture = await page.evaluate(async () => {
     const { exportMp4 } =
@@ -154,7 +159,14 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
     JSON.stringify({ version: 1, audioClips: { footage: { muted: false } } }),
   );
   const project = await resolveProject(directory, false, root);
-  server = await startServer({ runtimeRoot: root, project });
+  server = await startServer({
+    runtimeRoot: root,
+    project,
+    watch: false,
+    mediaLoading: process.env.RITWEEN_RANGE_MEDIA === "1" ? "range" : "full",
+    mediaActivation:
+      process.env.RITWEEN_ACTIVE_MEDIA === "1" ? "active-only" : "eager",
+  });
   const address = server.url;
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -168,14 +180,20 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
     console.error({ errors, body: await page.locator("body").innerText() });
     throw error;
   }
-  const report = await page.evaluate(async () => {
+  const report = await page.evaluate(async (engineRoot) => {
     const { project: authored } = await import("/@id/__x00__ritween-project");
-    const { resolveMediaProject } =
-      await import("/src/engine/media/project.ts");
-    const { Renderer } = await import("/src/engine/render/renderer.ts");
-    const { renderAudio } = await import("/src/engine/render/audio.ts");
-    const { exportMp4 } =
-      await import("/src/engine/export/formats/mp4/export-mp4.ts");
+    const { resolveMediaProject } = await import(
+      `${engineRoot}/media/project.ts`
+    );
+    const { Renderer } = await import(`${engineRoot}/render/renderer.ts`);
+    const { renderAudio } = await import(`${engineRoot}/render/audio.ts`);
+    const { exportMp4 } = await import(
+      `${engineRoot}/export/formats/mp4/export-mp4.ts`
+    );
+    const { checkMediaActivation } = await import(
+      `${engineRoot.replace(/src\/engine$/, "scripts/media-activation-checks.mjs")}`
+    );
+    const activation = await checkMediaActivation(engineRoot);
     const project = resolveMediaProject(authored);
     const canvas = new OffscreenCanvas(320, 180);
     const renderer = await Renderer.create(canvas, project);
@@ -221,7 +239,7 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
     const peak = mix
       ? Math.max(...mix.getChannelData(0).subarray(5000, 10000).map(Math.abs))
       : 0;
-    const { audioFile } = await import("/src/engine/decode/audio-file.ts");
+    const { audioFile } = await import(`${engineRoot}/decode/audio-file.ts`);
     const wavMix = await renderAudio(
       {
         ...project,
@@ -250,8 +268,9 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
           ...wavMix.getChannelData(0).subarray(60000, 65000).map(Math.abs),
         )
       : 0;
-    const { loadVideoTexture, videoResource } =
-      await import("/src/engine/render/visual.ts");
+    const { loadVideoTexture, videoResource } = await import(
+      `${engineRoot}/render/visual.ts`
+    );
     const descriptors = [0.25, 1.25].map((offset, i) =>
       videoResource({
         id: `layer-${i}`,
@@ -376,6 +395,7 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
       fps: 24,
     });
     return {
+      activation,
       first,
       blue,
       repeated,
@@ -389,7 +409,7 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
       frames: output.frames,
       bytes: output.blob.size,
     };
-  });
+  }, `/@fs${root}src/engine`);
   assert.ok(
     report.first.center[0] > 200 && report.first.center[2] < 40,
     "Frame awal harus merah",
@@ -457,7 +477,13 @@ transform: { x: 160, y: 90, width: 80, height: 80 } })] };
     .waitFor();
   await page.screenshot({ path: `${directory}/studio.png`, fullPage: true });
   assert.deepEqual(errors, []);
-  await writeFile(`${directory}/report.json`, JSON.stringify(report, null, 2));
+  report.rangeVideo = process.env.RITWEEN_RANGE_MEDIA === "1";
+  report.activeOnly = process.env.RITWEEN_ACTIVE_MEDIA === "1";
+  const reportName = `report${report.activeOnly ? "-active" : ""}${report.rangeVideo ? "-range" : ""}.json`;
+  await writeFile(
+    `${directory}/${reportName}`,
+    JSON.stringify(report, null, 2),
+  );
   console.log(JSON.stringify({ ok: true, ...report }, null, 2));
 } finally {
   await browser.close();

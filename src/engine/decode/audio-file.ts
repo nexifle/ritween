@@ -2,8 +2,9 @@ import { aacDecoderConfig } from "../codecs/aac";
 import type { AudioClipSource, AudioHost } from "../types";
 import { parseMp4, type Mp4Sample, type Mp4Track } from "./formats/mp4";
 import { fetchAsset } from "../media/resource";
+import { openByteSource } from "../media/byte-source";
 
-const MAX_PCM_BYTES = 128 * 2 ** 20;
+import { MAX_PCM_BYTES } from "../media/limits";
 const MAX_INPUT_SAMPLES = 250_000;
 const MAX_DECODE_QUEUE = 16;
 const MAX_OUTPUT_CHUNK_FRAMES = 8_192;
@@ -66,16 +67,21 @@ function audioTrack(tracks: Mp4Track[]) {
   return track;
 }
 
-function sampleBytes(bytes: ArrayBuffer, sample: Mp4Sample) {
+function sampleEnd(sample: Mp4Sample, length: number) {
   if (
     !Number.isSafeInteger(sample.offset) ||
     !Number.isSafeInteger(sample.size) ||
     sample.offset < 0 ||
     sample.size <= 0 ||
-    sample.offset > bytes.byteLength - sample.size
+    sample.offset > length - sample.size
   )
     throw Error("MP4 audio sample is outside the downloaded resource.");
-  return new Uint8Array(bytes, sample.offset, sample.size);
+  return sample.offset + sample.size;
+}
+
+function sampleBytes(bytes: ArrayBuffer, sample: Mp4Sample) {
+  const end = sampleEnd(sample, bytes.byteLength);
+  return new Uint8Array(bytes, sample.offset, end - sample.offset);
 }
 
 function abortError(signal: AbortSignal) {
@@ -135,6 +141,10 @@ function waitForQueue(
     signal?.addEventListener("abort", onAbort, { once: true });
     check();
   });
+}
+
+export function audioDecodeOriginUs(firstTimestamp: number) {
+  return Math.min(0, sampleTimestampUs(firstTimestamp));
 }
 
 function sampleTimestampUs(seconds: number) {
@@ -258,10 +268,43 @@ export async function decodeVideoAudio(
   if (!Number.isFinite(duration) || duration <= 0)
     throw Error("Audio clip duration must be a finite positive number.");
   signal?.throwIfAborted();
-  const bytes = await fetchAsset(url, signal);
+  const rangeEnabled =
+    (globalThis as typeof globalThis & { __ritweenRangeVideo?: boolean })
+      .__ritweenRangeVideo === true;
+  const source = rangeEnabled ? await openByteSource(url, signal) : null;
+  try {
+    return await decodeVideoAudioResource(
+      url,
+      context,
+      offset,
+      duration,
+      signal,
+      source,
+    );
+  } finally {
+    source?.dispose();
+  }
+}
+
+async function decodeVideoAudioResource(
+  url: string,
+  context: BaseAudioContext,
+  offset: number,
+  duration: number,
+  signal: AbortSignal | undefined,
+  source: Awaited<ReturnType<typeof openByteSource>> | null,
+): Promise<AudioBuffer | null> {
+  const bytes = source ? null : await fetchAsset(url, signal);
   signal?.throwIfAborted();
-  const track = audioTrack(parseMp4(bytes).tracks);
+  const track = audioTrack(
+    source ? source.parse().tracks : parseMp4(bytes!).tracks,
+  );
   if (!track) return null;
+  const readSample = async (sample: Mp4Sample) => {
+    if (!source) return sampleBytes(bytes!, sample);
+    const end = sampleEnd(sample, source.length);
+    return waitFor(source.read(sample.offset, end, signal), signal);
+  };
 
   const channels = track.channels!;
   const sampleRate = track.sampleRate!;
@@ -276,7 +319,9 @@ export async function decodeVideoAudio(
   const frames = range.frameCount;
   const pcmBytes = channels * frames * Float32Array.BYTES_PER_ELEMENT;
   if (!Number.isSafeInteger(pcmBytes) || pcmBytes > MAX_PCM_BYTES)
-    throw Error("Decoded audio exceeds the 128 MiB PCM limit. Split the clip.");
+    throw Error(
+      `Decoded audio exceeds the ${MAX_PCM_BYTES / 2 ** 20} MiB PCM limit. Split the clip.`,
+    );
   const buffer = context.createBuffer(channels, frames, sampleRate);
   if (range.audibleStartFrame >= range.clipEndFrame) return buffer;
 
@@ -307,6 +352,8 @@ export async function decodeVideoAudio(
   let failure: unknown;
   let decoder: AudioDecoder | null = null;
   let acceptingOutput = true;
+  // Keep preroll timestamps non-negative; map decoded PCM back to movie time.
+  const decodeOriginUs = audioDecodeOriginUs(track.samples[0].timestamp);
   try {
     decoder = new AudioDecoder({
       output(data) {
@@ -326,7 +373,11 @@ export async function decodeVideoAudio(
             );
             return;
           }
-          const chunkRange = pcmChunkRange(data.timestamp, outputFrames, range);
+          const chunkRange = pcmChunkRange(
+            data.timestamp + decodeOriginUs,
+            outputFrames,
+            range,
+          );
           if (!chunkRange) return;
           for (let channel = 0; channel < channels; channel++) {
             const plane = new Float32Array(outputFrames);
@@ -357,9 +408,9 @@ export async function decodeVideoAudio(
       const sample = track.samples[index];
       const chunk: EncodedAudioChunkInit = {
         type: sample.key ? "key" : "delta",
-        timestamp: sampleTimestampUs(sample.timestamp),
+        timestamp: sampleTimestampUs(sample.timestamp) - decodeOriginUs,
         duration: Math.max(1, sampleTimestampUs(sample.duration)),
-        data: sampleBytes(bytes, sample),
+        data: await readSample(sample),
       };
       decoder.decode(new EncodedAudioChunk(chunk));
       if (decoder.decodeQueueSize >= MAX_DECODE_QUEUE) {
@@ -445,12 +496,21 @@ function scheduleBuffer(
 export function audioFile(options: AudioFileOptions): () => AudioClipSource {
   const { offset, volume, loop } = validateOptions(options);
   return () => {
+    let disposed = false;
     let cachedContext: BaseAudioContext | null = null;
     let cachedBuffer: AudioBuffer | null = null;
     let loading: Promise<AudioBuffer> | null = null;
 
     return {
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        cachedContext = null;
+        cachedBuffer = null;
+        loading = null;
+      },
       async schedule(host) {
+        if (disposed) throw Error("Audio source is disposed.");
         host.signal?.throwIfAborted();
         if (host.duration <= 0) return;
         if (cachedContext !== host.context) {
@@ -459,22 +519,25 @@ export function audioFile(options: AudioFileOptions): () => AudioClipSource {
           loading = null;
         }
         if (!cachedBuffer) {
-          loading ??= (async () => {
+          const request = (loading ??= (async () => {
             const bytes = await fetchAsset(options.url, host.signal);
             host.signal?.throwIfAborted();
             return waitFor(host.context.decodeAudioData(bytes), host.signal);
           })().then(
             (buffer) => {
-              cachedBuffer = buffer;
-              loading = null;
+              if (loading === request) {
+                cachedBuffer = buffer;
+                loading = null;
+              }
               return buffer;
             },
             (error: unknown) => {
-              loading = null;
+              if (loading === request) loading = null;
               throw error;
             },
-          );
-          await loading;
+          ));
+          await request;
+          if (disposed || cachedContext !== host.context) return;
         }
         host.signal?.throwIfAborted();
         if (!cachedBuffer || offset >= cachedBuffer.duration) return;
@@ -502,13 +565,22 @@ export function footageAudio(
 ): () => AudioClipSource {
   const { offset, volume } = validateOptions(options);
   return () => {
+    let disposed = false;
     let cachedContext: BaseAudioContext | null = null;
     let cachedBuffer: AudioBuffer | null = null;
     let resolved = false;
     let loading: Promise<AudioBuffer | null> | null = null;
 
     return {
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        cachedContext = null;
+        cachedBuffer = null;
+        loading = null;
+      },
       async schedule(host) {
+        if (disposed) throw Error("Audio source is disposed.");
         host.signal?.throwIfAborted();
         if (host.duration <= 0) return;
         if (cachedContext !== host.context) {
@@ -518,7 +590,7 @@ export function footageAudio(
           loading = null;
         }
         if (!resolved) {
-          loading ??= decodeVideoAudio(
+          const request = (loading ??= decodeVideoAudio(
             options.url,
             host.context,
             offset,
@@ -526,17 +598,20 @@ export function footageAudio(
             host.signal,
           ).then(
             (buffer) => {
-              cachedBuffer = buffer;
-              resolved = true;
-              loading = null;
+              if (loading === request) {
+                cachedBuffer = buffer;
+                resolved = true;
+                loading = null;
+              }
               return buffer;
             },
             (error: unknown) => {
-              loading = null;
+              if (loading === request) loading = null;
               throw error;
             },
-          );
-          await loading;
+          ));
+          await request;
+          if (disposed || cachedContext !== host.context) return;
         }
         host.signal?.throwIfAborted();
         if (!cachedBuffer) return;

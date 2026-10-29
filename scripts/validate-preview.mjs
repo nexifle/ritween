@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { normalizePath } from "vite";
 import { chromium } from "playwright-core";
 import { startServer } from "../cli/server.ts";
 import { resolveProject } from "../cli/project.ts";
@@ -63,13 +64,13 @@ try {
   // Exercise the compiler independently of React using real native DSP/output.
   await page.goto(`${url}/__ritween/render`);
   await page.waitForFunction(() => !!window.ritween);
-  await page.evaluate(() => {
+  await page.evaluate((sourceRoot) => {
     const button = document.createElement("button");
     button.textContent = "Validate audio";
     button.onclick = () => {
       window.audioValidation = (async () => {
-        const { LiveMix } = await import("/src/engine/render/live-mix.ts");
-        const { PreviewAudio } = await import("/src/engine/render/audio.ts");
+        const { LiveMix } = await import(`${sourceRoot}/engine/render/live-mix.ts`);
+        const { PreviewAudio } = await import(`${sourceRoot}/engine/render/audio.ts`);
         const { project: original } =
           await import("/@id/virtual:ritween-project");
         const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -378,7 +379,7 @@ try {
       })();
     };
     document.body.append(button);
-  });
+  }, `/@fs/${normalizePath(runtimeRoot)}/src`);
   await page.getByRole("button", { name: "Validate audio" }).click();
   const report = await page.evaluate(() => window.audioValidation);
   for (const key of [

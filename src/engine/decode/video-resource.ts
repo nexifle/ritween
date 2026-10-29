@@ -1,6 +1,9 @@
 import { h264DecoderConfig } from "../codecs/h264";
 import { parseMp4, type Mp4Sample, type Mp4Track } from "./formats/mp4";
 import { fetchAsset } from "../media/resource";
+import { openByteSource } from "../media/byte-source";
+import { createSampleIndex } from "./sample-index";
+import { SequentialVideo } from "./sequential-video";
 
 const MAX_GOP_SAMPLES = 2_048;
 const MAX_DECODE_QUEUE = 12;
@@ -150,43 +153,95 @@ function videoTrack(tracks: Mp4Track[]) {
   return track;
 }
 
-function decodeRange(samples: Mp4Sample[], time: number) {
-  let firstKey = -1;
-  let start = -1;
-  for (let i = 0; i < samples.length; i++) {
-    const sample = samples[i];
-    if (sample.key) {
-      if (firstKey < 0) firstKey = i;
-      if (sample.timestamp <= time) start = i;
-    }
-  }
-  if (start < 0) start = firstKey;
-  if (start < 0) throw Error("MP4 video track has no decodable keyframe.");
-
-  let end = start;
-  for (let i = start; i < samples.length; i++)
-    if (samples[i].timestamp <= time) end = i;
-  const count = end - start + 1;
-  if (count > MAX_GOP_SAMPLES)
-    throw Error(`Video GOP exceeds the ${MAX_GOP_SAMPLES}-sample seek limit.`);
-  return { start, end };
-}
-
 /** Open a same-origin MP4 resource for deterministic, random-access frame decoding. */
 export async function openVideo(
   url: string,
   signal?: AbortSignal,
 ): Promise<OpenVideoResource> {
-  const bytes = await fetchAsset(url, signal);
-  signal?.throwIfAborted();
-  const input = parseMp4(bytes);
-  const track = videoTrack(input.tracks);
+  const rangeEnabled =
+    (globalThis as typeof globalThis & { __ritweenRangeVideo?: boolean })
+      .__ritweenRangeVideo === true;
+  const source = rangeEnabled ? await openByteSource(url, signal) : null;
+  let bytes: ArrayBuffer | null = source ? null : await fetchAsset(url, signal);
+  let input;
+  let track;
+  try {
+    signal?.throwIfAborted();
+    input = source ? source.parse() : parseMp4(bytes!);
+    track = videoTrack(input.tracks);
+  } catch (error) {
+    source?.dispose();
+    throw error;
+  }
+  const readSample = async (sample: Mp4Sample, decodeSignal: AbortSignal) => {
+    const data = source
+      ? await waitFor(
+          source.read(sample.offset, sample.offset + sample.size, decodeSignal),
+          decodeSignal,
+        )
+      : sampleBytes(bytes!, sample);
+    decodeSignal.throwIfAborted();
+    return data;
+  };
   const width = track.width!;
   const height = track.height!;
+  let index: ReturnType<typeof createSampleIndex> | null = createSampleIndex(
+    track.samples,
+  );
+  const firstVisibleTimestamp = timestampUs(
+    track.presentationStart,
+    "presentation start",
+  );
+  const lastVisibleTimestamp = timestampUs(
+    track.presentationEnd,
+    "presentation end",
+  );
+  const visibleFrameDurations = new Map<number, number>();
+  for (const sample of track.samples) {
+    const pts = timestampUs(sample.timestamp, "sample timestamp");
+    const duration = Math.max(
+      1,
+      timestampUs(sample.duration, "sample duration"),
+    );
+    if (
+      frameOverlapsPresentation(
+        pts,
+        duration,
+        firstVisibleTimestamp,
+        lastVisibleTimestamp,
+        lastVisibleTimestamp,
+      )
+    )
+      visibleFrameDurations.set(pts, duration);
+  }
+  let sequential: SequentialVideo | null = null;
+  // Internal opt-out supports reference comparisons; reordered/large tracks stay random-access.
+  let sequentialEnabled =
+    (globalThis as typeof globalThis & { __ritweenSequentialVideo?: boolean })
+      .__ritweenSequentialVideo !== false &&
+    width * height * 4 * 12 <= 96 * 2 ** 20 &&
+    track.samples.every(
+      (sample, i, samples) =>
+        i === 0 ||
+        timestampUs(sample.timestamp, "PTS") >
+          timestampUs(samples[i - 1].timestamp, "PTS"),
+    );
   let disposed = false;
   let currentFrame: VideoFrame | null = null;
   let activeController: AbortController | null = null;
   let busy = false;
+
+  const releasePayload = () => {
+    source?.dispose();
+    bytes = null;
+    index = null;
+    visibleFrameDurations.clear();
+    for (const item of input.tracks) {
+      item.samples = [];
+      item.description = new Uint8Array();
+    }
+    input.tracks = [];
+  };
 
   const closeCurrent = () => {
     currentFrame?.close();
@@ -235,33 +290,11 @@ export async function openVideo(
           );
         const targetTime = Math.min(sourceTime, track.presentationEnd);
         const targetTimestamp = timestampUs(targetTime, "frame time");
-        const firstVisibleTimestamp = timestampUs(
-          track.presentationStart,
-          "presentation start",
-        );
-        const lastVisibleTimestamp = timestampUs(
-          track.presentationEnd,
-          "presentation end",
-        );
-        const visibleFrameDurations = new Map<number, number>();
-        for (const sample of track.samples) {
-          const pts = timestampUs(sample.timestamp, "sample timestamp");
-          const duration = Math.max(
-            1,
-            timestampUs(sample.duration, "sample duration"),
+        const { start, end } = index!.range(targetTime);
+        if (end - start + 1 > MAX_GOP_SAMPLES)
+          throw Error(
+            `Video GOP exceeds the ${MAX_GOP_SAMPLES}-sample seek limit.`,
           );
-          if (
-            frameOverlapsPresentation(
-              pts,
-              duration,
-              firstVisibleTimestamp,
-              lastVisibleTimestamp,
-              targetTimestamp,
-            )
-          )
-            visibleFrameDurations.set(pts, duration);
-        }
-        const { start, end } = decodeRange(track.samples, targetTime);
         const config = h264DecoderConfig(track.description, width, height);
         const support = await waitFor(
           VideoDecoder.isConfigSupported(config),
@@ -272,6 +305,54 @@ export async function openVideo(
           throw Error(
             `The browser cannot decode MP4 video codec ${track.codec}.`,
           );
+
+        if (sequentialEnabled) {
+          sequential ??= new SequentialVideo(support.config ?? config);
+          try {
+            const frame = await sequential.read(
+              targetTime,
+              start,
+              end,
+              track.samples.length,
+              timestampUs(track.samples[end].timestamp, "sample timestamp"),
+              async (i) => {
+                const sample = track.samples[i];
+                return new EncodedVideoChunk({
+                  type: sample.key ? "key" : "delta",
+                  timestamp: timestampUs(sample.timestamp, "sample timestamp"),
+                  duration: Math.max(
+                    1,
+                    timestampUs(sample.duration, "sample duration"),
+                  ),
+                  data: await readSample(sample, decodeSignal),
+                });
+              },
+              decodeSignal,
+            );
+            const duration = visibleFrameDurations.get(frame.timestamp);
+            if (
+              duration === undefined ||
+              !frameOverlapsPresentation(
+                frame.timestamp,
+                duration,
+                firstVisibleTimestamp,
+                lastVisibleTimestamp,
+                targetTimestamp,
+              )
+            ) {
+              frame.close();
+              throw Error(
+                "Sequential video frame is outside its presentation interval.",
+              );
+            }
+            return frame;
+          } catch {
+            decodeSignal.throwIfAborted();
+            sequential.dispose();
+            sequential = null;
+            sequentialEnabled = false;
+          }
+        }
 
         decoder = new VideoDecoder({
           output(frame) {
@@ -328,7 +409,7 @@ export async function openVideo(
               1,
               timestampUs(sample.duration, "sample duration"),
             ),
-            data: sampleBytes(bytes, sample),
+            data: await readSample(sample, decodeSignal),
           };
           decoder.decode(new EncodedVideoChunk(chunk));
           if (decoder.decodeQueueSize >= MAX_DECODE_QUEUE)
@@ -356,6 +437,7 @@ export async function openVideo(
         removeAbortForwarders();
         if (activeController === controller) activeController = null;
         busy = false;
+        if (disposed) releasePayload();
       }
     },
     dispose() {
@@ -366,6 +448,9 @@ export async function openVideo(
       );
       activeController = null;
       closeCurrent();
+      sequential?.dispose();
+      sequential = null;
+      if (!busy) releasePayload();
     },
   };
 }

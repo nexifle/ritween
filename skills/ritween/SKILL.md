@@ -23,6 +23,29 @@ Help the user produce a runnable project, not just code snippets. This skill tar
 5. Run manifest validation and the project's available typecheck. Follow [preview and export](references/preview-export.md): inspect keyframes for composition and legibility, review playback for pacing and choreography, verify seeking, then export MP4 when requested. Technical success alone does not establish visual quality.
 6. Report changed files, run commands, output locations, actual validation results, and blockers. Distinguish typechecked code from browser-verified output. Do not claim success when export fails.
 
+## Project organization
+
+Keep `manifest.ts` as the composition root: project metadata, imports, timeline
+assembly, and project-level audio/overlay wiring. Do not put an entire multi-scene
+video, large datasets, geometry, and reusable components into one manifest.
+
+- Put each substantial scene or World in a descriptive module under `src/scenes/`.
+  Export a World or an entry factory as appropriate; assemble timing in the manifest.
+- Extract repeated visual elements into `src/components/` and substantial datasets
+  into `src/data/`. Keep scene-specific helpers beside their owning scene; do not
+  create a shared abstraction for a single use. Put audio implementations in
+  `src/audio/`.
+- Keep one source of truth for data, clip descriptors, and timing. Pass dependencies
+  into factories rather than importing the manifest from scene modules. Do not create
+  circular imports or duplicate constants just to split files.
+- Set entry `source` to the actual authoring module, relative to the manifest
+  directory. It is inspector metadata, not a replacement for a TypeScript import.
+- A tiny one-scene example may stay in one file. For a substantive multi-beat video,
+  establish modules before the manifest becomes a large implementation file. Split
+  by responsibility, not arbitrary line counts; do not create one file per primitive.
+- During revisions, preserve these boundaries. Before finishing, check that the
+  manifest reads as a timeline and project assembly rather than a drawing program.
+
 ## Motion quality and intent
 
 - User intent and supplied references outrank bundled examples. Treat examples as implementation mechanics, not presets for palette, copy, subject, duration, or beat order. Read the brief before selecting an example; reuse only the technique it needs.
@@ -69,7 +92,11 @@ Use a small structure that requires neither framework source files nor a custom 
 ```text
 my-video/
   src/
-    scenes/
+    scenes/      # Scene/World definitions and their local helpers
+      *.ts
+    components/  # Reused visual components, when needed
+      *.ts
+    data/        # Substantial datasets, when needed
       *.ts
     audio/
       *.ts

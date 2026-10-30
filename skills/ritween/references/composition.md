@@ -46,6 +46,38 @@ uses the most built-ins. Keep manual animation seekable and release owned GPU
 resources. Reuse existing layout/text/media facilities where appropriate without
 requiring every visual idea to fit a high-level preset.
 
+## Organize real projects by responsibility
+
+The single-file example below is only a minimal API demonstration, not the target
+structure for a full video. For substantial work, keep `manifest.ts` focused on
+project metadata, timeline assembly, and project-level wiring:
+
+```text
+manifest.ts
+src/
+  scenes/
+    order-world.ts
+    closing.ts
+  components/
+    process-step.ts
+  data/
+    orders.ts
+  audio/
+    soundtrack.ts
+```
+
+A scene module can export `World(...)` or a function creating a `StageEntry`/`Shot`.
+The manifest imports those definitions and assembles their starts, durations, and
+transitions. Pass timing/media dependencies into factories where needed; scene
+modules must not import the manifest. Keep clip descriptors in one owning module
+and reuse them rather than copying their timing. Set `source` to the real module
+path (for example `src/scenes/order-world.ts`), relative to the manifest directory.
+
+Extract repeated components and substantial datasets, but keep one-off helpers
+local to their scene. Do not hide the whole video in a single imported mega-module,
+or create a file per Box/Text. The goal is that a requested scene change has an
+obvious owning file and does not require navigating thousands of manifest lines.
+
 ## Complete two-shot project
 
 Save this as `manifest.ts`. This example demonstrates reuse and timing, not a

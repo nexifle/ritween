@@ -88,9 +88,21 @@ const connector = Line({
 ```
 
 `Group(children)` occupies **one layout slot**, overlays children at its top-left,
-and draws nothing itself. Its size is the largest child width/height, like a
-start-aligned ZStack. Modifiers apply to all descendants. Opacity remains
-per-primitive, not isolated group compositing; use Composition for flattened alpha.
+and has no fill of its own. Its size is the largest child width/height, like a
+start-aligned ZStack. Children are painted into an isolated transparent surface;
+`.opacity()` fades the combined result once, including overlapping children.
+A child's own opacity is preserved inside that result. Nested Groups compose
+in the same way: child alpha first, inner Group alpha next, outer Group alpha last.
+
+For example, two opaque overlapping Boxes inside `Group([...]).opacity(0.5)`
+produce a half-opacity overlap, not two independently faded Boxes. `ZStack` keeps
+its existing per-primitive opacity behavior if that is what you need.
+
+Group paint bounds include offset/scaled children even outside its layout box;
+Group does not implicitly clip them. Rendering reuses Composition's premultiplied
+offscreen painter, cache cleanup, and shared 256 MiB surface budget. Each non-empty
+Group adds an offscreen pass, even at opacity 1; Group isolation nesting is limited
+to 32 levels. Cameras and shared-element transforms follow the same surface path.
 
 `ForEach(items, key, view)` returns a frozen array of keyed nodes; pass it directly
 to a Stack or spread it alongside other children. Keys must be unique non-empty
@@ -229,13 +241,14 @@ Each modifier wraps its input and returns a new node:
 | `.frame({ width, height, align })`      | Number fixes an axis, `"fill"` uses offered space, omission keeps intrinsic size. Alignment defaults to center on both axes. Does not clip. |
 | `.offset(x, y = 0)`                     | Translates paint without moving siblings or changing layout size.                                                                           |
 | `.scale(x, y = x, anchor = [0.5, 0.5])` | Scales paint around a normalized local anchor; does not reflow.                                                                             |
-| `.opacity(value)`                       | Multiplies each descendant primitive's alpha.                                                                                               |
+| `.opacity(value)`                       | Fades a Group/Composition as one combined image; otherwise multiplies descendant primitive alpha.                                                                                               |
 | `.id(key)`                              | Names the resulting node for sibling identity and inspection.                                                                               |
 
 `Text("A").padding(20).frame({ width: 200 })` differs from
 `Text("A").frame({ width: 200 }).padding(20)`. Transform order also matters.
-Opacity is **per primitive**, not isolated group compositing: overlapping children
-are blended separately. There is no offscreen group-opacity pass in this slice.
+Opacity on ordinary Stacks is **per primitive**: overlapping children are faded
+separately. Group and Composition are isolation boundaries: descendants are blended
+first, then the boundary's opacity is applied to their combined image.
 
 ## Motion
 
@@ -552,8 +565,8 @@ letterboxing), and smoothly interpolates position/scale/affine pose while
 crossfading their appearance. No previous frame is used. Unmatched elements use
 an ordinary crossfade; duplicate shared IDs fail explicitly.
 
-IDs belong to drawable Text, Box, or Composition nodes. To animate a whole group,
-wrap it in a Composition and apply `.id()` to that Composition. A tagged
+IDs belong to drawable nodes, including Group and Composition. Apply `.id()` to a
+Group to match the whole flattened group as one element. A tagged Group or
 Composition is flattened as one element; its descendants are not matched again.
 Normal Stack IDs remain layout keys, not group isolation. Apply an ID to the
 primitive before modifiers, e.g. `Box({...}).id("hero").offset(100, 20)`.
@@ -670,7 +683,8 @@ Keep a reference to the Stage returned by a scene factory. After rendering,
 `stage.inspect()` returns the last successful `EvaluatedFrame`:
 
 - `tree`: paths, kinds, layout bounds, cumulative transforms, and children.
-- `commands`: paint order, source paths, styles/text runs, and opacity. Composition
+- `commands`: paint order, source paths, styles/text runs, and opacity. Group
+  commands contain an isolated child frame and its combined opacity; Composition
   commands contain their own evaluated World/overlay frames (and cameras).
 - `warnings`: content exceeding offered layout bounds, including local time.
 
@@ -697,7 +711,8 @@ pan/zoom/rotation, card-world seek determinism, and short MP4 export. Screenshot
 `composition.ts` owns World/Composition/Shot authoring; `nodes.ts` owns immutable
 declarations; `motion.ts` resolves animated values;
 `layout.ts` measures/places and emits a display list; `stage.ts` adapts the existing
-scene lifecycle; `renderer.ts` owns GPU buffers/textures and painting. GPU ownership
+scene lifecycle; `renderer.ts` owns GPU buffers/textures, isolated Group surfaces,
+and painting. GPU ownership
 is per scene instance; no GPU resources are stored in the authoring tree.
 
 Box uses a GPU rounded-rectangle shader. Text is shaped/rasterized with Canvas 2D

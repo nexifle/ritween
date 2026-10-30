@@ -263,7 +263,9 @@ export class ViewRenderer {
     const [ca, cb, cc, cd, ce, cf] = frame.camera?.matrix ?? [1, 0, 0, 1, 0, 0];
     const rasterScale = scale * textResolution;
     const activeSurfaces = new Set(
-      frame.commands.filter((c) => c.kind === "composition").map((c) => c.path),
+      frame.commands
+        .filter((c) => c.kind === "composition" || c.kind === "group")
+        .map((c) => c.path),
     );
     for (const [key, surface] of this.surfaces)
       if (!activeSurfaces.has(key)) {
@@ -272,7 +274,7 @@ export class ViewRenderer {
       }
     const compositionTextures = new Map<string, GPUTexture>();
     for (const c of frame.commands)
-      if (c.kind === "composition") {
+      if (c.kind === "composition" || c.kind === "group") {
         const width = Math.max(1, Math.ceil(c.bounds.width * scale)),
           height = Math.max(1, Math.ceil(c.bounds.height * scale));
         let surface = this.surfaces.get(c.path);
@@ -379,7 +381,8 @@ export class ViewRenderer {
           stroke: "#E43A79",
           strokeWidth: 1 / (scale * (frame.camera?.zoom ?? 1)),
         });
-        if (node.kind !== "composition") node.children.forEach(visit);
+        if (node.kind !== "composition" && node.kind !== "group")
+          node.children.forEach(visit);
       };
       visit(frame.tree);
     }
@@ -444,7 +447,7 @@ export class ViewRenderer {
     commands.forEach((c, i) => {
       try {
         let texture =
-          c.kind === "composition"
+          c.kind === "composition" || c.kind === "group"
             ? compositionTextures.get(c.path)!
             : this.white!;
         if (c.kind === "text") {
@@ -527,7 +530,7 @@ export class ViewRenderer {
             c.opacity,
             c.kind === "box"
               ? 0
-              : c.kind === "composition"
+              : c.kind === "composition" || c.kind === "group"
                 ? 2
                 : c.kind === "path"
                   ? 3

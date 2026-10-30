@@ -45,7 +45,7 @@ export function collectSharedElements(
       sourcePaths.add(c.path);
     }
     // A tagged composition is one flattened shared element; do not double-transform descendants.
-    if (c.kind === "composition" && !c.sharedId) {
+    if ((c.kind === "composition" || c.kind === "group") && !c.sharedId) {
       const pixels = [
         Math.max(1, Math.ceil(b.width * scale)),
         Math.max(1, Math.ceil(b.height * scale)),

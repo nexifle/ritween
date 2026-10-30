@@ -172,6 +172,57 @@ export async function validateStageTwo(page) {
         [30, 50],
       ],
     );
+    const groupOpacity = await draw(
+      project(
+        entry(() =>
+          Stage(
+            ({ localTime }) =>
+              Group([
+                Box({ width: 60, height: 60, fill: "#FF0000" }),
+                Box({ width: 60, height: 60, fill: "#0000FF" }).offset(20, 0),
+              ])
+                .offset(10, 20)
+                .opacity({ from: 0, to: 1, duration: 2, ease: "linear" }),
+            { background: "#FFFFFF" },
+          ),
+        ),
+      ),
+      [1, 0, 2, 1],
+      [
+        [15, 40],
+        [40, 40],
+        [85, 40],
+        [95, 40],
+      ],
+    );
+    const nestedGroupOpacity = await draw(
+      project(
+        entry(() =>
+          Stage(
+            () =>
+              Group([
+                Box({ width: 60, height: 60, fill: "#FF0000" }),
+                Group([
+                  Box({ width: 60, height: 60, fill: "#0000FF" }).opacity(0.5),
+                ])
+                  .opacity(0.5)
+                  .offset(20, 0),
+              ])
+                .opacity(0.5)
+                .scale(-1, 1, [0, 0])
+                .offset(90, 20),
+            { background: "#FFFFFF" },
+          ),
+        ),
+      ),
+      [0, 1, 0],
+      [
+        [80, 40],
+        [50, 40],
+        [20, 40],
+        [5, 40],
+      ],
+    );
     const images = {};
     for (const fit of ["contain", "cover"]) {
       images[fit] = await draw(
@@ -327,6 +378,8 @@ export async function validateStageTwo(page) {
     delete globalThis.__ritweenMediaActivation;
     return {
       shapes,
+      groupOpacity,
+      nestedGroupOpacity,
       images,
       videos,
       frozenVideo,
@@ -346,6 +399,22 @@ export async function validateStageTwo(page) {
     [0, 0, 255, 255],
   ]);
   assert.deepEqual(report.shapes[1], report.shapes[3]);
+  const near = (actual, expected) =>
+    expected.forEach((value, i) =>
+      assert.ok(Math.abs(actual[i] - value) <= 2, `${actual} != ${expected}`),
+    );
+  assert.deepEqual(report.groupOpacity[0], report.groupOpacity[3]);
+  near(report.groupOpacity[0][0], [255, 128, 128, 255]);
+  near(report.groupOpacity[0][1], [128, 128, 255, 255]);
+  near(report.groupOpacity[0][2], [128, 128, 255, 255]);
+  assert.deepEqual(report.groupOpacity[0][3], [255, 255, 255, 255]);
+  assert.deepEqual(report.groupOpacity[1], Array(4).fill([255, 255, 255, 255]));
+  assert.deepEqual(report.groupOpacity[2][1], [0, 0, 255, 255]);
+  assert.deepEqual(report.nestedGroupOpacity[0], report.nestedGroupOpacity[2]);
+  near(report.nestedGroupOpacity[0][0], [255, 128, 128, 255]);
+  near(report.nestedGroupOpacity[0][1], [223, 128, 159, 255]);
+  near(report.nestedGroupOpacity[0][2], [223, 223, 255, 255]);
+  assert.deepEqual(report.nestedGroupOpacity[0][3], [255, 255, 255, 255]);
   assert.deepEqual(report.images.contain[0], [
     [255, 255, 255, 255],
     [0, 255, 0, 255],

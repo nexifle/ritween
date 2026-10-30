@@ -86,11 +86,19 @@ test("Group overlays one slot, ForEach expands stable keyed siblings after modif
   );
   const group = evaluate(Group(nodes).opacity(0.5));
   assert.equal(group.tree.bounds.width, 24);
+  assert.equal(group.commands.length, 1);
+  const layer = group.commands[0];
+  assert.equal(layer.kind, "group");
+  assert.equal(layer.opacity, 0.5);
+  if (layer.kind !== "group") return;
   assert.deepEqual(
-    group.commands.map((c) => c.opacity),
-    [0.5, 0.5],
+    layer.frame.commands.map((c) => c.opacity),
+    [1, 1],
   );
-  assert.deepEqual(group.commands[0].bounds, group.commands[1].bounds);
+  assert.deepEqual(
+    layer.frame.commands[0].bounds,
+    layer.frame.commands[1].bounds,
+  );
   assert.throws(
     () =>
       ForEach(

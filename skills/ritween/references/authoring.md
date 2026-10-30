@@ -52,7 +52,10 @@ const scene = Stage(() => HStack(
 ```
 
 `ForEach` returns an array for its parent Stack. `Group` overlays children in one
-layout slot; opacity is per primitive. Circle trim uses fractions of a clockwise
+layout slot and fades its combined children with `.opacity()`, preserving each
+child's own alpha. Overlap is composited before Group opacity; ordinary Stacks
+retain per-primitive opacity. Groups use an extra bounded offscreen pass.
+Circle trim uses fractions of a clockwise
 turn from twelve o'clock. Line supports `from/to`, `width`, and animated `progress`.
 Motion presets produce tween data for `.opacity()`, `.offset()`, and `.scale()`;
 `Motion.keyframes` shares the same scene-local clock.

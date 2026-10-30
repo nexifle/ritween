@@ -50,6 +50,11 @@ export type DrawCommand = {
       readonly overlay?: EvaluatedFrame;
     }
   | {
+      readonly kind: "group";
+      readonly frame: EvaluatedFrame;
+      readonly overlay?: never;
+    }
+  | {
       readonly kind: "box";
       readonly fill: string;
       readonly radius: number;
@@ -407,6 +412,8 @@ export function evaluateView(
     y: number,
     transform: Transform,
     opacity: number,
+    drawList = commands,
+    isolationDepth = depth,
   ): LayoutNode {
     const s = m.node.spec;
     let [sx, sy, tx, ty] = transform;
@@ -434,8 +441,60 @@ export function evaluateView(
     }
     const current: Transform = [sx, sy, tx, ty];
     const bounds = { x, y, width: m.width, height: m.height };
+    if (s.kind === "group") {
+      if (isolationDepth >= 32)
+        throw Error(`${m.path}: Group nesting exceeds 32 levels.`);
+      const paints: DrawCommand[] = [];
+      const children = m.children.map((child) =>
+        place(child, x, y, current, 1, paints, isolationDepth + 1),
+      );
+      const tree = {
+        path: m.path,
+        kind: s.kind,
+        bounds,
+        transform: current,
+        children,
+      };
+      if (paints.length) {
+        // Paint bounds, not layout bounds, preserve offset/scaled children without clipping.
+        const extents = paints.map((paint) => {
+          const b = paint.bounds,
+            [px, py, dx, dy] = paint.transform;
+          return [
+            b.x * px + dx,
+            b.y * py + dy,
+            (b.x + b.width) * px + dx,
+            (b.y + b.height) * py + dy,
+          ];
+        });
+        const left = Math.min(...extents.flatMap((b) => [b[0], b[2]]));
+        const top = Math.min(...extents.flatMap((b) => [b[1], b[3]]));
+        const width = Math.max(...extents.flatMap((b) => [b[0], b[2]])) - left;
+        const height = Math.max(...extents.flatMap((b) => [b[1], b[3]])) - top;
+        if (width > 0 && height > 0)
+          drawList.push({
+            kind: "group",
+            path: m.path,
+            sharedId: m.node.key,
+            bounds: { x: left, y: top, width, height },
+            transform: [1, 1, 0, 0],
+            opacity,
+            frame: {
+              tree,
+              commands: paints,
+              warnings: [],
+              camera: evaluateCamera(
+                { x: left, y: top, anchor: [0, 0] },
+                time,
+                [width, height],
+              ),
+            },
+          });
+      }
+      return tree;
+    }
     if (m.composition)
-      commands.push({
+      drawList.push({
         kind: "composition",
         sharedId: m.node.key,
         path: m.path,
@@ -451,7 +510,7 @@ export function evaluateView(
         (options.context?.time ?? time) >= s.clip.start &&
         (options.context?.time ?? time) <= s.clip.start + s.clip.duration)
     )
-      commands.push({
+      drawList.push({
         kind: "media",
         source: s,
         time: options.context?.time ?? time,
@@ -475,7 +534,7 @@ export function evaluateView(
         [geometry.stroke, s.kind === "circle" ? s.style.stroke : undefined],
       ] as const)
         if (outline.length && color) {
-          commands.push({
+          drawList.push({
             kind: "path",
             sharedId: m.node.key,
             path: m.path,
@@ -490,7 +549,7 @@ export function evaluateView(
         }
     }
     if (s.kind === "path")
-      commands.push({
+      drawList.push({
         kind: "path",
         path: m.path,
         sharedId: m.node.key,
@@ -503,7 +562,7 @@ export function evaluateView(
         fillRule: s.style.fillRule ?? "nonzero",
       });
     if (s.kind === "box")
-      commands.push({
+      drawList.push({
         kind: "box",
         sharedId: m.node.key,
         path: m.path,
@@ -516,7 +575,7 @@ export function evaluateView(
         strokeWidth: s.style.strokeWidth ?? 0,
       });
     if (m.text)
-      commands.push({
+      drawList.push({
         kind: "text",
         sharedId: m.node.key,
         path: m.path,
@@ -551,7 +610,7 @@ export function evaluateView(
         cx += align(s.options.align ?? "center", m.width - child.width);
         cy += align(s.options.align ?? "center", m.height - child.height);
       }
-      return place(child, cx, cy, current, opacity);
+      return place(child, cx, cy, current, opacity, drawList, isolationDepth);
     });
     if (m.composition) children.push(m.composition.tree);
     if (m.overlay) children.push(m.overlay.tree);

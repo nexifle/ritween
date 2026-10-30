@@ -32,7 +32,7 @@ export function frameMedia(
   return frame.commands.flatMap((c) =>
     c.kind === "media"
       ? [c]
-      : c.kind === "composition"
+      : c.kind === "composition" || c.kind === "group"
         ? [...frameMedia(c.frame), ...(c.overlay ? frameMedia(c.overlay) : [])]
         : [],
   );

@@ -178,7 +178,7 @@ export function VStack(
 ): ViewNode {
   return stack("vstack", children, options);
 }
-/** One layout slot, top-left overlay children; opacity remains per primitive. */
+/** One layout slot; children are composited together before applying group opacity. */
 export function Group(children: readonly ViewNode[]): ViewNode {
   return stack("group", children, { align: "start" });
 }

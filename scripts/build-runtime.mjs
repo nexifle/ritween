@@ -82,7 +82,6 @@ async function buildDemo(directory) {
       await buildDemo(source);
       continue;
     }
-    if (!/\.(ts|tsx|js)$/.test(entry.name)) continue;
     const target = resolve(
       outDir,
       "demo",
@@ -91,6 +90,11 @@ async function buildDemo(directory) {
         ".js",
       ),
     );
+    await mkdir(dirname(target), { recursive: true });
+    if (!/\.(ts|tsx|js)$/.test(entry.name)) {
+      await cp(source, target);
+      continue;
+    }
     let code = (
       await transformWithEsbuild(await readFile(source, "utf8"), source, {
         loader: entry.name.endsWith("tsx")
@@ -110,7 +114,6 @@ async function buildDemo(directory) {
       /source:\s*(["'])([^"']+)\.(ts|tsx)\1/g,
       'source: "$2.js"',
     );
-    await mkdir(dirname(target), { recursive: true });
     await writeFile(target, code);
   }
 }

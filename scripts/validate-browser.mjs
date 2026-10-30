@@ -53,8 +53,18 @@ try {
     .getByRole("button", { name: "Previous frame", exact: true })
     .click();
   await page.getByRole("button", { name: "Restart", exact: true }).click();
-  await page.getByRole("button", { name: "Mute A1", exact: true }).click();
-  await page.getByRole("button", { name: "Unmute A1", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "Mute Original • Circuit Playground / 120 BPM",
+      exact: true,
+    })
+    .click();
+  await page
+    .getByRole("button", {
+      name: "Unmute Original • Circuit Playground / 120 BPM",
+      exact: true,
+    })
+    .click();
   await page.getByRole("button", { name: "Mute mix", exact: true }).click();
   await page.getByRole("button", { name: "Unmute mix", exact: true }).click();
   await page.getByRole("button", { name: "Play", exact: true }).click();
@@ -67,6 +77,8 @@ try {
     { timeout: 10000 },
   );
   await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.getByLabel("Resolution", { exact: true }).selectOption("1280x720");
+  await page.getByLabel("Frame rate", { exact: true }).selectOption("30");
   await page
     .getByLabel("Video bitrate", { exact: true })
     .selectOption("4000000");
@@ -88,7 +100,7 @@ try {
   const encoderConfig = await page.evaluate(() => window.exportEncoderConfig);
   assert.equal(encoderConfig.bitrate, 4000000);
   assert.equal(encoderConfig.latencyMode, "quality");
-  await page.getByRole("status").filter({ hasText: "240 frames" }).waitFor();
+  await page.getByRole("status").filter({ hasText: "1350 frames" }).waitFor();
   const report = await page.evaluate(async () => {
     const link = document.querySelector("a[download]");
     const blob = await (await fetch(link.href)).blob();
@@ -303,16 +315,16 @@ try {
       tracks: traks.length,
     };
   });
-  assert.equal(report.samples, 240);
-  assert.equal(report.decoded, 240);
-  assert.equal(report.duration, 8);
-  assert.equal(report.playbackDuration, 8);
+  assert.equal(report.samples, 1350);
+  assert.equal(report.decoded, 1350);
+  assert.equal(report.duration, 45);
+  assert.equal(report.playbackDuration, 45);
   assert.equal(report.tracks, 2);
   assert.equal(report.audioRate, 48000);
   assert.ok(report.audioFrames > 0);
   assert.ok(report.audioRms > 1, "scheduled notes should survive AAC");
   assert.equal(report.firstTimestamp, 0);
-  assert.equal(report.lastTimestamp, 7966667);
+  assert.equal(report.lastTimestamp, 44966667);
   for (const seek of report.seekable) {
     assert.ok(Math.abs(seek.actual - seek.requested) < 0.04);
     assert.equal(seek.width, 1280);
@@ -604,7 +616,7 @@ try {
   );
   console.log(JSON.stringify(report, null, 2));
   console.log(
-    "PASS: GPU seek determinism, transport, real export, 240 decoded frames, MP4 playback/seeking, cancellation, mobile layout, managed audio PCM/effects/limits/cache/mute/abort/failure/concurrency.",
+    "PASS: GPU seek determinism, transport, real export, 1350 decoded frames, MP4 playback/seeking, cancellation, mobile layout, managed audio PCM/effects/limits/cache/mute/abort/failure/concurrency.",
   );
 } finally {
   await browser.close();

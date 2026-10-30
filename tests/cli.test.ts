@@ -8,6 +8,7 @@ import {
 } from "../cli/project.ts";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 test("CLI resolves web preview, PNG preview alias, frame indices and export presets", () => {
   assert.equal(parseOptions(["preview"]).command, "preview");
   const frame = parseOptions([
@@ -120,13 +121,30 @@ test("scene source reads files next to the manifest and rejects paths that leave
     new URL("../src/project/manifest.ts", import.meta.url),
   );
   const { sources } = sceneSources(manifest);
-  assert.match(sources["scenes/intro.ts"], /createIntro/);
-  assert.match(sources["scenes/main.tsx"], /createMain/);
-  assert.match(sources["scenes/outro.js"], /createOutro/);
+  for (const id of [
+    "opening",
+    "charts",
+    "npr",
+    "synthesis",
+    "camera",
+    "pipeline",
+    "benchmark",
+    "closing",
+  ]) {
+    assert.match(sources[`scenes/${id}.ts`], /createScene/);
+  }
   assert.equal(resolveSceneSource(manifest, "../engine/types.ts"), null);
   assert.equal(resolveSceneSource(manifest, "/etc/passwd"), null);
   assert.equal(resolveSceneSource(manifest, "scenes/missing.ts"), null);
-  assert.equal(resolveSceneSource(manifest, "scenes/intro.ts?raw"), null);
+  assert.equal(resolveSceneSource(manifest, "scenes/opening.ts?raw"), null);
+});
+
+test("bundled demo build preserves its logo asset", async () => {
+  const root = new URL("../", import.meta.url);
+  assert.deepEqual(
+    await readFile(new URL("dist/demo/assets/ritween-logo.svg", root)),
+    await readFile(new URL("src/project/assets/ritween-logo.svg", root)),
+  );
 });
 
 test("CLI exposes encoding controls and rejects invalid or misplaced export settings", () => {

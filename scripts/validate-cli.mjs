@@ -68,10 +68,10 @@ try {
     ).stdout,
   );
   assert.equal(result.time, 5.2);
-  assert.equal(result.width, 1280);
-  assert.equal(result.height, 720);
+  assert.equal(result.width, 1920);
+  assert.equal(result.height, 1080);
   const image = await png(frame);
-  assert.equal(image.width, 1280);
+  assert.equal(image.width, 1920);
   assert.ok(
     image.data.length > 10000,
     "Procedural frame must contain actual image data",
@@ -191,8 +191,8 @@ try {
   assert.equal(exported.bitrate, 2000000);
   assert.equal(exported.latencyMode, "quality");
   assert.equal(exported.keyFrameInterval, 1);
-  assert.equal(exported.frames, 240);
-  assert.equal(exported.duration, 8);
+  assert.equal(exported.frames, 1350);
+  assert.equal(exported.duration, 45);
   assert.ok((await stat(video)).size > 100000);
   // Reuse the native export as imported footage, without external fixtures.
   const mediaProject = join(directory, "media-project");
@@ -281,7 +281,7 @@ scenes: [videoClip({id:"footage",name:"Footage",source:"manifest.ts",url:"/sourc
       Array.from(await readFile(video)),
     );
     assert.deepEqual(media, {
-      duration: 8,
+      duration: 45,
       width: 1280,
       height: 720,
       time: 5.2,
@@ -431,7 +431,7 @@ scenes: [videoClip({id:"footage",name:"Footage",source:"manifest.ts",url:"/sourc
       "timeout cleanup",
       "plain-text export progress and labeled result",
       "JSON export progress contract",
-      "240-frame MP4 export",
+      "1350-frame MP4 export",
       "native playback and seeking",
       "studio SVG favicon with project public assets",
       "web preview, external source HMR, and signal shutdown",

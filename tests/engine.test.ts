@@ -78,15 +78,19 @@ test("export sizes keep any project aspect inside H.264 Level 4.2", () => {
   assert.throws(() => assertExportSize(landscape, 721, 405), /even/);
   assert.throws(() => assertExportSize(landscape, 4096, 2304), /Level 4\.2/);
 });
-test("manifest spans eight seconds with exact hard cuts and seekable local time", () => {
+test("manifest spans 45 seconds with exact hard cuts and seekable local time", () => {
   validateProject(project);
   for (const [time, id, local] of [
-    [0, "intro", 0],
-    [1.999, "intro", 1.999],
-    [2, "main", 0],
-    [5.2, "main", 3.2],
-    [6, "outro", 0],
-    [8, "outro", 2],
+    [0, "opening", 0],
+    [5.999, "opening", 5.999],
+    [6, "charts", 0],
+    [11, "npr", 0],
+    [16, "synthesis", 0],
+    [21, "camera", 0],
+    [27, "pipeline", 0],
+    [32, "benchmark", 0],
+    [39, "closing", 0],
+    [45, "closing", 6],
   ] as const) {
     const e = evaluate(project, time);
     assert.equal(e.entry.id, id);
@@ -116,7 +120,7 @@ test("audio sample count matches every supported frame rate and clips stay on th
           id: "a1",
           name: "A1",
           clips: [
-            { ...project.audioTracks![0].clips[0], start: 5, duration: 4 },
+            { ...project.audioTracks![0].clips[0], start: 42, duration: 4 },
           ],
         },
       ],

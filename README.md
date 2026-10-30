@@ -122,7 +122,7 @@ The skill guides the agent; it does not render video by itself. Preview and expo
 
 ## Author a composition
 
-The bundled project is an eight-second composition with three scenes and two audio tracks. Start with:
+The bundled project is a 45-second composition with eight scenes and two audio tracks. Start with:
 
 | File                                                 | Purpose                                                      |
 | ---------------------------------------------------- | ------------------------------------------------------------ |
@@ -155,9 +155,9 @@ This is a lifecycle outline; use the bundled scenes for complete rendering imple
 
 Scene modules execute as application code. Use trusted source modules. TSX files are supported as modules; JSX is not automatically converted into GPU graphics.
 
-## Aset media lokal
+## Local media assets
 
-Ritween menyediakan helper `audioFile`, `imageScene`, dan `videoClip`, serta `loadImageTexture`, `videoResource`, dan `loadVideoTexture` untuk custom scene WebGPU. Letakkan file dalam `public/` proyek: `public/media/shot.mp4` diakses sebagai `/media/shot.mp4`.
+Ritween provides `audioFile`, `imageScene`, and `videoClip` helpers, plus `loadImageTexture`, `videoResource`, and `loadVideoTexture` for custom WebGPU scenes. Place assets in your project's `public/` directory: a file at `public/media/shot.mp4` is available at `/media/shot.mp4`.
 
 ```ts
 videoClip({
@@ -172,11 +172,11 @@ videoClip({
 });
 ```
 
-Helper tersebut menghasilkan scene lima detik dan audio footage terkait. Mute per clip dapat diatur melalui kode dan studio; override `settings.audioClips[id].muted` tersimpan pada sidecar serta digunakan saat export. Gambar tetap tampil saat audio di-mute.
+This example creates a five-second scene with the video's audio. You can mute individual clips in code or in the studio; `settings.audioClips[id].muted` overrides are saved in the settings sidecar and applied during export. Muting audio does not hide the video.
 
-Untuk beberapa gambar/video, posisi 2D/3D, mask, atau shader khusus, gunakan resource texture dalam scene sendiri. Daftarkan descriptor video di `project.mediaClips` atau `scene.mediaClips` untuk audio terkait. Scene dengan `prepareFrame` asinkron menggunakan `Renderer.renderAsync`; `render` tetap sinkron.
+For multiple images or videos, 2D/3D positioning, masks, or custom shaders, use texture resources in your own scene. Register video descriptors in `project.mediaClips` or `scene.mediaClips` to include their audio. Scenes with an asynchronous `prepareFrame` method use `Renderer.renderAsync`; `render` remains synchronous.
 
-Input video memakai pembaca MP4 internal dan WebCodecs browser, tanpa dependency media pihak ketiga. MP4 non-fragmented mendukung H.264 (`avc1`/`avc3`), HEVC/H.265 (`hvc1`/`hev1`), dan AV1 (`av01`), dengan AAC-LC opsional. Parser juga menerima compact sample table `stz2`, metadata dependensi `sdtp`, serta sample groups AAC `roll`/`prol` dengan dependensi mundur, termasuk keluaran FFmpeg yang umum. Kemampuan decode mengikuti browser/perangkat; fragmented MP4, enkripsi, rotasi track, dan struktur yang belum didukung tetap ditolak eksplisit. Ekspor tetap H.264/AAC. Lihat [panduan aset media](skills/ritween/references/media-assets.md) untuk contoh lengkap dan batas validasi.
+Video input uses the built-in MP4 reader and browser WebCodecs, with no third-party media dependencies. Non-fragmented MP4 files support H.264 (`avc1`/`avc3`), HEVC/H.265 (`hvc1`/`hev1`), and AV1 (`av01`), with optional AAC-LC audio. The parser also accepts `stz2` compact sample tables, `sdtp` dependency metadata, and AAC `roll`/`prol` sample groups with backward dependencies, including common FFmpeg output. Decoding support depends on the browser and device. Fragmented MP4, encryption, track rotation, and unsupported structures are explicitly rejected. Export remains H.264/AAC. See the [media assets guide](skills/ritween/references/media-assets.md) for complete examples and validation limits.
 
 ## Use the studio
 
@@ -189,7 +189,7 @@ Export sizes preserve the project aspect ratio, using an even frame size with a 
 
 ### Project settings and browser preferences
 
-Mute track/clip dan opsi export disimpan di sebelah manifest dalam `manifest.settings.json`. Sertakan sidecar ini dalam version control agar preview, CLI export, dan production build memakai setting yang sama. Penyimpanan membutuhkan server development atau CLI preview; deployment statis tidak dapat menulis file sumber.
+Track and clip mute settings and export options are saved alongside the manifest in `manifest.settings.json`. Include this sidecar file in version control so preview, CLI export, and production builds use the same settings. Saving requires the development server or CLI preview; static deployments cannot write source files.
 
 CLI export resolves settings in this order: **explicit flags → saved project settings → framework defaults**. Muted tracks are excluded from exported audio; preview volume and master mute only affect listening.
 

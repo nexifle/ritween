@@ -1,3 +1,4 @@
+import { normalizePaths } from "./path-geometry";
 import { ViewNode } from "./nodes";
 import { resolveNumber, snapshotNumber, type AnimatedNumber } from "./motion";
 
@@ -15,6 +16,8 @@ export interface PathStyle {
   readonly fillRule?: "nonzero" | "evenodd";
   readonly to?: PathOutline;
   readonly progress?: AnimatedNumber;
+  /** Auto matches contours; strict preserves exact matching Bézier commands. */
+  readonly topology?: "auto" | "strict";
 }
 export interface PathSpec {
   readonly kind: "path";
@@ -67,8 +70,15 @@ export function Path(outline: PathOutline, style: PathStyle): ViewNode {
     throw Error("Path dimensions must be positive and finite.");
   if (style.fillRule && !["nonzero", "evenodd"].includes(style.fillRule))
     throw Error("Invalid path fill rule.");
-  const from = snapshotOutline(outline),
+  let from = snapshotOutline(outline),
     to = style.to && snapshotOutline(style.to);
+  if (
+    to &&
+    style.topology !== "strict" &&
+    (from.length !== to.length ||
+      from.some((c, i) => c[0] !== to![i][0] || c.length !== to![i].length))
+  )
+    [from, to] = normalizePaths(from, to);
   if (to) morphPath(from, to, 0);
   return new ViewNode({
     kind: "path",

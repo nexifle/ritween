@@ -1,3 +1,4 @@
+export { normalizePaths } from "./path-geometry";
 export { Path, Glyph, morphPath } from "./path";
 export type {
   PathCommand,

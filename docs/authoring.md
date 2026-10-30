@@ -450,18 +450,28 @@ including holes, without double-image crossfading. Supply outlines extracted fro
 fonts in advance, normalized to the same coordinate system. Browser Text remains
 font-shaped text; Glyph is explicit outline artwork, not a text shaping engine.
 
-Both endpoints must have identical command types/counts, contour order, and winding.
-Normalize curves to matching cubic segments before authoring incompatible outlines;
-invalid topology fails explicitly, rather than producing a misleading crossfade.
-Up to 4096 commands are accepted. The implementation rasterizes the interpolated
-vector outline via Canvas Path2D before WebGPU compositing; it is not GPU tessellation.
+Matching command topology preserves exact Bézier interpolation. Mismatched topology
+is normalized automatically by flattening curves, matching contours by winding and
+area, resampling arc length, and aligning start points. Missing contours collapse
+to a point, allowing holes to appear/disappear. Set `topology: "strict"` to reject
+mismatches, or call `normalizePaths(from, to, samples = 64)` explicitly. Automatic
+matching is a geometric heuristic, not semantic recognition; complex silhouettes
+may need hand-authored correspondence. It supports up to 32 contours and 8..256
+samples per contour; input outlines remain bounded at 4096 commands.
+
+Path/Glyph no longer use Canvas Path2D, raster textures, or texture uploads. CPU
+adaptive subdivision converts Béziers to edges (0.25 outline-unit tolerance, at most
+32768 points), then the WebGPU fragment shader evaluates winding/parity and edge
+coverage directly at output resolution. Text still uses its existing rasterizer.
+This is direct GPU edge rendering, not triangle tessellation; fragment cost grows
+with edge count and covered viewport area. Extreme zoom can expose the curve
+subdivision tolerance; nested compositions still have their own offscreen surfaces.
 Morph geometry inside a World and optionally use shared transitions to move that
 World/element between shots. The `shared` transition does not infer outline pairs.
 
 AI selection: use **shared** for layout/pose continuity, **Path** for geometric
 shape morphs, **Glyph** for pre-extracted letter contours, and **custom WGSL** for
-pixel-based effects. Automatic font-file parsing, shaping, and contour topology
-normalization are not provided.
+pixel-based effects. Automatic font-file parsing and shaping remain deferred.
 
 ### Custom WGSL transitions
 

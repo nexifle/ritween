@@ -1,3 +1,4 @@
+import { flattenPath } from "./path-geometry";
 import type { RenderContext, SetupContext } from "../engine/types";
 import { identity, inverse, multiply } from "../engine/render/shared-elements";
 import type { DrawCommand, EvaluatedFrame, TextRun } from "./layout";
@@ -11,6 +12,7 @@ struct Controls {
 @group(0) @binding(0) var<uniform> c: Controls;
 @group(0) @binding(1) var image: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var<storage,read> edges: array<vec4f>;
 struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 @vertex fn vs(@builtin(vertex_index) i: u32) -> Out {
   let corners = array<vec2f,6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));
@@ -19,6 +21,21 @@ struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   var o:Out; o.pos=vec4f(p.x/c.resolution.x*2-1,1-p.y/c.resolution.y*2,0,1); o.uv=uv; return o;
 }
 @fragment fn fs(i:Out) -> @location(0) vec4f {
+  if(c.textured>2.5) {
+    let p=i.uv*c.rect.zw; var winding=0; var distance=1e20;
+    for(var j=0u;j<u32(c.padding.x);j++) {
+      let edge=edges[j]; let a=edge.xy; let b=edge.zw; let v=b-a;
+      let nearest=a+v*clamp(dot(p-a,v)/max(dot(v,v),1e-20),0.,1.);
+      distance=min(distance,length(p-nearest));
+      let cross=v.x*(p.y-a.y)-v.y*(p.x-a.x);
+      if(a.y<=p.y && b.y>p.y && cross>0.) { winding++; }
+      if(a.y>p.y && b.y<=p.y && cross<0.) { winding--; }
+    }
+    let inside=select(winding!=0,abs(winding)%2==1,c.padding.y>0.5);
+    let aa=max(length(fwidth(p)),0.00001);
+    let coverage=clamp(0.5+select(-distance,distance,inside)/aa,0.,1.);
+    return vec4f(c.fill.rgb,c.fill.a*c.opacity*coverage);
+  }
   let sample=textureSample(image,samp,i.uv);
   if(c.textured>1.5) { return vec4f(sample.rgb/max(sample.a,0.00001),sample.a*c.opacity); }
   if(c.textured>0.5) { return vec4f(sample.rgb,sample.a*c.opacity); }
@@ -43,6 +60,7 @@ const MAX_TEXT_ENTRIES = 128;
 export class ViewRenderer {
   private pipeline?: GPURenderPipeline;
   private uniform?: GPUBuffer;
+  private edgeBuffer?: GPUBuffer;
   private white?: GPUTexture;
   private sampler?: GPUSampler;
   private texts = new Map<string, CachedText>();
@@ -150,7 +168,7 @@ export class ViewRenderer {
     return JSON.stringify([text, width, height, scale]);
   }
   private rasterText(
-    command: Extract<DrawCommand, { kind: "text" | "path" }>,
+    command: Extract<DrawCommand, { kind: "text" }>,
     scale: number,
     context: RenderContext,
   ): CachedText {
@@ -177,10 +195,7 @@ export class ViewRenderer {
     this.canvas.height = height;
     const p = this.context;
     p.scale(scale, scale);
-    if (command.kind === "path") {
-      p.fillStyle = command.fill;
-      p.fill(new Path2D(command.data), command.fillRule);
-    } else {
+    {
       const t = command.text;
       p.font = t.font;
       p.fillStyle = t.color;
@@ -363,24 +378,8 @@ export class ViewRenderer {
     }
     const keys = new Set(
       commands.flatMap((c) =>
-        c.kind === "text" || c.kind === "path"
-          ? [
-              c.kind === "path"
-                ? JSON.stringify([
-                    c.data,
-                    c.fill,
-                    c.fillRule,
-                    c.bounds.width,
-                    c.bounds.height,
-                    rasterScale,
-                  ])
-                : this.textKey(
-                    c.text,
-                    c.bounds.width,
-                    c.bounds.height,
-                    rasterScale,
-                  ),
-            ]
+        c.kind === "text"
+          ? [this.textKey(c.text, c.bounds.width, c.bounds.height, rasterScale)]
           : [],
       ),
     );
@@ -405,6 +404,35 @@ export class ViewRenderer {
     }
     const values = new Float32Array(bytes / 4);
     // shortcut: one binding/draw per primitive, batch only after real workload measurements.
+    const edgeValues: number[] = [];
+    const edgeRanges = commands.map((c) => {
+      const offset = edgeValues.length * 4;
+      if (c.kind === "path")
+        for (const contour of flattenPath(c.outline))
+          contour.forEach((p, i) =>
+            edgeValues.push(...p, ...contour[(i + 1) % contour.length]),
+          );
+      const count = (edgeValues.length * 4 - offset) / 16;
+      const alignment = context.device.limits.minStorageBufferOffsetAlignment;
+      while ((edgeValues.length * 4) % alignment) edgeValues.push(0);
+      return { offset, count };
+    });
+    const edgeBytes = Math.max(16, edgeValues.length * 4 + 16);
+    if (edgeBytes > context.device.limits.maxStorageBufferBindingSize)
+      throw Error("Path edges exceed GPU storage budget.");
+    if (!this.edgeBuffer || this.edgeBuffer.size < edgeBytes) {
+      this.edgeBuffer?.destroy();
+      this.edgeBuffer = context.device.createBuffer({
+        size: edgeBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+    }
+    if (edgeValues.length)
+      context.device.queue.writeBuffer(
+        this.edgeBuffer,
+        0,
+        new Float32Array(edgeValues),
+      );
     const bindings: GPUBindGroup[] = [];
     commands.forEach((c, i) => {
       try {
@@ -412,26 +440,16 @@ export class ViewRenderer {
           c.kind === "composition"
             ? compositionTextures.get(c.path)!
             : this.white!;
-        if (c.kind === "text" || c.kind === "path") {
-          const key =
-            c.kind === "path"
-              ? JSON.stringify([
-                  c.data,
-                  c.fill,
-                  c.fillRule,
-                  c.bounds.width,
-                  c.bounds.height,
-                  rasterScale,
-                ])
-              : this.textKey(
-                  c.text,
-                  c.bounds.width,
-                  c.bounds.height,
-                  rasterScale,
-                );
+        if (c.kind === "text") {
+          const key = this.textKey(
+            c.text,
+            c.bounds.width,
+            c.bounds.height,
+            rasterScale,
+          );
           let cached = this.texts.get(key);
           if (!cached) {
-            this.color(c.kind === "path" ? c.fill : c.text.color);
+            this.color(c.text.color);
             cached = this.rasterText(c, rasterScale, context);
             this.texts.set(key, cached);
           }
@@ -470,14 +488,22 @@ export class ViewRenderer {
             ...context.resolution,
             c.kind === "box" ? c.radius : 0,
             c.kind === "box" ? c.strokeWidth : 0,
-            ...(c.kind === "box" ? this.color(c.fill) : [1, 1, 1, 1]),
+            ...(c.kind === "box" || c.kind === "path"
+              ? this.color(c.fill)
+              : [1, 1, 1, 1]),
             ...(c.kind === "box" && c.stroke
               ? this.color(c.stroke)
               : [0, 0, 0, 0]),
             c.opacity,
-            c.kind === "box" ? 0 : c.kind === "composition" ? 2 : 1,
-            0,
-            0,
+            c.kind === "box"
+              ? 0
+              : c.kind === "composition"
+                ? 2
+                : c.kind === "path"
+                  ? 3
+                  : 1,
+            edgeRanges[i].count,
+            c.kind === "path" && c.fillRule === "evenodd" ? 1 : 0,
             drawCamera[0],
             drawCamera[2],
             drawCamera[4],
@@ -503,6 +529,14 @@ export class ViewRenderer {
               },
               { binding: 1, resource: texture.createView() },
               { binding: 2, resource: this.sampler! },
+              {
+                binding: 3,
+                resource: {
+                  buffer: this.edgeBuffer!,
+                  offset: edgeRanges[i].offset,
+                  size: Math.max(16, edgeRanges[i].count * 16),
+                },
+              },
             ],
           }),
         );
@@ -559,6 +593,7 @@ export class ViewRenderer {
     if (this.disposed) return;
     this.disposed = true;
     this.uniform?.destroy();
+    this.edgeBuffer?.destroy();
     if (this.ownsShared) this.white?.destroy();
     for (const surface of this.surfaces.values()) this.releaseSurface(surface);
     this.surfaces.clear();

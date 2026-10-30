@@ -1,4 +1,4 @@
-import { evaluatePath, pathData } from "./path";
+import { evaluatePath, pathData, type PathOutline } from "./path";
 import { resolveNumber } from "./motion";
 import { evaluateCamera, type CameraState } from "./camera";
 import type { StageContext } from "./stage";
@@ -57,6 +57,7 @@ export type DrawCommand = {
   | {
       readonly kind: "path";
       readonly data: string;
+      readonly outline: PathOutline;
       readonly fill: string;
       readonly fillRule: "nonzero" | "evenodd";
     }
@@ -437,6 +438,7 @@ export function evaluateView(
         transform: current,
         opacity,
         data: pathData(evaluatePath(s, time)),
+        outline: evaluatePath(s, time),
         fill: s.style.fill ?? theme.textColor,
         fillRule: s.style.fillRule ?? "nonzero",
       });

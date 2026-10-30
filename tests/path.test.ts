@@ -4,6 +4,7 @@ import {
   Path,
   Glyph,
   morphPath,
+  normalizePaths,
   evaluateView,
   type PathOutline,
 } from "../src/authoring/index";
@@ -21,6 +22,37 @@ const diamond: PathOutline = [
   ["L", 0, 50],
   ["Z"],
 ];
+test("automatic topology normalizes curves, missing contours and unequal command counts", () => {
+  const curve: PathOutline = [
+    ["M", 0, 0],
+    ["C", 100, 0, 100, 100, 0, 100],
+    ["Z"],
+  ];
+  const [a, b] = normalizePaths(square, curve, 32);
+  assert.equal(a.length, b.length);
+  assert.doesNotThrow(() => morphPath(a, b, 0.5));
+  const holed: PathOutline = [
+    ...square,
+    ["M", 25, 25],
+    ["L", 25, 75],
+    ["L", 75, 75],
+    ["L", 75, 25],
+    ["Z"],
+  ];
+  const [c, d] = normalizePaths(square, holed);
+  assert.equal(c.filter((p) => p[0] === "M").length, 2);
+  assert.equal(c.length, d.length);
+  assert.doesNotThrow(() =>
+    Path(square, { width: 100, height: 100, to: curve }),
+  );
+  assert.throws(
+    () =>
+      Path(square, { width: 100, height: 100, to: curve, topology: "strict" }),
+    /matching/,
+  );
+  assert.throws(() => normalizePaths(square, curve, 10000), /samples/);
+});
+
 test("path morph interpolates actual coordinates and clamps endpoints", () => {
   assert.deepEqual(morphPath(square, diamond, 0.5)[0], ["M", 25, 0]);
   assert.deepEqual(morphPath(square, diamond, -1), square);

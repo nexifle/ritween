@@ -14,6 +14,8 @@ A code-first video framework powered by WebGPU and native browser codecs.
 [![Publish to npm](https://github.com/nexifle/ritween/actions/workflows/publish.yml/badge.svg)](https://github.com/nexifle/ritween/actions/workflows/publish.yml)
 [![CI](https://github.com/nexifle/ritween/actions/workflows/ci.yml/badge.svg)](https://github.com/nexifle/ritween/actions/workflows/ci.yml)
 
+<img src="docs/demo.gif" alt="Ritween studio preview" width="960">
+
 **Engineered by [Nexifle Lab](https://nexifle.com).**
 
 </div>

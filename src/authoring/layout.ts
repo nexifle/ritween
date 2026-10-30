@@ -583,14 +583,24 @@ export function evaluateView(
       const geometry = m.shape!;
       const fill =
         s.kind === "circle"
-          ? (s.style.fill ??
-            (s.style.stroke
-              ? undefined
-              : (theme.colors.accent ?? theme.textColor)))
+          ? s.style.strokeOnly
+            ? undefined
+            : (s.style.fill ??
+              (s.style.stroke
+                ? undefined
+                : (theme.colors.accent ?? theme.textColor)))
           : (s.style.color ?? theme.textColor);
       for (const [outline, color] of [
         [geometry.fill, fill],
-        [geometry.stroke, s.kind === "circle" ? s.style.stroke : undefined],
+        [
+          geometry.stroke,
+          s.kind === "circle"
+            ? (s.style.stroke ??
+              (s.style.strokeOnly
+                ? (theme.colors.accent ?? theme.textColor)
+                : undefined))
+            : undefined,
+        ],
       ] as const)
         if (outline.length && color) {
           drawList.push({

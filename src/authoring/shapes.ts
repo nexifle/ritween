@@ -6,6 +6,7 @@ export interface CircleStyle {
   readonly radius: AnimatedNumber;
   readonly fill?: string;
   readonly stroke?: string;
+  readonly strokeOnly?: boolean;
   readonly strokeWidth?: number;
   /** Fractions of one clockwise turn, starting at twelve o'clock. */
   readonly trim?: readonly [AnimatedNumber, AnimatedNumber];

@@ -6,7 +6,7 @@ The authoring layer provides Stack layout, Text, Box, immutable modifiers,
 deterministic motion, Camera 2D, reusable Worlds, nested Compositions, timeline
 Shots, overlap transitions, Circle/Line shapes, Group/ForEach, Image/Video nodes,
 motion presets, geometric clipping, image/luminance masks, media crop, and a
-CPU-inspectable tree/display list. Chart components are not implemented yet.
+CPU-inspectable tree/display list and chart components.
 
 ## A complete project
 
@@ -111,7 +111,9 @@ even when the returned node ends in modifiers.
 
 Circle uses a radius in design units. Trim is `[start, end]` in clockwise turns
 from twelve o'clock, with `0 <= start <= end <= 1`; use stroke/strokeWidth for a
-ring or donut. Stroke is inside the radius. A filled partial circle is a sector.
+ring or donut. `strokeOnly: true` suppresses fill and uses the theme accent (or
+text color when no accent exists) if stroke is omitted; an explicit stroke wins.
+Stroke is inside the radius. A filled partial circle is a sector.
 Line endpoints are local coordinates: its layout box normalizes their minimum
 coordinates and includes stroke width. Line has butt caps; progress reveals the
 segment without changing its layout bounds. Position either shape with modifiers.
@@ -796,3 +798,77 @@ There is one draw per primitive and bind groups are rebuilt per frame. Measure r
 workloads before adding batching, incremental layout, or shared caches. Scaling
 text far above its original raster resolution can soften it. Text advance bounds
 are not a full typographic ink-bounds model; unusual font overhangs may clip.
+
+### Explicit grids and charts
+
+`Grid(cells, options)` uses zero-based row and column coordinates. Supply positive
+integer `columns` and `rows`, positive fixed `cellWidth` and `cellHeight`, and
+optional non-negative `columnGap` and `rowGap`. Each cell has a unique `id`, a
+`view`, and optional positive `columnSpan` and `rowSpan`; spans must fit the
+grid. Cells paint in input order, may overlap, and do not clip their contents.
+Oversized content produces the usual layout warning.
+
+```ts
+Grid([
+  { id: "title", row: 0, column: 0, columnSpan: 2, view: Text("Sales") },
+  { id: "plot", row: 1, column: 0, columnSpan: 2,
+    view: BarChart([{ id: "north", value: 12 }, { id: "south", value: -3 }],
+      { width: 400, height: 180, progress: Motion.fade() }) },
+], { columns: 2, rows: 2, cellWidth: 200, cellHeight: 180, columnGap: 8 });
+```
+
+`BarChart`, `LineChart`, and `DonutChart` accept `{ id, value, color? }` data;
+`ScatterChart` accepts `{ id, x, y, color? }`. IDs must be unique and numbers
+finite. All chart constructors snapshot their inputs and return ordinary nodes,
+so existing transforms, theme defaults and layout apply. The progress parameter
+is a number or motion track whose literal value, tween endpoints, or every
+keyframe value must be finite and between zero and one (inclusive); invalid
+tracks are rejected when constructing the chart. Tracks hold their endpoint
+values outside their time range and evaluate independently of seek order. Bars use a
+zero baseline, lines connect points in input order, and scatter axes include
+zero. Empty datasets produce an empty fixed-size frame. A zero-only domain uses
+0–1; single points are shown. Donut slices require non-negative values, and
+zero values are omitted, including for zero-total data. `DonutChart` takes
+`radius` and `thickness` instead of width and height; thickness cannot exceed
+radius. Its stroke color uses datum color, then chart color, then the theme
+accent (or text color). Slice progress reveals all slices simultaneously. Charts draw marks only: labels and axes can be
+composed with the existing text and line primitives.
+
+Line and scatter centers use an inset plotting rectangle: line marker radius is
+`min(3, width/2, height/2)` and scatter radius is `min(4, width/2, height/2)`.
+Line stroke width is `min(2, 2 * line radius)`. Each center ranges from its
+radius to the corresponding dimension minus its radius, keeping full marks and
+strokes inside the requested frame even in small or unequal dimensions. A single
+line point is centered horizontally; zero-inclusive domains still determine its
+vertical position. Progress scales markers about their centers and reveals line
+segments without changing chart layout. Subsequent modifiers can move or scale
+the chart; clipping remains explicit.
+
+### Polyline, Polygon and Arrow
+
+`Polyline(points, { width?, color? })` builds an open sequence of straight,
+independently filled butt-capped segments; width defaults to 4. There is no
+closing segment, join construction, trim, or progress option. Segment contours
+can overlap; no miter or round joins are implied. Consecutive points must differ.
+`Polygon(points, { fill?, fillRule? })` closes its straight outline. It accepts
+concave and self-intersecting outlines: the existing Path GPU winding/parity
+painter determines the result (`nonzero` by default, or `evenodd`), not a
+triangle fan. Adjacent points, including the closing pair, must differ and the
+vertices must not all be collinear. Retraced edges and self-intersections may
+cancel under the selected fill rule; no simple-polygon validation is performed.
+
+`Arrow(from, to, { width?, color?, headLength?, headWidth? })` uses a straight
+butt-capped shaft and a filled triangular head. Width defaults to 4, head length
+and width to 12; all must be positive and finite. Endpoints must be distinct,
+and head length cannot exceed their distance (equal length omits the shaft).
+
+All points must have finite coordinates. Polyline needs at least two points;
+Polygon needs at least three. Inputs are snapshotted into immutable Path commands.
+The resulting layout box normalizes the minimum painted coordinate to zero and
+includes stroke/head extents; original coordinates do not position the node, so
+use `.offset()` for placement. Omitted colors use the Path theme text color.
+Modifiers and IDs work as for Path; use existing opacity/scale motion for a reveal
+or construct a Path morph explicitly. These helpers do not animate geometry on
+their own. Path's 4096-command limit applies (a Polyline uses five commands per
+segment; a Polygon uses one per vertex plus close). GPU rendering is not verified
+by CPU layout tests.

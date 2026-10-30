@@ -280,14 +280,27 @@ export class Renderer {
               evaluation.transition.progress,
             )
           : undefined;
-      evaluation.active.forEach((active, i) =>
+      evaluation.active.forEach((active, i) => {
+        const target = this.transition!.targets[i];
+        encoder
+          .beginRenderPass({
+            colorAttachments: [
+              {
+                view: target.createView(),
+                loadOp: "clear",
+                storeOp: "store",
+                clearValue: { r: 0, g: 0, b: 0, a: 0 },
+              },
+            ],
+          })
+          .end();
         this.scenes.get(active.entry.id)!.render({
           ...context,
           ...active,
-          target: this.transition!.targets[i],
+          target,
           sharedTransforms: shared?.[i],
-        }),
-      );
+        });
+      });
       this.transition.render(
         { ...context, ...evaluation.primary },
         evaluation.transition,

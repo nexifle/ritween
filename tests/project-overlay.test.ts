@@ -7,7 +7,9 @@ import type { Project, Scene, RenderContext } from "../src/engine/types";
 function harness(overlay: Scene, overlap = false) {
   const events: string[] = [];
   const output = {} as GPUTexture;
-  const targets = [{}, {}] as GPUTexture[];
+  const targets = [0, 1].map(() => ({
+    createView: () => ({}),
+  })) as unknown as GPUTexture[];
   const scene = (id: string): Scene => ({
     setup() {},
     render({ target, time }) {
@@ -80,7 +82,10 @@ function harness(overlay: Scene, overlap = false) {
     preparationQueue: Promise.resolve(),
     activeFrames: new Set(),
     device: {
-      createCommandEncoder: () => ({ finish: () => ({}) }),
+      createCommandEncoder: () => ({
+        beginRenderPass: () => ({ end() {} }),
+        finish: () => ({}),
+      }),
       queue: { submit: () => events.push("submit") },
       destroy: () => events.push("destroy"),
     },

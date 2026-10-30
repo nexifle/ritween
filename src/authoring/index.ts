@@ -1,10 +1,14 @@
 export { normalizePaths } from "./path-geometry";
-export { Path, Glyph, morphPath } from "./path";
+export { Path, Glyph, morphPath, Polyline, Polygon, Arrow } from "./path";
 export type {
   PathCommand,
   PathOutline,
   PathStyle,
   GlyphDefinition,
+  PathPoint,
+  PolylineStyle,
+  PolygonStyle,
+  ArrowStyle,
 } from "./path";
 export type { ClipShape, ImageMask } from "./clip";
 export { Stage, Overlay } from "./stage";
@@ -35,6 +39,15 @@ export {
   ViewNode,
 } from "./nodes";
 export { Circle, Line } from "./shapes";
+export { Grid } from "./grid";
+export type { GridCell, GridOptions } from "./grid";
+export { BarChart, LineChart, DonutChart, ScatterChart } from "./charts";
+export type {
+  ChartDatum,
+  ScatterDatum,
+  ChartOptions,
+  DonutOptions,
+} from "./charts";
 export type { CircleStyle, LineStyle } from "./shapes";
 export { Image, Video } from "./media";
 export type { MediaStyle } from "./media";

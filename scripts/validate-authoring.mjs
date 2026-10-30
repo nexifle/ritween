@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { validateAuthoringPrimitives } from "./authoring-primitives-checks.mjs";
 import { validateStageTwo } from "./authoring-stage-two-checks.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
@@ -18,7 +19,9 @@ const server = await createServer({
         server.middlewares.use((req, res, next) => {
           if (req.url !== "/") return next();
           res.setHeader("Content-Type", "text/html");
-          res.end("<!doctype html><title>Authoring validation</title>");
+          res.end(
+            '<!doctype html><link rel="icon" href="data:,"><title>Authoring validation</title>',
+          );
         });
       },
     },
@@ -35,6 +38,14 @@ try {
     args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage();
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error")
+      browserErrors.push(
+        `${message.text()} ${JSON.stringify(message.location())}`,
+      );
+  });
   await page.goto(server.resolvedUrls.local[0]);
   const report = await page.evaluate(async () => {
     const {
@@ -444,6 +455,71 @@ try {
         src.dispose();
       }
     }
+    const partialScene = (color) => {
+      let pipeline;
+      return {
+        setup({ device, format }) {
+          const module = device.createShaderModule({ code: `
+            @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+              let p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
+              return vec4f(p[i], 0, 1);
+            }
+            @fragment fn fs() -> @location(0) vec4f { return vec4f(${color}, 1); }
+          ` });
+          pipeline = device.createRenderPipeline({
+            layout: "auto",
+            vertex: { module, entryPoint: "vs" },
+            fragment: { module, entryPoint: "fs", targets: [{ format }] },
+          });
+        },
+        render({ encoder, target, time }) {
+          const pass = encoder.beginRenderPass({ colorAttachments: [{
+            view: target.createView(), loadOp: "load", storeOp: "store",
+          }] });
+          pass.setPipeline(pipeline);
+          pass.setScissorRect(Math.round((time - 1) * 60), 40, 10, 10);
+          pass.draw(3);
+          pass.end();
+        },
+        dispose() {},
+      };
+    };
+    const partialProject = {
+      ...fixture,
+      duration: 3,
+      scenes: [0, 1].map((i) => ({
+        ...fixture.scenes[0],
+        id: `partial-${i}`,
+        start: i,
+        duration: 2,
+        create: () => partialScene(i ? "0, 0, 1" : "1, 0, 0"),
+        transition: i ? { type: "crossfade", duration: 1 } : { type: "cut" },
+      })),
+    };
+    const partialSource = await FrameSource.create(partialProject, {
+      width: 100, height: 100, onError: (e) => errors.push(e),
+    });
+    let partialChecks;
+    try {
+      const captures = [];
+      for (const time of [1.5, 1.25, 1.5, 1.75, 1.5]) {
+        const canvas = await partialSource.render(time);
+        const copy = new OffscreenCanvas(100, 100), ctx = copy.getContext("2d");
+        ctx.drawImage(canvas, 0, 0);
+        captures.push({
+          pixels: Array.from(ctx.getImageData(0, 0, 100, 100).data),
+          old: [...ctx.getImageData(20, 45, 1, 1).data],
+          current: [...ctx.getImageData(35, 45, 1, 1).data],
+          future: [...ctx.getImageData(50, 45, 1, 1).data],
+        });
+      }
+      if (JSON.stringify(captures[0].pixels) !== JSON.stringify(captures[2].pixels) ||
+          JSON.stringify(captures[0].pixels) !== JSON.stringify(captures[4].pixels))
+        throw Error("Partial transition scene retained pixels across seeks.");
+      partialChecks = captures.map(({ old, current, future }) => ({ old, current, future }));
+    } finally {
+      partialSource.dispose();
+    }
     const overlayChecks = [];
     const overlayProject = {
       ...fixture,
@@ -679,6 +755,7 @@ try {
       compositionPixels,
       compositionAlpha,
       transitionPixels,
+      partialChecks,
       sharedPixels,
       audioEnvelopeSamples,
       cameraShots: cameraShots.slice(0, 3),
@@ -690,7 +767,10 @@ try {
       mp4Bytes: mp4.blob.size,
     };
   });
+  const primitives = await validateAuthoringPrimitives(page);
+  console.log("Primitive pixel validation:", primitives.join(", "));
   const stageTwo = await validateStageTwo(page);
+  assert.deepEqual(browserErrors, [], "Browser console and page errors");
   console.log("Stage two validation:", JSON.stringify(stageTwo));
   assert.deepEqual(report.errors, []);
   for (const check of report.overlayChecks) {
@@ -728,6 +808,12 @@ try {
       [0, 255, 255, 255],
       "Shot overlay must retain full-frame transition behavior",
     );
+  }
+  for (const index of [0, 2, 4]) {
+    const { old, current, future } = report.partialChecks[index];
+    assert.deepEqual(old, [0, 0, 0, 255]);
+    assert.deepEqual(future, [0, 0, 0, 255]);
+    assert.ok(Math.abs(current[0] - 128) <= 1 && Math.abs(current[2] - 128) <= 1);
   }
   assert.deepEqual(report.sharedPixels[1], [255, 0, 0, 255]);
   assert.notDeepEqual(report.sharedPixels[0], [255, 0, 0, 255]);

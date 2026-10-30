@@ -445,30 +445,82 @@ export async function validateStageTwo(page) {
         source.dispose();
       }
     }
-    const shifted = videoResource({ ...clip, id: "second-footage", start: 1 });
-    const overlapProject = {
-      ...project(shot),
-      duration: 3,
-      scenes: [
-        shot,
-        Shot({
-          id: "second",
-          source: "fixture",
-          start: 1,
-          duration: 2,
-          transition: { type: "crossfade", duration: 1 },
-          mediaClips: [shifted],
-          world: World(() => Video(shifted, { width: 100, height: 100 }), {
-            size: [100, 100],
-          }),
+    const overlap = {};
+    const preparations = { outgoing: 0, incoming: 0 };
+    const makeOverlap = (type) => {
+      const start = type === "cut" ? 2 : 1;
+      const outgoing = videoResource({ ...clip, id: "outgoing", volume: 0.5 });
+      const incoming = videoResource({ ...clip, id: "incoming", start, volume: 0.8 });
+      const scene = (resource, id, transition) => Shot({
+        id,
+        source: "fixture",
+        start: resource.start,
+        duration: 2,
+        transition,
+        mediaClips: [resource],
+        world: World(() => {
+          preparations[id]++;
+          return Video(resource, { width: 100, height: 100 });
+        }, {
+          size: [100, 100],
         }),
-      ],
+      });
+      return {
+        ...project(shot),
+        duration: start + 2,
+        scenes: [
+          scene(outgoing, "outgoing", { type: "cut" }),
+          scene(incoming, "incoming", type === "cut"
+            ? { type: "cut" }
+            : { type, duration: 1, direction: "left" }),
+        ],
+      };
     };
-    const overlap = await draw(
-      overlapProject,
-      [1.5, 2.5, 0.5, 1.5],
-      [[50, 50]],
-    );
+    const points = [[25, 50], [75, 50]];
+    for (const mode of ["eager", "active-only"]) {
+      globalThis.__ritweenMediaActivation = mode;
+      overlap[mode] = {};
+      for (const type of ["crossfade", "wipe", "slide", "cut"]) {
+        const p = makeOverlap(type);
+        const times = type === "cut" ? [0.5, 2, 2.5, 3, 4] : [0.5, 1, 1.5, 2, 3];
+        const sequential = await draw(p, [...times, ...times.slice().reverse()], points);
+        const direct = [];
+        for (const time of times) direct.push((await draw(p, [time], points))[0]);
+        let prepared;
+        if (type !== "cut") {
+          const source = await FrameSource.create(p, { width: 100, height: 100, onError: (e) => errors.push(e) });
+          try {
+            const before = { ...preparations };
+            await source.render(1.5);
+            prepared = Object.fromEntries(Object.keys(before).map((id) => [id, preparations[id] - before[id]]));
+          } finally {
+            source.dispose();
+          }
+        }
+        overlap[mode][type] = { times, sequential, direct, prepared };
+      }
+    }
+    const overlapAudioProject = makeOverlap("crossfade");
+    const overlapResolved = resolveMediaProject(overlapAudioProject);
+    const trackIds = overlapResolved.audioTracks.map((track) => track.id);
+    const audioBuffers = await Promise.all([
+      renderAudio(overlapAudioProject, [], 24),
+      renderAudio(overlapAudioProject, [trackIds[1]], 24),
+      renderAudio(overlapAudioProject, [trackIds[0]], 24),
+    ]);
+    const audioTimes = [0.5, 1, 1.5, 1.99, 2.5];
+    const overlapAudio = {
+      tracks: overlapResolved.audioTracks.map((track) => ({
+        id: track.id,
+        clips: track.clips.map(({ id, sceneId }) => ({ id, sceneId })),
+      })),
+      rms: audioBuffers.map((buffer) => audioTimes.map((time) => {
+        const pcm = buffer.getChannelData(0);
+        const start = Math.round(time * buffer.sampleRate);
+        const length = Math.round(0.005 * buffer.sampleRate);
+        return Math.sqrt(pcm.slice(start, start + length).reduce((sum, x) => sum + x * x, 0) / length);
+      })),
+    };
     // The remapped World clock must not remap the clip's project-clock video/audio.
     const frozen = project(
       entry(() =>
@@ -516,6 +568,7 @@ export async function validateStageTwo(page) {
       videos,
       frozenVideo,
       overlap,
+      overlapAudio,
       lateImage,
       audio: { rms, sceneId: resolved.audioTracks[0].clips[0].sceneId },
       exportedBytes: exported.blob.size,
@@ -598,11 +651,39 @@ export async function validateStageTwo(page) {
       assert.deepEqual(capture[2], [255, 255, 0, 255]);
     }
   }
-  assert.deepEqual(report.overlap[0], report.overlap[3]);
-  assert.ok(
-    Math.abs(report.overlap[0][0][0] - 128) < 5 &&
-      Math.abs(report.overlap[0][0][2] - 128) < 5,
+  const color = (pixel, expected) => expected.forEach((value, i) =>
+    assert.ok(Math.abs(pixel[i] - value) < 12, `${pixel} != ${expected}`),
   );
+  const red = [255, 0, 0, 255], blue = [0, 0, 255, 255];
+  for (const [mode, transitions] of Object.entries(report.overlap)) {
+    for (const [type, result] of Object.entries(transitions)) {
+      const { sequential, direct } = result;
+      if (type !== "cut") assert.deepEqual(result.prepared, { outgoing: 1, incoming: 1 }, `${mode}/${type} prepares both videos`);
+      assert.deepEqual(sequential.slice(0, 5), direct, `${mode}/${type} direct`);
+      assert.deepEqual(sequential.slice(5).reverse(), direct, `${mode}/${type} backwards`);
+      const expected = type === "cut"
+        ? [[red, red], [red, red], [red, red], [blue, blue], [blue, blue]]
+        : [[red, red], [blue, blue],
+          type === "crossfade" ? [[128, 0, 128, 255], [128, 0, 128, 255]] : [blue, red],
+          [blue, blue], [blue, blue]];
+      direct.forEach((capture, i) => capture.forEach((pixel, j) => color(pixel, expected[i][j])));
+    }
+  }
+  assert.deepEqual(report.overlapAudio.tracks.map((track) => track.clips), [
+    [{ id: "outgoing", sceneId: "outgoing" }],
+    [{ id: "incoming", sceneId: "incoming" }],
+  ]);
+  const [mixed, outgoingAudio, incomingAudio] = report.overlapAudio.rms;
+  assert.ok(outgoingAudio[0] > 0.01 && incomingAudio[4] > 0.01);
+  assert.ok(Math.abs(outgoingAudio[0] / report.audio.rms - 0.5) < 0.04);
+  assert.ok(Math.abs(incomingAudio[4] / report.audio.rms - 0.8) < 0.04);
+  assert.ok(incomingAudio[1] < 0.001 && outgoingAudio[4] < 0.001);
+  assert.ok(Math.abs(outgoingAudio[2] / outgoingAudio[0] - 0.5) < 0.06);
+  assert.ok(Math.abs(incomingAudio[2] / incomingAudio[4] - 0.5) < 0.06);
+  assert.ok(outgoingAudio[3] < outgoingAudio[0] * 0.03);
+  assert.ok(Math.abs(incomingAudio[3] / incomingAudio[4] - 1) < 0.06);
+  // Both clips use the same encoded tone, so their in-phase PCM adds at the midpoint.
+  assert.ok(Math.abs(mixed[2] - outgoingAudio[2] - incomingAudio[2]) < 0.002);
   assert.deepEqual(report.frozenVideo[0], report.frozenVideo[2]);
   assert.ok(report.frozenVideo[0][0][0] > 235);
   assert.ok(report.frozenVideo[1][0][2] > 235);

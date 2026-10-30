@@ -301,7 +301,9 @@ test("overlap prepares both scenes, retains both active media, and renders separ
       events.push("prepare-b");
     },
   );
-  const targets = [{}, {}] as GPUTexture[];
+  const targets = [0, 1].map((i) => ({
+    createView: () => i,
+  })) as unknown as GPUTexture[];
   managedVideoScenes.set(a, { deactivate: () => events.push("deactivate-a") });
   managedVideoScenes.set(b, { deactivate: () => events.push("deactivate-b") });
   const renderer = createTestRenderer(a);
@@ -324,6 +326,22 @@ test("overlap prepares both scenes, retains both active media, and renders separ
       ["a", a],
       ["b", b],
     ]),
+    device: {
+      createCommandEncoder: () => ({
+        beginRenderPass: ({ colorAttachments }: GPURenderPassDescriptor) => {
+          const attachment =
+            colorAttachments[0] as GPURenderPassColorAttachment;
+          assert.equal(attachment.loadOp, "clear");
+          assert.equal(attachment.storeOp, "store");
+          assert.deepEqual(attachment.clearValue, { r: 0, g: 0, b: 0, a: 0 });
+          events.push(`clear-${attachment.view === 0 ? "a" : "b"}`);
+          return { end() {} };
+        },
+        finish: () => ({}),
+      }),
+      queue: { submit() {} },
+      destroy() {},
+    },
     transition: {
       targets,
       render(_context: unknown, transition: { progress: number }) {
@@ -338,7 +356,9 @@ test("overlap prepares both scenes, retains both active media, and renders separ
   assert.deepEqual(events, [
     "prepare-a",
     "prepare-b",
+    "clear-a",
     "render-a",
+    "clear-b",
     "render-b",
     "composite",
   ]);

@@ -30,7 +30,7 @@ export interface StageContext {
 export interface StageOptions {
   /** Project-clock clips, shared with SceneEntry.mediaClips for footage audio. */
   readonly mediaClips?: readonly MediaClip[];
-  /** URLs introduced only after local time zero; initial images are discovered automatically. */
+  /** Optional image preloads; images appearing later are discovered during frame preparation. */
   readonly images?: readonly string[];
   readonly designSize?: readonly [number, number];
   readonly theme?: Theme;
@@ -103,6 +103,9 @@ function createViewScene(
   const images = Object.freeze([...(options.images ?? [])]);
   if (images.some((url) => !url))
     throw Error("Stage image URLs must not be empty.");
+  const activeOnly =
+    (globalThis as typeof globalThis & { __ritweenMediaActivation?: string })
+      .__ritweenMediaActivation === "active-only";
   let setupContext: SetupContext;
   let media: ViewMedia | undefined;
   let prepared:
@@ -174,11 +177,21 @@ function createViewScene(
       prepared.timing.progress === context.progress
     )
       return prepared.result;
-    if (scene.prepareFrame)
-      throw Error("Stage media frame is not prepared. Use renderAsync().");
-    return evaluate(context);
+    throw Error("Stage frame is not prepared. Use renderAsync().");
   }
   const scene: StageScene = {
+    async prepareFrame(timing) {
+      prepared = undefined;
+      timing.signal?.throwIfAborted();
+      const result = evaluate({ ...setupContext, ...timing });
+      if (!media && frameMedia(result.evaluated).length) {
+        media = new ViewMedia(setupContext, clips, activeOnly);
+      }
+      await media?.prepare(result.evaluated, timing);
+      if (disposed) throw Error("Stage was disposed during frame preparation.");
+      timing.signal?.throwIfAborted();
+      prepared = { timing: { ...timing }, result };
+    },
     sharedElements(context) {
       const { env, evaluated } = resultFor(context);
       return collectSharedElements(
@@ -224,29 +237,8 @@ function createViewScene(
         });
         const sources = frameMedia(initial.evaluated);
         if (clips.length || images.length || sources.length) {
-          const activeOnly =
-            (
-              globalThis as typeof globalThis & {
-                __ritweenMediaActivation?: string;
-              }
-            ).__ritweenMediaActivation === "active-only";
           media = new ViewMedia(context, clips, activeOnly);
-          scene.prepareFrame = async (timing) => {
-            prepared = undefined;
-            const result = evaluate({ ...setupContext, ...timing });
-            await media!.prepare(result.evaluated, timing);
-            if (disposed)
-              throw Error("Stage was disposed during frame preparation.");
-            timing.signal?.throwIfAborted();
-            prepared = { timing: { ...timing }, result };
-          };
-          if (activeOnly)
-            managedVideoScenes.set(scene, {
-              deactivate() {
-                prepared = undefined;
-                media?.deactivate();
-              },
-            });
+
           await media.setup(initial.evaluated, images);
           if (disposed) throw Error("Stage was disposed during media setup.");
         }
@@ -284,5 +276,12 @@ function createViewScene(
       frame = undefined;
     },
   };
+  if (activeOnly)
+    managedVideoScenes.set(scene, {
+      deactivate() {
+        prepared = undefined;
+        media?.deactivate();
+      },
+    });
   return scene;
 }

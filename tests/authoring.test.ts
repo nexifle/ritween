@@ -193,7 +193,22 @@ test("invalid layout values report node paths and overflow does not silently cli
 test("Stage factories do not require a browser until setup and disposal is idempotent", () => {
   const stage = Stage(() => Text("Hello"));
   assert.equal(stage.inspect(), undefined);
+  assert.equal(typeof stage.prepareFrame, "function");
   stage.dispose();
   stage.dispose();
   assert.throws(() => stage.render({} as never), /not ready/);
+});
+
+test("Stage preparation rejects before setup and preserves cancellation", async () => {
+  const stage = Stage(() => Text("Hello"));
+  const timing = { time: 2, localTime: 2, progress: 0.5 };
+  await assert.rejects(stage.prepareFrame!(timing), /not ready/);
+  const controller = new AbortController();
+  const reason = new DOMException("Cancelled", "AbortError");
+  controller.abort(reason);
+  await assert.rejects(
+    stage.prepareFrame!({ ...timing, signal: controller.signal }),
+    (error) => error === reason,
+  );
+  stage.dispose();
 });

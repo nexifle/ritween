@@ -6,7 +6,10 @@ export type {
   PathStyle,
   GlyphDefinition,
 } from "./path";
+export type { ClipShape, ImageMask } from "./clip";
 export { Stage, Overlay } from "./stage";
+export { StageEntry } from "./stage-entry";
+export type { StageEntryOptions } from "./stage-entry";
 export { World, Composition, Shot } from "./composition";
 export type {
   WorldOptions,

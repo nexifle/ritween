@@ -16,6 +16,7 @@ struct Controls {
 @group(0) @binding(1) var image: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 @group(0) @binding(3) var<storage,read> edges: array<vec4f>;
+@group(0) @binding(4) var maskImage: texture_2d<f32>;
 struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 @vertex fn vs(@builtin(vertex_index) i: u32) -> Out {
   let corners = array<vec2f,6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));
@@ -24,6 +25,12 @@ struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   var o:Out; o.pos=vec4f(p.x/c.resolution.x*2-1,1-p.y/c.resolution.y*2,0,1); o.uv=uv; return o;
 }
 @fragment fn fs(i:Out) -> @location(0) vec4f {
+  if(c.textured>4.5) {
+    let sample=textureSample(image,samp,i.uv);
+    let mask=textureSample(maskImage,samp,i.uv);
+    let coverage=mask.a*select(1.,dot(mask.rgb,vec3f(0.2126,0.7152,0.0722)),c.textured>5.5);
+    return vec4f(sample.rgb/max(sample.a,0.00001),sample.a*c.opacity*coverage);
+  }
   if(c.textured>2.5) {
     let p=i.uv*c.rect.zw; var winding=0; var distance=1e20;
     for(var j=0u;j<u32(c.padding.x);j++) {
@@ -37,6 +44,10 @@ struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     let inside=select(winding!=0,abs(winding)%2==1,c.padding.y>0.5);
     let aa=max(length(fwidth(p)),0.00001);
     let coverage=clamp(0.5+select(-distance,distance,inside)/aa,0.,1.);
+    if(c.textured>3.5) {
+      let sample=textureSample(image,samp,i.uv);
+      return vec4f(sample.rgb/max(sample.a,0.00001),sample.a*c.opacity*coverage);
+    }
     return vec4f(c.fill.rgb,c.fill.a*c.opacity*coverage);
   }
   let sample=textureSample(image,samp,i.uv*c.uvRect.xy+c.uvRect.zw);
@@ -417,8 +428,14 @@ export class ViewRenderer {
     const edgeValues: number[] = [];
     const edgeRanges = commands.map((c) => {
       const offset = edgeValues.length * 4;
-      if (c.kind === "path")
-        for (const contour of flattenPath(c.outline))
+      const outline =
+        c.kind === "path"
+          ? c.outline
+          : c.kind === "composition"
+            ? c.mask
+            : undefined;
+      if (outline)
+        for (const contour of flattenPath(outline))
           contour.forEach((p, i) =>
             edgeValues.push(...p, ...contour[(i + 1) % contour.length]),
           );
@@ -470,15 +487,13 @@ export class ViewRenderer {
         if (c.kind === "media") {
           const resource = media.get(mediaKey(c.source));
           if (!resource)
-            throw Error(
-              "Media is not prepared; use renderAsync() and declare time-dependent media before setup.",
-            );
+            throw Error("Media is not prepared; use renderAsync().");
           const fitted = fitMedia(
             b.width,
             b.height,
             resource.width,
             resource.height,
-            c.source.style.fit ?? "contain",
+            c.crop ? "cover" : (c.source.style.fit ?? "contain"),
           );
           b = {
             x: b.x + fitted.x,
@@ -487,6 +502,17 @@ export class ViewRenderer {
             height: fitted.height,
           };
           uv = fitted.uv;
+          if (c.crop) {
+            const [x, y, zoom] = c.crop;
+            const u = fitted.uv[0] / zoom,
+              v = fitted.uv[1] / zoom;
+            uv = [
+              u,
+              v,
+              Math.max(0, Math.min(1 - u, x - u / 2)),
+              Math.max(0, Math.min(1 - v, y - v / 2)),
+            ];
+          }
           texture = resource.texture;
         }
         const [sx, sy, tx, ty] = c.transform;
@@ -531,12 +557,21 @@ export class ViewRenderer {
             c.kind === "box"
               ? 0
               : c.kind === "composition" || c.kind === "group"
-                ? 2
+                ? c.kind === "composition" && c.imageMask
+                  ? c.imageMask.mode === "luminance"
+                    ? 6
+                    : 5
+                  : c.kind === "composition" && c.mask
+                    ? 4
+                    : 2
                 : c.kind === "path"
                   ? 3
                   : 1,
             edgeRanges[i].count,
-            c.kind === "path" && c.fillRule === "evenodd" ? 1 : 0,
+            (c.kind === "path" && c.fillRule === "evenodd") ||
+            (c.kind === "composition" && c.maskFillRule === "evenodd")
+              ? 1
+              : 0,
             drawCamera[0],
             drawCamera[2],
             drawCamera[4],
@@ -563,6 +598,25 @@ export class ViewRenderer {
               },
               { binding: 1, resource: texture.createView() },
               { binding: 2, resource: this.sampler! },
+              {
+                binding: 4,
+                resource: (() => {
+                  if (c.kind !== "composition" || !c.imageMask)
+                    return this.white!.createView();
+                  const mask = media.get(
+                    mediaKey({
+                      kind: "image",
+                      url: c.imageMask.url,
+                      style: { width: b.width, height: b.height },
+                    }),
+                  );
+                  if (!mask)
+                    throw Error(
+                      "Mask image is not prepared; use renderAsync().",
+                    );
+                  return mask.texture.createView();
+                })(),
+              },
               {
                 binding: 3,
                 resource: {

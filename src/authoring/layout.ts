@@ -1,5 +1,6 @@
 import { evaluatePath, pathData, type PathOutline } from "./path";
 import { resolveNumber } from "./motion";
+import { type ImageMask, clipOutline } from "./clip";
 import { shapeGeometry } from "./shapes";
 import type { MediaSpec } from "./media";
 import { evaluateCamera, type CameraState } from "./camera";
@@ -46,6 +47,9 @@ export type DrawCommand = {
 } & (
   | {
       readonly kind: "composition";
+      readonly mask?: PathOutline;
+      readonly imageMask?: ImageMask;
+      readonly maskFillRule?: "nonzero" | "evenodd";
       readonly frame: EvaluatedFrame;
       readonly overlay?: EvaluatedFrame;
     }
@@ -73,6 +77,7 @@ export type DrawCommand = {
       readonly kind: "media";
       readonly source: MediaSpec;
       readonly time: number;
+      readonly crop?: readonly [number, number, number];
     }
 );
 export interface LayoutNode {
@@ -277,6 +282,15 @@ export function evaluateView(
         m.width = geometry.width;
         m.height = geometry.height;
       } else if (s.kind === "image" || s.kind === "video") {
+        if (s.style.crop) {
+          const x = resolveNumber(s.style.crop.x ?? 0.5, time),
+            y = resolveNumber(s.style.crop.y ?? 0.5, time),
+            zoom = resolveNumber(s.style.crop.zoom ?? 1, time);
+          if (x < 0 || x > 1 || y < 0 || y > 1 || zoom < 1)
+            throw Error(
+              "Crop requires focal x/y between 0 and 1 and zoom >= 1.",
+            );
+        }
         m.width = s.style.width;
         m.height = s.style.height;
       } else if (s.kind === "path") {
@@ -441,6 +455,44 @@ export function evaluateView(
     }
     const current: Transform = [sx, sy, tx, ty];
     const bounds = { x, y, width: m.width, height: m.height };
+    if (s.kind === "clip") {
+      if (isolationDepth >= 32)
+        throw Error(`${m.path}: Clip nesting exceeds 32 levels.`);
+      const paints: DrawCommand[] = [];
+      const child = place(
+        m.children[0],
+        0,
+        0,
+        [1, 1, 0, 0],
+        1,
+        paints,
+        isolationDepth + 1,
+      );
+      const tree = {
+        path: m.path,
+        kind: s.kind,
+        bounds,
+        transform: current,
+        children: [child],
+      };
+      if (m.width > 0 && m.height > 0)
+        drawList.push({
+          kind: "composition",
+          path: m.path,
+          sharedId: m.node.key,
+          bounds,
+          transform: current,
+          opacity,
+          mask:
+            s.shape.shape === "image"
+              ? undefined
+              : clipOutline(s.shape, m.width, m.height),
+          imageMask: s.shape.shape === "image" ? s.shape : undefined,
+          maskFillRule: s.shape.shape === "path" ? s.shape.fillRule : "nonzero",
+          frame: { tree: child, commands: paints, warnings: [] },
+        });
+      return tree;
+    }
     if (s.kind === "group") {
       if (isolationDepth >= 32)
         throw Error(`${m.path}: Group nesting exceeds 32 levels.`);
@@ -512,6 +564,13 @@ export function evaluateView(
     )
       drawList.push({
         kind: "media",
+        crop: s.style.crop
+          ? [
+              resolveNumber(s.style.crop.x ?? 0.5, time),
+              resolveNumber(s.style.crop.y ?? 0.5, time),
+              resolveNumber(s.style.crop.zoom ?? 1, time),
+            ]
+          : undefined,
         source: s,
         time: options.context?.time ?? time,
         sharedId: m.node.key,

@@ -1,5 +1,6 @@
 import { snapshotNumber, type AnimatedNumber } from "./motion";
 import type { PathSpec } from "./path";
+import { snapshotClip, type ClipShape } from "./clip";
 import type { CompositionSpec } from "./composition";
 import type { ShapeSpec } from "./shapes";
 import type { MediaSpec } from "./media";
@@ -30,6 +31,11 @@ export interface StackOptions {
   readonly align?: Alignment;
 }
 export type NodeSpec =
+  | {
+      readonly kind: "clip";
+      readonly shape: ClipShape;
+      readonly child: ViewNode;
+    }
   | PathSpec
   | ShapeSpec
   | MediaSpec
@@ -90,6 +96,14 @@ export class ViewNode {
   id(key: string): ViewNode {
     if (!key) throw Error("Node ID must not be empty.");
     return new ViewNode(this.spec, key);
+  }
+  /** Clip to current layout bounds; frame first to select a fixed viewport. */
+  clip(shape: ClipShape = { shape: "rect" }): ViewNode {
+    return new ViewNode({
+      kind: "clip",
+      shape: snapshotClip(shape),
+      child: this,
+    });
   }
   padding(x: number, y = x): ViewNode {
     return new ViewNode({ kind: "padding", x, y, child: this });

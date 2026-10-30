@@ -1,6 +1,7 @@
 import type { SceneEntry, Transition } from "../engine/types";
 import { ViewNode } from "./nodes";
-import { Stage, type StageContext, type StageOptions } from "./stage";
+import { type StageContext, type StageOptions } from "./stage";
+import { StageEntry, type StageEntryOptions } from "./stage-entry";
 import { Camera, type Point2D } from "./camera";
 import type { Theme } from "./layout";
 
@@ -77,12 +78,7 @@ export function Composition(
     }),
   });
 }
-export interface ShotOptions extends Omit<StageOptions, "camera"> {
-  readonly id: string;
-  readonly name?: string;
-  readonly source: string;
-  readonly start: number;
-  readonly duration: number;
+export interface ShotOptions extends Omit<StageEntryOptions, "view"> {
   readonly world: WorldDefinition;
   readonly camera?: StageOptions["camera"];
   readonly worldOffset?: number;
@@ -106,35 +102,23 @@ export function Shot(options: ShotOptions): SceneEntry {
     transition = { type: "cut" },
     ...stageOptions
   } = options;
-  if (
-    !id ||
-    !Number.isFinite(start) ||
-    start < 0 ||
-    !Number.isFinite(duration) ||
-    duration <= 0
-  )
-    throw Error("Shot needs an ID and valid timing.");
   const projection =
     typeof camera === "function" ? camera : camera ? Camera(camera) : undefined;
-  return {
+  return StageEntry({
+    ...stageOptions,
     id,
     name,
     source,
     start,
     duration,
-    mediaClips: stageOptions.mediaClips,
-    transition: Object.freeze({ ...transition }),
-    create: () =>
-      Stage(
-        ({ designSize }) =>
-          Composition(world, {
-            size: designSize,
-            camera: projection,
-            overlay,
-            offset: worldOffset,
-            rate: worldRate,
-          }),
-        stageOptions,
-      ),
-  };
+    transition,
+    view: ({ designSize }) =>
+      Composition(world, {
+        size: designSize,
+        camera: projection,
+        overlay,
+        offset: worldOffset,
+        rate: worldRate,
+      }),
+  });
 }

@@ -60,14 +60,22 @@ turn from twelve o'clock. Line supports `from/to`, `width`, and animated `progre
 Motion presets produce tween data for `.opacity()`, `.offset()`, and `.scale()`;
 `Motion.keyframes` shares the same scene-local clock.
 
-Image needs `url/width/height/fit`. Video takes an immutable `videoResource` clip
+Image needs `url/width/height/fit`. Image/Video also accept `crop: { x, y, zoom }`
+with normalized focal coordinates and zoom >= 1; tracks animate in local time.
+All nodes support `.clip()` (rect), `.clip({ shape: "rect", radius: 24 })`,
+`.clip({ shape: "circle" })`, `.clip({ shape: "path", outline, fillRule })`, or
+`.clip({ shape: "image", url, mode?: "alpha" | "luminance" })`. Image masks stretch
+to the clip bounds; `alpha` is the default, `luminance` is Rec.709 RGB × alpha.
+Apply frame before clip for a fixed viewport; frame alone does not clip. Clip
+uses an additional offscreen pass. Video takes an immutable `videoResource` clip
 and `{ width, height, fit }`, using **project-clock** timing even in remapped Worlds.
-Declare the same clip list on `Shot.mediaClips` for video resource ownership and
-automatic scene-linked footage audio. Manual SceneEntry + Stage must receive the
-same list in both places. Overlay audio also needs `project.mediaClips`. Declare
-conditionally introduced image URLs in Stage/Shot `images`; initial images are
-found automatically. Media Stages require async rendering; CLI/preview/export
-already handle preparation. For the complete API see `docs/authoring.md` in the
+Prefer `StageEntry({ id, source, start, duration, mediaClips, view })` for a direct
+view, or `Shot({ ..., world, mediaClips })` for a reusable World. Declare clips once;
+both helpers forward them to Stage resource ownership and scene-linked footage
+audio. Manual SceneEntry + Stage is a low-level escape hatch requiring explicit
+forwarding to both places. Overlay audio also needs `project.mediaClips`. Images introduced conditionally are discovered automatically at the requested time;
+Stage/Shot `images` is optional preload only. All Stages and Overlays require
+`renderAsync()`; CLI/preview/export already handle preparation. For the complete API see `docs/authoring.md` in the
 checkout/package and `examples/authoring-media` in the checkout. These APIs are not
 present in older installed packages; confirm the installed version before using.
 

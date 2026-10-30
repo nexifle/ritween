@@ -5,8 +5,8 @@ WebGPU scenes, media helpers, timeline, audio, preview, and export remain unchan
 The authoring layer provides Stack layout, Text, Box, immutable modifiers,
 deterministic motion, Camera 2D, reusable Worlds, nested Compositions, timeline
 Shots, overlap transitions, Circle/Line shapes, Group/ForEach, Image/Video nodes,
-motion presets, and a CPU-inspectable tree/display list. Arbitrary masks and
-chart components are not implemented yet.
+motion presets, geometric clipping, image/luminance masks, media crop, and a
+CPU-inspectable tree/display list. Chart components are not implemented yet.
 
 ## A complete project
 
@@ -158,19 +158,46 @@ and reserves its layout size outside it. Opacity does not mute audio or deactiva
 an otherwise present video. Use distinct clip IDs/timing for independent playback;
 multiple nodes referencing one clip share its prepared texture within a Stage.
 
-`Shot.mediaClips` forwards that declaration to both Stage resources and the existing
-footage audio resolver. Scene-linked audio follows existing transition envelopes.
-For manually authored SceneEntry objects, pass the same list to `entry.mediaClips`
-and `Stage(..., { mediaClips })`; for persistent Overlay audio also register the
-clips in `project.mediaClips`. Node discovery alone never creates audio tracks.
+Use `StageEntry` for a view directly on the timeline, or `Shot` for a reusable
+World. Both wire a **single** `mediaClips` declaration to Stage resources and the
+footage audio resolver; no manual list forwarding is needed:
 
-Stages with media use async frame preparation: use `await renderer.renderAsync(t)`;
-FrameSource, preview, and export already do this. A prepared frame's evaluated tree
-is reused for rendering and shared-element inspection. Media-free Stages retain
-synchronous rendering. Initial images are discovered during setup. If images only
-appear later, declare their URLs with `Stage(..., { images: [url] })` (or Shot/Overlay
-options) so async preparation is enabled before the first frame. Videos must be
-declared in `mediaClips`, including ones introduced later in a conditional tree.
+```ts
+import { StageEntry, Video, videoResource } from "ritween";
+
+const footage = videoResource({
+  id: "intro-video", name: "Intro video", url: "/media/intro.mp4",
+  start: 0, duration: 4, offset: 2,
+});
+const entry = StageEntry({
+  id: "intro", source: "manifest.ts", start: 0, duration: 4,
+  mediaClips: [footage],
+  view: () => Video(footage, { width: 1920, height: 1080, fit: "cover" }),
+});
+// Use entry in project.scenes. Audio is registered and linked to "intro".
+```
+
+`StageEntry` accepts Stage options plus `id`, optional `name` (defaults to ID),
+`source`, `start`, `duration`, optional `transition`, and `view`. It snapshots clip
+metadata and creates an independently owned Stage on every `create()`. Clip times
+remain project-relative; the helper does not shift them by the entry start.
+Scene-linked audio follows existing transition envelopes. Keep view callbacks pure
+and use immutable `videoResource` descriptors rather than mutating captured data.
+
+Manual `SceneEntry` + `Stage` remains a low-level escape hatch and requires forwarding
+the same clips to both entry and Stage. Prefer `StageEntry` instead. Persistent
+Overlay audio still requires clips in `project.mediaClips`. Node discovery alone
+never creates audio tracks.
+
+All Stages and Overlays use async frame preparation: use
+`await renderer.renderAsync(t)`, even for media-free trees. FrameSource, preview,
+and export already do this; custom low-level Scenes without `prepareFrame` retain
+synchronous rendering. A prepared frame's evaluated tree is reused for rendering
+and shared-element inspection. Images appearing later are discovered and loaded
+at the requested time, including a direct seek, without a separate declaration.
+`Stage(..., { images: [url] })` (also available on Shot/Overlay) is optional preload
+only. Videos must still be declared in `mediaClips` for resource/audio integration,
+including ones introduced later in a conditional tree.
 
 Each Stage owns its resources; nodes remain immutable CPU data. Eager mode loads
 declared clips during setup. `--media-activation active-only` loads videos when
@@ -181,6 +208,47 @@ failures clean up owned resources; scene reactivation reloads released videos.
 
 Run `examples/authoring-media/manifest.ts` for shapes, keyed bars, motion presets,
 and an image node together. The Video example above expects your own footage.
+
+## Crop and clipping
+
+Image and Video accept `crop: { x?, y?, zoom? }`. Focal coordinates are normalized
+0..1 (default center); zoom is at least 1 and defaults to 1. All three values
+accept tween/keyframe tracks in the local animation clock. Crop uses cover fitting,
+keeps the layout viewport fixed, and clamps sampling at source edges:
+
+```ts
+Video(footage, {
+  width: 600, height: 600,
+  crop: { x: 0.7, y: 0.5, zoom: { from: 1, to: 1.4, duration: 3 } },
+}).clip({ shape: "rect", radius: 32 });
+```
+
+All nodes support `.clip()` (rectangle), `.clip({ shape: "rect", radius: 24 })`,
+`.clip({ shape: "circle" })`, `.clip({ shape: "path", outline, fillRule? })`, and
+image masks:
+
+```ts
+video.clip({ shape: "image", url: "/media/alpha-mask.png" });
+video.clip({ shape: "image", url: "/media/luma.png", mode: "luminance" });
+```
+
+`mode` defaults to `alpha` (the mask's alpha channel). `luminance` uses Rec.709
+weights on the sampled RGB, then multiplies by alpha. The mask image stretches to
+the clip bounds; it is not contain/cover fitted. Same-origin HTTP(S) URL, byte, and
+texture limits match other images. Masks appearing later are discovered during
+frame preparation; `images` remains optional preload. A JPEG/opaque PNG used with
+`alpha` stays fully visible—use `luminance` for black-and-white mattes.
+Circle uses the largest centered circle inside the bounds. Paths use local design
+coordinates and support nonzero/evenodd fill rules, including holes.
+
+Clip uses the node's current layout bounds without changing its size. To select
+a viewport, apply `.frame({ width, height }).clip()`; frame alone does not clip.
+Modifier order matters: `.scale(2).clip()` clips enlarged content, while
+`.clip().scale(2)` scales the clipped result. Multiple clips can be nested.
+Clipping flattens content into a transparent offscreen surface, so it costs an
+additional render pass and uses the existing bounded composition surface budget.
+Stage boundaries remain clipped independently. Large zooms after clipping can
+soften the intermediate surface; use media crop for source pan/zoom when possible.
 
 ## Time and environment
 

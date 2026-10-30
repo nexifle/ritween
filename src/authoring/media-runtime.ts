@@ -33,7 +33,27 @@ export function frameMedia(
     c.kind === "media"
       ? [c]
       : c.kind === "composition" || c.kind === "group"
-        ? [...frameMedia(c.frame), ...(c.overlay ? frameMedia(c.overlay) : [])]
+        ? [
+            ...(c.kind === "composition" && c.imageMask
+              ? [
+                  {
+                    kind: "media" as const,
+                    path: `${c.path}/mask`,
+                    bounds: c.bounds,
+                    transform: c.transform,
+                    opacity: 1,
+                    time: 0,
+                    source: {
+                      kind: "image" as const,
+                      url: c.imageMask.url,
+                      style: { width: c.bounds.width, height: c.bounds.height },
+                    },
+                  },
+                ]
+              : []),
+            ...frameMedia(c.frame),
+            ...(c.overlay ? frameMedia(c.overlay) : []),
+          ]
         : [],
   );
 }

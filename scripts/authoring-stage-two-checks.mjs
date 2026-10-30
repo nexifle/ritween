@@ -61,11 +61,29 @@ export async function validateStageTwo(page) {
       },
       { width: 100, height: 100, fps: 24 },
     );
+    const png = async (draw) => {
+      const canvas = new OffscreenCanvas(100, 100);
+      draw(canvas.getContext("2d"));
+      return [
+        ...new Uint8Array(await (await canvas.convertToBlob()).arrayBuffer()),
+      ];
+    };
     return {
       image: [
         ...new Uint8Array(await (await image.convertToBlob()).arrayBuffer()),
       ],
       video: [...new Uint8Array(await video.blob.arrayBuffer())],
+      alphaMask: await png((p) => {
+        p.clearRect(0, 0, 100, 100);
+        p.fillStyle = "#FFFFFF";
+        p.fillRect(0, 0, 50, 100);
+      }),
+      lumaMask: await png((p) => {
+        p.fillStyle = "#FFFFFF";
+        p.fillRect(0, 0, 50, 100);
+        p.fillStyle = "#000000";
+        p.fillRect(50, 0, 50, 100);
+      }),
     };
   });
   await page.route("**/__authoring-image.png", (route) =>
@@ -80,9 +98,22 @@ export async function validateStageTwo(page) {
       body: Buffer.from(assets.video),
     }),
   );
+  await page.route("**/__authoring-alpha-mask.png", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(assets.alphaMask),
+    }),
+  );
+  await page.route("**/__authoring-luma-mask.png", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(assets.lumaMask),
+    }),
+  );
   const report = await page.evaluate(async () => {
     const {
       Stage,
+      StageEntry,
       Overlay,
       FrameSource,
       Box,
@@ -248,6 +279,105 @@ export async function validateStageTwo(page) {
         ],
       );
     }
+    const clipping = {};
+    for (const shape of [
+      { shape: "rect", radius: 20 },
+      { shape: "circle" },
+      {
+        shape: "path",
+        outline: [["M", 50, 0], ["L", 100, 100], ["L", 0, 100], ["Z"]],
+      },
+    ]) {
+      clipping[shape.shape] = await draw(
+        project(
+          entry(() =>
+            Stage(
+              () =>
+                Box({ width: 150, height: 150, fill: "#FF0000" })
+                  .frame({ width: 100, height: 100 })
+                  .clip(shape),
+              { background: "#FFFFFF" },
+            ),
+          ),
+        ),
+        [1, 0, 1],
+        [
+          [1, 1],
+          [50, 50],
+          [98, 50],
+        ],
+      );
+    }
+    const imageMasks = {};
+    for (const [name, shape] of [
+      ["alpha", { shape: "image", url: "/__authoring-alpha-mask.png" }],
+      [
+        "luminance",
+        {
+          shape: "image",
+          url: "/__authoring-luma-mask.png",
+          mode: "luminance",
+        },
+      ],
+      ["opaqueAlpha", { shape: "image", url: "/__authoring-luma-mask.png" }],
+    ]) {
+      imageMasks[name] = await draw(
+        project(
+          entry(() =>
+            Stage(
+              () =>
+                Box({ width: 100, height: 100, fill: "#FF0000" }).clip(shape),
+              { background: "#00FFFF" },
+            ),
+          ),
+        ),
+        [1.5, 0, 1.5],
+        [
+          [10, 50],
+          [90, 50],
+        ],
+      );
+    }
+    const lateMask = await draw(
+      project(
+        entry(() =>
+          Stage(
+            ({ localTime }) =>
+              localTime < 1
+                ? Box({ width: 100, height: 100, fill: "#FF0000" })
+                : Box({ width: 100, height: 100, fill: "#FF0000" }).clip({
+                    shape: "image",
+                    url: "/__authoring-alpha-mask.png",
+                  }),
+            { background: "#00FFFF" },
+          ),
+        ),
+      ),
+      [1.5, 0, 1.5],
+      [
+        [10, 50],
+        [90, 50],
+      ],
+    );
+    const cropped = await draw(
+      project(
+        entry(() =>
+          Stage(() =>
+            Image({
+              url: "/__authoring-image.png",
+              width: 100,
+              height: 100,
+              crop: { x: 0.9, zoom: 2 },
+            }),
+          ),
+        ),
+      ),
+      [0, 1, 0],
+      [
+        [10, 50],
+        [90, 50],
+      ],
+    );
     let evaluations = 0;
     const clip = videoResource({
       id: "footage",
@@ -276,12 +406,12 @@ export async function validateStageTwo(page) {
       },
       { size: [100, 100] },
     );
-    const shot = Shot({
+    const shot = StageEntry({
       id: "shot",
       source: "fixture",
       start: 0,
       duration: 2,
-      world,
+      view: world.view,
       mediaClips: [clip],
     });
     const videos = {};
@@ -359,25 +489,27 @@ export async function validateStageTwo(page) {
     const lateImage = await draw(
       project(
         entry(() =>
-          Stage(
-            ({ localTime }) =>
-              localTime < 1
-                ? Box({ width: 1, height: 1 })
-                : Image({
-                    url: "/__authoring-image.png",
-                    width: 100,
-                    height: 100,
-                  }),
-            { images: ["/__authoring-image.png"] },
+          Stage(({ localTime }) =>
+            localTime < 1
+              ? Box({ width: 1, height: 1 })
+              : Image({
+                  url: "/__authoring-image.png",
+                  width: 100,
+                  height: 100,
+                }),
           ),
         ),
       ),
-      [0, 1.5, 0, 1.5],
+      [1.5, 0, 1.5, 0, 1.5],
       [[10, 50]],
     );
     delete globalThis.__ritweenMediaActivation;
     return {
       shapes,
+      clipping,
+      imageMasks,
+      lateMask,
+      cropped,
       groupOpacity,
       nestedGroupOpacity,
       images,
@@ -391,6 +523,31 @@ export async function validateStageTwo(page) {
     };
   });
   assert.deepEqual(report.errors, []);
+  for (const captures of Object.values(report.clipping)) {
+    assert.deepEqual(captures[0], captures[2]);
+    assert.deepEqual(captures[0][0], [255, 255, 255, 255]);
+    assert.deepEqual(captures[0][1], [255, 0, 0, 255]);
+  }
+  assert.deepEqual(report.imageMasks.alpha[0], report.imageMasks.alpha[2]);
+  assert.deepEqual(report.imageMasks.alpha[0], [
+    [255, 0, 0, 255],
+    [0, 255, 255, 255],
+  ]);
+  assert.deepEqual(report.imageMasks.luminance[0], report.imageMasks.alpha[0]);
+  assert.deepEqual(report.imageMasks.opaqueAlpha[0], [
+    [255, 0, 0, 255],
+    [255, 0, 0, 255],
+  ]);
+  assert.deepEqual(report.lateMask[0], report.lateMask[2]);
+  assert.deepEqual(report.lateMask[0], report.imageMasks.alpha[0]);
+  assert.deepEqual(report.lateMask[1], [
+    [255, 0, 0, 255],
+    [255, 0, 0, 255],
+  ]);
+  assert.deepEqual(report.cropped[0], [
+    [255, 255, 0, 255],
+    [255, 255, 0, 255],
+  ]);
   assert.deepEqual(report.shapes[0], Array(4).fill([255, 255, 255, 255]));
   assert.deepEqual(report.shapes[1], [
     [255, 0, 0, 255],
@@ -449,8 +606,10 @@ export async function validateStageTwo(page) {
   assert.deepEqual(report.frozenVideo[0], report.frozenVideo[2]);
   assert.ok(report.frozenVideo[0][0][0] > 235);
   assert.ok(report.frozenVideo[1][0][2] > 235);
-  assert.deepEqual(report.lateImage[1], report.lateImage[3]);
-  assert.deepEqual(report.lateImage[1][0], [0, 255, 0, 255]);
+  assert.deepEqual(report.lateImage[0], report.lateImage[2]);
+  assert.deepEqual(report.lateImage[0], report.lateImage[4]);
+  assert.deepEqual(report.lateImage[0][0], [0, 255, 0, 255]);
+  assert.notDeepEqual(report.lateImage[0], report.lateImage[1]);
   assert.ok(report.audio.rms > 0.01);
   assert.equal(report.audio.sceneId, "shot");
   assert.ok(report.exportedBytes > 1000);

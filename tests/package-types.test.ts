@@ -116,7 +116,7 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
     writeFileSync(
       join(consumer, "consumer.ts"),
       `import { parseProjectSettings, mergeProjectSettings, validateProject, videoClip, imageScene, audioFile, videoResource, loadVideoTexture, loadImageTexture } from "ritween";
-import { Stage, Overlay, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive, Circle, Line, Group, ForEach, Image, Video, Motion } from "ritween";
+import { Stage, StageEntry, Overlay, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive, Circle, Line, Group, ForEach, Image, Video, Motion } from "ritween";
 import type { Project, ProjectSettings, StageScene, ViewNode, EvaluatedFrame } from "ritween";
 const reusable: ViewNode = Text("Declarative", { size: 32, maxWidth: 400, tracking: 1 });
 const stage: StageScene = Stage(({ theme }) => VStack([
@@ -165,7 +165,12 @@ const mediaWorld = World(() => Group([
   HStack(ForEach([{ id: "one" }], (item) => item.id, (_item, index) => reusable.offset(0, Motion.stagger(index, 0.1, Motion.slide())))),
 ]), { size: [320, 180] });
 const mediaShot = Shot({ id: "media", source: "manifest.ts", start: 0, duration: 1, world: mediaWorld, mediaClips: [footage], images: ["/later.png"] });
-void mediaShot;
+const stageEntry = StageEntry({ id: "direct", source: "manifest.ts", start: 0, duration: 1, mediaClips: [footage], view: () => Video(footage, { width: 320, height: 180 }) });
+const clipped = Video(footage, { width: 100, height: 100, crop: { x: 0.7, zoom: Motion.scale({ from: 1, to: 2 }) } }).clip({ shape: "rect", radius: 20 });
+const circleClip = clipped.clip({ shape: "circle" });
+const pathClip = clipped.clip({ shape: "path", outline: [["M", 0, 0], ["L", 100, 0], ["L", 0, 100], ["Z"]], fillRule: "evenodd" });
+const imageClip = clipped.clip({ shape: "image", url: "/mask.png", mode: "luminance" });
+void [mediaShot, stageEntry, circleClip, pathClip, imageClip];
 project.scenes = [videoClip({ id: "video", name: "Video", source: "manifest.ts", url: "/shot.mp4", start: 0,
   trim: { in: 0, out: 1 }, audio: { muted: false } })];
 const still = imageScene({ id: "image", name: "Image", source: "manifest.ts", url: "/logo.png", start: 0, duration: 1,

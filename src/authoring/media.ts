@@ -1,3 +1,4 @@
+import { snapshotNumber, type AnimatedNumber } from "./motion";
 import type { MediaClip } from "../engine/types";
 import { validateMediaClip } from "../engine/media/project";
 import { ViewNode } from "./nodes";
@@ -6,6 +7,12 @@ export interface MediaStyle {
   readonly width: number;
   readonly height: number;
   readonly fit?: "contain" | "cover";
+  /** Cover crop: normalized focal point (0..1) and zoom >= 1. */
+  readonly crop?: {
+    readonly x?: AnimatedNumber;
+    readonly y?: AnimatedNumber;
+    readonly zoom?: AnimatedNumber;
+  };
 }
 export type MediaSpec =
   | { readonly kind: "image"; readonly url: string; readonly style: MediaStyle }
@@ -28,6 +35,13 @@ function styleSnapshot(style: MediaStyle): MediaStyle {
     width: style.width,
     height: style.height,
     fit: style.fit,
+    crop:
+      style.crop &&
+      Object.freeze({
+        x: snapshotNumber(style.crop.x ?? 0.5),
+        y: snapshotNumber(style.crop.y ?? 0.5),
+        zoom: snapshotNumber(style.crop.zoom ?? 1),
+      }),
   });
 }
 /** Explicit design bounds keep layout independent of asynchronous asset loading. */

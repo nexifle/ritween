@@ -31,6 +31,7 @@ function waitForSetup<T>(
 export class Renderer {
   private scenes = new Map<string, Scene>();
   private transition?: TransitionRenderer;
+  private overlay?: Scene;
   private disposed = false;
   private configured = false;
   private renderGeneration = 0;
@@ -87,10 +88,7 @@ export class Renderer {
         onError(`GPU device lost: ${info.message}. Reload to reconnect.`);
     });
     try {
-      for (const entry of project.scenes) {
-        signal?.throwIfAborted();
-        const scene = entry.create();
-        renderer.scenes.set(entry.id, scene);
+      const setup = async (scene: Scene, name: string) => {
         device.pushErrorScope("validation");
         let setupError: unknown;
         try {
@@ -108,7 +106,18 @@ export class Renderer {
         }
         const error = await waitForSetup(device.popErrorScope(), signal);
         if (setupError) throw setupError;
-        if (error) throw Error(`${entry.name}: ${error.message}`);
+        if (error) throw Error(`${name}: ${error.message}`);
+      };
+      for (const entry of project.scenes) {
+        signal?.throwIfAborted();
+        const scene = entry.create();
+        renderer.scenes.set(entry.id, scene);
+        await setup(scene, entry.name);
+      }
+      if (project.overlay) {
+        signal?.throwIfAborted();
+        renderer.overlay = project.overlay();
+        await setup(renderer.overlay, "Project overlay");
       }
       signal?.throwIfAborted();
       if (project.scenes.some((s) => s.transition.type !== "cut"))
@@ -165,6 +174,10 @@ export class Renderer {
         throw Error(
           `${active.entry.name} prepares frames asynchronously. Use await renderer.renderAsync(${time}) instead of renderer.render(${time}).`,
         );
+    if (this.overlay?.prepareFrame)
+      throw Error(
+        "Project overlay prepares frames asynchronously. Use await renderer.renderAsync(time) instead.",
+      );
     this.renderGeneration++;
     this.abortPreparations(
       new DOMException(
@@ -207,6 +220,11 @@ export class Renderer {
         });
       }
       this.assertCurrentFrame(generation, controller.signal);
+      await this.overlay?.prepareFrame?.({
+        ...this.overlayTiming(evaluation.primary.time),
+        signal: controller.signal,
+      });
+      this.assertCurrentFrame(generation, controller.signal);
       this.submitFrame(evaluation);
     });
     const result = work.finally(() => {
@@ -231,6 +249,9 @@ export class Renderer {
     signal.throwIfAborted();
     if (generation !== this.renderGeneration)
       throw new DOMException("Frame preparation was superseded.", "AbortError");
+  }
+  private overlayTiming(time: number) {
+    return { time, localTime: time, progress: time / this.project.duration };
   }
   private submitFrame(evaluation: ReturnType<typeof evaluateActive>) {
     const encoder = this.device.createCommandEncoder();
@@ -275,6 +296,10 @@ export class Renderer {
       this.scenes
         .get(evaluation.primary.entry.id)!
         .render({ ...context, ...evaluation.primary });
+    this.overlay?.render({
+      ...context,
+      ...this.overlayTiming(evaluation.primary.time),
+    });
     this.device.queue.submit([encoder.finish()]);
   }
   dispose() {
@@ -295,6 +320,12 @@ export class Renderer {
       }
     } finally {
       this.scenes.clear();
+      try {
+        this.overlay?.dispose();
+      } catch (error) {
+        console.error("Could not dispose project overlay:", error);
+      }
+      this.overlay = undefined;
       this.transition?.dispose();
       try {
         if (this.configured) this.context.unconfigure();

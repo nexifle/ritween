@@ -39,6 +39,33 @@ export function Stage(
   view: (context: StageContext) => ViewNode,
   options: StageOptions = {},
 ): StageScene {
+  return createViewScene(view, options, true);
+}
+
+export type OverlayOptions = Omit<StageOptions, "camera" | "background">;
+
+/** Persistent project layer: no camera, no clear, and no scene transition transform. */
+export function Overlay(
+  view: (context: StageContext) => ViewNode,
+  options: OverlayOptions = {},
+): StageScene {
+  return createViewScene(
+    view,
+    {
+      designSize: options.designSize,
+      theme: options.theme,
+      debugBounds: options.debugBounds,
+      textResolution: options.textResolution,
+    },
+    false,
+  );
+}
+
+function createViewScene(
+  view: (context: StageContext) => ViewNode,
+  options: StageOptions,
+  clear: boolean,
+): StageScene {
   const designSize = options.designSize
     ? (Object.freeze([...options.designSize]) as readonly [number, number])
     : undefined;
@@ -162,6 +189,7 @@ export function Stage(
         background,
         debug,
         textResolution,
+        clear,
       );
       frame = evaluated;
     },

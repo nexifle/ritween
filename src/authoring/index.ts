@@ -6,7 +6,7 @@ export type {
   PathStyle,
   GlyphDefinition,
 } from "./path";
-export { Stage } from "./stage";
+export { Stage, Overlay } from "./stage";
 export { World, Composition, Shot } from "./composition";
 export type {
   WorldOptions,
@@ -14,7 +14,12 @@ export type {
   CompositionOptions,
   ShotOptions,
 } from "./composition";
-export type { StageContext, StageOptions, StageScene } from "./stage";
+export type {
+  StageContext,
+  StageOptions,
+  StageScene,
+  OverlayOptions,
+} from "./stage";
 export { Box, Text, Spacer, HStack, VStack, ZStack, ViewNode } from "./nodes";
 export type {
   Alignment,

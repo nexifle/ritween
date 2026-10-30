@@ -39,6 +39,7 @@ try {
     const {
       FrameSource,
       Stage,
+      Overlay,
       Box,
       Text,
       ZStack,
@@ -442,6 +443,86 @@ try {
         src.dispose();
       }
     }
+    const overlayChecks = [];
+    const overlayProject = {
+      ...fixture,
+      duration: 3,
+      overlay: () =>
+        Overlay(
+          ({ localTime, progress }) =>
+            ZStack(
+              [
+                Box({ width: 12, height: 8, fill: "#00FF00" }).offset(8, 10),
+                Box({ width: 10, height: 10, fill: "#FFFFFF" })
+                  .opacity(0.5)
+                  .offset(40, 40),
+                Box({ width: 8, height: 8, fill: "#FFFF00" }).offset(
+                  localTime * 10,
+                  80,
+                ),
+                Box({ width: 8, height: 8, fill: "#FF00FF" }).offset(
+                  progress * 30,
+                  65,
+                ),
+                Box({ width: 38, height: 18, fill: "#102030" }).offset(6, 20),
+                Text("HUD", { size: 10, color: "#FFFFFF" }).offset(8, 22),
+              ],
+              { align: "start" },
+            ),
+          { designSize: [100, 100] },
+        ),
+      scenes: [0, 1].map((i) =>
+        Shot({
+          id: `overlay-${i}`,
+          source: "fixture.ts",
+          start: i,
+          duration: 2,
+          world: World(
+            () =>
+              Box({ width: 100, height: 100, fill: i ? "#0000FF" : "#FF0000" }),
+            { size: [100, 100] },
+          ),
+          camera: { x: 40, y: 40, zoom: 1.3 },
+          overlay: () =>
+            Box({ width: 5, height: 5, fill: "#00FFFF" }).offset(85, 10),
+          transition: i ? { type: "zoom", duration: 1 } : { type: "cut" },
+        }),
+      ),
+    };
+    for (const [width, height] of [
+      [100, 100],
+      [200, 100],
+    ]) {
+      const src = await FrameSource.create(overlayProject, {
+        width,
+        height,
+        onError: (e) => errors.push(e),
+      });
+      try {
+        const captures = [];
+        for (const time of [0.5, 1.5, 2.5, 1.5]) {
+          const canvas = await src.render(time);
+          const copy = new OffscreenCanvas(width, height),
+            p = copy.getContext("2d");
+          p.drawImage(canvas, 0, 0);
+          const ox = (width - 100) / 2;
+          const pixel = (x, y) => [...p.getImageData(ox + x, y, 1, 1).data];
+          captures.push({
+            time,
+            marker: pixel(12, 14),
+            outside: pixel(6, 14),
+            alpha: pixel(45, 45),
+            clock: pixel(time * 10 + 3, 84),
+            progress: pixel((time / 3) * 30 + 3, 69),
+            shotOverlay: pixel(87, 12),
+            hud: [...p.getImageData(ox + 8, 22, 30, 15).data],
+          });
+        }
+        overlayChecks.push({ width, height, captures });
+      } finally {
+        src.dispose();
+      }
+    }
     const sharedProject = {
       ...fixture,
       duration: 3,
@@ -542,11 +623,21 @@ try {
     } finally {
       textSource.dispose();
     }
-    const mp4 = await exportMp4(compositionExample, {
-      width: 320,
-      height: 180,
-      fps: 24,
-    });
+    const mp4 = await exportMp4(
+      {
+        ...compositionExample,
+        overlay: () =>
+          Overlay(
+            () => Box({ width: 24, height: 12, fill: "#00FF00" }).offset(8, 8),
+            { designSize: [320, 180] },
+          ),
+      },
+      {
+        width: 320,
+        height: 180,
+        fps: 24,
+      },
+    );
     const video = document.createElement("video");
     video.muted = true;
     const url = URL.createObjectURL(mp4.blob);
@@ -565,7 +656,11 @@ try {
       });
       video.currentTime = 6.1;
       await sought;
+      const decoded = new OffscreenCanvas(320, 180),
+        pixels = decoded.getContext("2d");
+      pixels.drawImage(video, 0, 0);
       playback = {
+        overlayPixel: [...pixels.getImageData(16, 14, 1, 1).data],
         width: video.videoWidth,
         height: video.videoHeight,
         duration: video.duration,
@@ -579,6 +674,7 @@ try {
       title,
       chart,
       cameraPixels,
+      overlayChecks,
       compositionPixels,
       compositionAlpha,
       transitionPixels,
@@ -594,6 +690,42 @@ try {
     };
   });
   assert.deepEqual(report.errors, []);
+  for (const check of report.overlayChecks) {
+    assert.deepEqual(
+      check.captures[1],
+      check.captures[3],
+      "Overlay backward seek must reproduce pixels",
+    );
+    const hud = check.captures[0].hud;
+    for (const capture of check.captures) {
+      assert.deepEqual(capture.marker, [0, 255, 0, 255]);
+      assert.notDeepEqual(
+        capture.outside,
+        [0, 255, 0, 255],
+        "Overlay bounds must not zoom",
+      );
+      assert.deepEqual(capture.clock, [255, 255, 0, 255]);
+      assert.deepEqual(capture.progress, [255, 0, 255, 255]);
+      assert.deepEqual(
+        capture.hud,
+        hud,
+        "Text overlay must remain fixed through transition",
+      );
+    }
+    const alpha = check.captures[1].alpha;
+    assert.ok(
+      Math.abs(alpha[0] - 192) <= 2 &&
+        Math.abs(alpha[1] - 128) <= 2 &&
+        Math.abs(alpha[2] - 192) <= 2,
+      `Overlay alpha: ${alpha}`,
+    );
+    assert.deepEqual(check.captures[0].shotOverlay, [0, 255, 255, 255]);
+    assert.notDeepEqual(
+      check.captures[1].shotOverlay,
+      [0, 255, 255, 255],
+      "Shot overlay must retain full-frame transition behavior",
+    );
+  }
   assert.deepEqual(report.sharedPixels[1], [255, 0, 0, 255]);
   assert.notDeepEqual(report.sharedPixels[0], [255, 0, 0, 255]);
   assert.notDeepEqual(report.sharedPixels[2], [255, 0, 0, 255]);
@@ -605,6 +737,12 @@ try {
       `Unexpected overlap pixel: ${report.pixel}`,
     );
   assert.deepEqual(report.letterboxPixel, [244, 240, 231, 255]);
+  assert.ok(
+    report.playback.overlayPixel[1] > 220 &&
+      report.playback.overlayPixel[0] < 35 &&
+      report.playback.overlayPixel[2] < 35,
+    `Exported overlay pixel: ${report.playback.overlayPixel}`,
+  );
   assert.equal(report.playback.width, 320);
   assert.equal(report.playback.height, 180);
   assert.ok(Math.abs(report.playback.duration - 9) < 0.05);
@@ -675,6 +813,11 @@ try {
         chart: report.chart.length,
         tree: "validated",
         cameraShots: report.cameraShots.map((shot) => shot.length),
+        overlayChecks: report.overlayChecks.map(({ width, height }) => ({
+          width,
+          height,
+          passed: true,
+        })),
       },
       null,
       2,

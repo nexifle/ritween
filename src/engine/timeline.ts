@@ -4,6 +4,8 @@ import { resolveMediaProject } from "./media/project";
 export function validateProject(p: Project) {
   p = resolveMediaProject(p);
   if (p.settings !== undefined) parseProjectSettings(p.settings);
+  if (p.overlay !== undefined && typeof p.overlay !== "function")
+    throw Error("Project overlay must be a scene factory.");
   if (!p.name || !Number.isFinite(p.duration) || p.duration <= 0)
     throw Error("Project needs a name and positive duration.");
   if (

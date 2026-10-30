@@ -123,6 +123,10 @@ export interface Project {
   aspectRatio: readonly [number, number];
   duration: number;
   scenes: readonly SceneEntry[];
+  /** Persistent screen-space layer, rendered after scene transitions. Must preserve target contents.
+   * Owns one Scene per renderer. localTime equals project time; progress spans the project.
+   */
+  overlay?: () => Scene;
   /** Separate from scenes. Omitted tracks mean a silent picture. */
   audioTracks?: readonly AudioTrack[];
 }

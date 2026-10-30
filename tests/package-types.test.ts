@@ -116,7 +116,7 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
     writeFileSync(
       join(consumer, "consumer.ts"),
       `import { parseProjectSettings, mergeProjectSettings, validateProject, videoClip, imageScene, audioFile, videoResource, loadVideoTexture, loadImageTexture } from "ritween";
-import { Stage, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive } from "ritween";
+import { Stage, Overlay, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive } from "ritween";
 import type { Project, ProjectSettings, StageScene, ViewNode, EvaluatedFrame } from "ritween";
 const reusable: ViewNode = Text("Declarative", { size: 32, maxWidth: 400, tracking: 1 });
 const stage: StageScene = Stage(({ theme }) => VStack([
@@ -149,6 +149,11 @@ const project: Project = {
     duration: 1, transition: { type: "cut" },
     create: () => ({ setup() {}, render() {}, dispose() {} }) }],
 };
+project.overlay = () => Overlay(({ localTime, progress }) => Text(String(localTime + progress)).padding(20), { designSize: [320, 180], textResolution: 2 });
+// @ts-expect-error Global overlay has no camera; move content inside a Composition instead.
+Overlay(() => reusable, { camera });
+// @ts-expect-error Global overlay cannot clear the scene with a background.
+Overlay(() => reusable, { background: "#FFFFFF" });
 validateProject(project);
 const footage = videoResource({ id: "footage", name: "Footage", url: "/shot.mp4", start: 0, duration: 1 });
 project.mediaClips = [footage];

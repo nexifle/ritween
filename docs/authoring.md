@@ -389,6 +389,51 @@ node bin/ritween.mjs preview --project examples/composition --open
 node bin/ritween.mjs export --project examples/composition -o artifacts/composition.mp4
 ```
 
+### Persistent project overlay
+
+`Shot.overlay` is screen-space relative to its World camera, but it is still part
+of that scene's texture: full-frame transitions transform/fade it with the scene.
+For logos, watermarks, subtitles, or a HUD that must survive scene transitions,
+use `Project.overlay` with the `Overlay` helper:
+
+```ts
+import { Overlay, Text } from "ritween";
+
+const project = {
+  // ...name, resolution, aspectRatio, duration, scenes
+  overlay: () =>
+    Overlay(
+      ({ localTime, progress }) =>
+        Text("RITWEEN", { size: 28, color: "#FFFFFF" }).padding(40),
+      { designSize: [1920, 1080] },
+    ),
+};
+```
+
+The factory creates one independently owned layer per renderer. It is set up once,
+prepared when needed, rendered **once after** the active scene or transition, and
+disposed with the renderer, including failed/cancelled initialization. The overlay
+uses clamped project time for both `time` and `localTime`; `progress` spans the whole
+project, not the incoming shot. Tween/keyframe times therefore use project seconds.
+It does not inherit scene cameras, shared-element corrections, or transition zoom.
+
+`Overlay` reuses Stage layout/text/paint but loads existing output pixels instead
+of clearing them. It accepts `designSize`, `theme`, `textResolution`, and
+`debugBounds`; there is no background or camera option. Scaling/letterboxing follows
+Stage, using composition resolution by default. Draw a Box if the overlay needs its
+own backing panel. Custom node animations and nested Compositions are still allowed.
+
+For low-level rendering, `Project.overlay` can return a custom `Scene`. Its render
+passes **must preserve the target** (`loadOp: "load"`) and blend appropriately;
+ordinary `Stage`, `imageScene`, or another clearing scene is not an overlay helper.
+Async `prepareFrame` is supported via `renderAsync`; synchronous `render` rejects
+an async overlay. Media audio remains declared through existing project media/audio
+tracks. No separate timeline entry or overlay transition is created.
+
+Run `examples/project-overlay/manifest.ts` to see a fixed HUD and continuous progress
+bar while the two scenes undergo a zoom transition. This does not automatically
+choreograph scene text: exit/entrance timing remains part of the scene design.
+
 ### Automatic shared elements
 
 Use `transition: { type: "shared", duration: 1 }` and give matching drawable nodes

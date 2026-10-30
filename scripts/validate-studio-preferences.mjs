@@ -77,6 +77,14 @@ try {
     ),
   );
   assert.equal(Object.keys(layouts).length, 4);
+  await page.reload();
+  await page.getByText("Runtime connected", { exact: true }).waitFor();
+  const restored = await dimensions();
+  for (const key of Object.keys(before))
+    assert.ok(
+      Math.abs(restored[key] - before[key]) < 2,
+      `${key} user size survives reload with both inspector panels open`,
+    );
   await page.getByRole("button", { name: "Code", exact: true }).click();
   await page
     .getByRole("button", { name: "Minimize Export video", exact: true })

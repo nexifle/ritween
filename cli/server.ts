@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import type { ResolvedProject } from "./project.ts";
 import { projectPlugin } from "./project.ts";
 import { mediaResponse } from "./media-response.ts";
+import { exportJobsPlugin } from "./export-server.ts";
+import type { ExportJobRunner } from "./export-jobs.ts";
 export async function startServer({
   runtimeRoot,
   project,
@@ -15,6 +17,7 @@ export async function startServer({
   watch = true,
   mediaLoading = "full",
   mediaActivation = "eager",
+  exports: exportOptions,
 }: {
   runtimeRoot: string;
   project: ResolvedProject;
@@ -22,6 +25,15 @@ export async function startServer({
   watch?: boolean;
   mediaLoading?: "full" | "range";
   mediaActivation?: "eager" | "active-only";
+  exports?:
+    | false
+    | {
+        browser?: string;
+        channel?: string;
+        timeout?: number;
+        cacheRoot?: string;
+        runner?: ExportJobRunner;
+      };
 }) {
   const cache = await mkdtemp(join(tmpdir(), "ritween-vite-"));
   let server;
@@ -38,6 +50,17 @@ export async function startServer({
           ? join(builtRoot, "public")
           : false,
       plugins: [
+        ...(watch && exportOptions !== false
+          ? [
+              exportJobsPlugin({
+                runtimeRoot,
+                project,
+                mediaLoading,
+                mediaActivation,
+                ...exportOptions,
+              }),
+            ]
+          : []),
         {
           name: "ritween-media-loading",
           transformIndexHtml: {

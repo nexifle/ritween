@@ -63,6 +63,46 @@ import type { Project, Scene } from "ritween";
 
 Web preview binds only to `127.0.0.1`, defaults to port 5173, and reports the actual URL if that port is busy. `--port 0` chooses an available port. Imported source changes trigger state-preserving HMR; public assets may trigger an automatic page reload. Ctrl+C closes the server. Frame and export commands start a temporary private server and headless browser, save the result and close both automatically.
 
+## Studio export jobs and temporary files
+
+With `ritween preview`, clicking **Export Video** submits a backend-owned job.
+A separate headless Chrome/Chromium renders and encodes the MP4; the Studio tab
+only follows status and downloads the result. Refreshing or closing the tab does
+not cancel the job. Reopening the same running server restores progress through
+an event stream, including stages, frame counts, elapsed time, and a throughput-based
+ETA when available. The last rendered frame is not completion: progress stays below
+100% until encoding, muxing, and file saving finish.
+
+- One job renders at a time, with at most three preparing, queued, or running jobs
+  per server. The Studio pauses preview playback during export.
+- Each job bundles its source modules and captures the submitted project settings.
+  Large `public/` media is read from the project rather than copied; do not replace
+  or delete those files until export finishes.
+- Chrome is required on the server machine, using the selected `--channel` or
+  `--browser`. Studio exports have no render time limit by default; an explicit
+  `--timeout SECONDS` bounds each headless render, not queueing or source bundling.
+  Browser startup still has its own 120-second limit.
+- Results are temporary under `~/.ritween/exports/<manifest-path-hash>/session-*`.
+  The **Exports** tab lists jobs, file sizes, download links, cancellation, and deletion.
+  Completed videos are limited to 4 GiB total and history to 50 job records per
+  server session. Delete older entries to free capacity; existing videos are never
+  silently evicted to make space for a new result. Source bundles, browser download
+  staging, and a running partial output can temporarily use additional disk space.
+- Ctrl+C or SIGTERM cancels active work and deletes that server session's managed
+  files, including recovered artifacts. Download videos you want to keep before
+  stopping. Copies already saved elsewhere are not deleted.
+- After a crash, SIGKILL, or power loss, completed files still present on disk are
+  discovered the next time preview starts for the same manifest path. They can be
+  downloaded or deleted in Studio. Unfinished jobs become interrupted; encoding
+  does not resume. Files belonging to another live server are left alone.
+
+This isolates export from the user's Studio tab; it does not guarantee lower total
+RAM/GPU usage or prevent system-wide resource exhaustion. The MP4 muxer still
+buffers encoded samples in the headless browser. The control API is local,
+same-origin, and intended for trusted projects, not a public multi-user render
+service. A static Studio deployment without the backend cannot submit these jobs
+and does not fall back to encoding in the user's tab.
+
 ## Imported video activation
 
 Preview, frame, and export accept `--media-activation eager|active-only`.
@@ -109,6 +149,7 @@ bytes or a guarantee that every asset used incremental loading.
 - `export`: the existing OffscreenCanvas → VideoFrame → H.264 VideoEncoder pipeline, plus a 48 kHz AAC mix from the project's audio tracks, written by the custom MP4 muxer. `360p`, `720p`, and `1080p` are only 640×360, 1280×720, and 1920×1080. Any other aspect uses even `WIDTHxHEIGHT` with the same aspect as the project. 9:16 full HD is `1080x1920`. Steps use a short side of 360, 720, or 1080 when the frame fits H.264 Level 4.2. Omitting `--resolution` exports the short-side 720 step at 30 FPS, which is not full HD. A mismatched aspect is an error. All frames are evaluated deterministically at frameIndex/FPS. A project with no audio tracks stays video-only. `frame` does not render audio.
 - Output defaults to `frame.png` for frames, or a filename derived from the manifest's `project.name` for MP4 exports (for example, `Source to motion` → `source-to-motion.mp4`), in the invoking directory. Studio downloads use the same MP4 naming rule. Names are lowercased, separators and unsafe characters become hyphens, Unicode letters are preserved, and empty names fall back to `video.mp4`. Pass `-o` or `--output` to override the CLI output path. Parents are created automatically. PNG and MP4 extensions are enforced. An existing output fails unless `--force` is provided. Rendering happens before committing the completed output; a failed render does not replace an existing file.
 - `--time` is in seconds, between zero and composition duration inclusive. `--frame` is a nonnegative, zero-based index divided by `--fps`; it cannot be combined with `--time`.
+- Interactive exports update two lines on stderr: an adaptive progress bar with its percentage, followed by readable active stages, frame counts, elapsed time, and encoding speed/ETA when space permits. Narrow terminals shorten the bar and reduce the detail line rather than hiding the bar. The terminal cursor is hidden while progress is active; both lines are cleared and the cursor is restored on completion, failure, or cancellation. Audio and video stages can overlap. ETA estimates the remaining video frames, not audio completion, muxing, or file saving; 100% frames still requires finalization. The successful summary appears on stdout only after the output file is saved. Redirected output uses plain stage lines and ten-percent frame milestones without terminal control sequences.
 - `--json` emits one successful result object on stdout. Export progress is JSON Lines on stderr, followed by a result including output path, dimensions, FPS, frames, duration, bytes and elapsed seconds. Errors emit an `event: "error"` object on stderr and exit nonzero. Web preview emits its URL and remains running.
 - Exit codes: 0 success, 1 error/timeout, 130 cancelled frame/export. Ctrl+C on an idle web preview exits 0. `--timeout 120` bounds headless startup/render/export; browser resources are closed on timeout or interruption. Elapsed CLI time includes server/browser startup, rendering and file saving, unlike the earlier export-only benchmark.
 - `--channel chrome` is the default. Use `--channel msedge`, `--channel chromium` with an installed Playwright Chromium, or `--browser /absolute/path/to/chrome`. Native WebGPU and H.264 capability errors are surfaced; no alternative multimedia renderer is substituted.
@@ -119,9 +160,10 @@ bytes or a guarantee that every asset used incremental loading.
 npm test
 npm run build
 npm run test:cli
+npm run test:preview-exports
 ```
 
-`CLI_BINARY=/path/to/ritween npm run test:cli` runs the same suite against an installed `ritween` command instead of `node bin/ritween.mjs`.
+`CLI_BINARY=/path/to/ritween npm run test:cli` runs the same suite against an installed `ritween` command instead of `node bin/ritween.mjs`. `test:preview-exports` also accepts `CLI_BINARY` and checks real Studio submission, no tab-side encoder creation, refresh/tab closure, playable MP4 download, crash recovery, deletion, cancellation, queue reuse, and graceful cleanup. It writes screenshots and media under `artifacts/preview-exports/`.
 
 The CLI integration suite invokes commands from outside the repository, checks PNG dimensions and deterministic frame equivalence, renders an independent external TSX manifest with a JS scene, checks invalid timestamps and overwrite protection, tests timeout cleanup and web preview shutdown, and exports an eight-second 240-frame MP4 that is opened and sought using native Chrome playback. It writes artifacts under `artifacts/cli/`. The browser engine validation (`npm run test:browser` with Vite running) additionally decodes all 240 frames.
 

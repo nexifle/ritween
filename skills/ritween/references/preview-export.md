@@ -1,4 +1,4 @@
-# Preview and export — Ritween 0.2.3
+# Preview and export — Ritween 0.2.4
 
 The examples assume `ritween` is available on `PATH`, normally after `npm install -g ritween`. Run from the consumer project; replace paths with the actual manifest and output locations. Create the output directory first if needed. For an intentionally local dependency, use a package-manager script that exposes its executable.
 
@@ -11,6 +11,23 @@ ritween export --project ./manifest.ts -o ./artifacts/video.mp4 --json
 ```
 
 There is no scaffold command. Do not pass `--time` or `-o` to `preview` expecting a studio at that time: these options switch it to a frame operation.
+
+## Studio export lifecycle
+
+Exporting from `ritween preview` runs in headless Chrome/Chromium on the server,
+not in the Studio tab. Refreshing or closing the tab does not cancel the job;
+reopen the same server to follow progress or download a completed result.
+The **Exports** tab lists retained jobs and offers download, cancel, and delete.
+
+Server files are temporary: download videos you want to keep before stopping the
+server. Normal shutdown deletes managed files, including recovered results, but
+never deletes copies already downloaded elsewhere. After a crash, completed files
+still on disk are recovered when preview starts again for the same manifest path;
+unfinished encoding does not resume. The server retains at most 4 GiB of completed
+videos and 50 job records per session; delete older entries when capacity is full.
+One job renders at a time, with at most three active jobs. Source and settings are
+bundled per job; public media files are not copied, so leave them unchanged while
+exporting. Headless execution does not guarantee reduced total memory/GPU use.
 
 ## Imported MP4 loading
 
@@ -57,7 +74,7 @@ high-latency access. Do not promise a universal speedup or a total RAM limit.
 
 Chrome/Chromium, GPU acceleration, WebGPU, and WebCodecs are needed. The CLI uses `playwright-core` and defaults to the `chrome` channel; it does not imply a browser binary has been installed. `--browser PATH` or `--channel` can select another installation. If startup fails, report the error and check CLI help and browser availability instead of claiming a render.
 
-Existing outputs are refused unless `--force` is supplied. Choose fresh filenames or ask before overwriting. The default timeout is 120 seconds and includes server/browser startup. JSON results use stdout and progress uses stderr.
+Existing outputs are refused unless `--force` is supplied. Choose fresh filenames or ask before overwriting. The default frame/export command timeout is 120 seconds and includes server/browser startup. Studio jobs have no render time limit unless preview is started with an explicit `--timeout SECONDS`; that limit excludes source bundling and queueing. JSON results use stdout and progress uses stderr.
 
 For failed commands, incorrect frames, seeking discrepancies, or missing audio, use [render diagnostics](render-diagnostics.md). For final audio balance and metering, use [mix loudness](mix-loudness.md); detecting an audio stream is not a listening test.
 

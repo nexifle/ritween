@@ -75,6 +75,18 @@ For custom pipelines, uniforms, text assets, and multipass rendering, read [GPU 
 
 When changing a duration, recompute subsequent starts and total project duration together. Recheck audio clip boundaries too.
 
+## Audio authoring
+
+Define audio in project-level `audioTracks`, independently of visual scenes. Each track contains clips whose `create` factory returns an `AudioClipSource`; keep clip timing within the project duration.
+
+Read the references according to the soundtrack needs:
+
+- Start with the [audio reference](audio.md) for a procedural tone example, clip scheduling, track and clip constraints, audio file guidance, and preview versus export behavior.
+- After the audio contract, read [sound synthesis](sound-synthesis.md) for procedural tones, envelopes, percussion, and sample pitch.
+- After audio and synthesis, read [sound arrangement](sound-arrangement.md) for authored scores, track and bus routing, crossfades, effects, and picture synchronization.
+
+Synthesis and arrangement are authored project techniques, not built-in instruments or sequencers.
+
 ## Deterministic motion and seeking
 
 Compute positions directly, for example `x = from + (to - from) * easedProgress`. Use explicit clamp/easing functions rather than assuming the framework exports animation helpers. Do not increment position on each render.

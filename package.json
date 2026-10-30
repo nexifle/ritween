@@ -1,6 +1,6 @@
 {
   "name": "ritween",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Code-first WebGPU video framework. Preview, render a PNG frame, and export H.264 MP4 from a project manifest.",
   "type": "module",
   "engines": {
@@ -17,6 +17,7 @@
     "test:media": "node --import tsx scripts/validate-media.mjs",
     "test:mp4-input": "node --import tsx scripts/validate-mp4-input.mjs",
     "test:preview": "node --import tsx scripts/validate-preview.mjs",
+    "test:preview-exports": "node scripts/validate-preview-exports.mjs",
     "test:live-preview": "node scripts/validate-live-preview.mjs",
     "test:project-settings": "node --import tsx scripts/validate-project-settings.mjs",
     "test:studio-preferences": "node --import tsx scripts/validate-studio-preferences.mjs",

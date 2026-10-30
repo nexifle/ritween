@@ -46,6 +46,15 @@ test("CLI resolves web preview, PNG preview alias, frame indices and export pres
   assert.equal(demo.open, true);
   assert.equal(parseOptions([]).help, true);
 });
+test("Studio export timeout is opt-in while one-shot rendering keeps its default limit", () => {
+  assert.equal(parseOptions(["preview"]).previewExportTimeout, undefined);
+  assert.equal(parseOptions(["export"]).timeout, 120_000);
+  assert.equal(
+    parseOptions(["preview", "--timeout", "300"]).previewExportTimeout,
+    300_000,
+  );
+});
+
 test("CLI defers the default MP4 name to the manifest and preserves output overrides", () => {
   assert.equal(parseOptions(["export"]).output, undefined);
   assert.equal(parseOptions(["frame"]).output, "frame.png");

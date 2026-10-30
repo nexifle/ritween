@@ -132,28 +132,62 @@ try {
     { expected: 1 },
   );
   assert.match(timeout.stderr, /timed out/);
+  const textExport = await run([
+    "export",
+    "--resolution",
+    "320x180",
+    "--fps",
+    "24",
+    "-o",
+    join(artifacts, "text-progress.mp4"),
+    "--force",
+  ]);
+  assert.match(textExport.stdout, /^Export completed in [\d.]+s\n/);
+  assert.match(textExport.stdout, /\n  Output  .*text-progress\.mp4\n/);
+  assert.match(textExport.stdout, /\n  Video   320×180 · 24 FPS · 1s\n/);
+  assert.match(textExport.stdout, /\n  Frames  24\n/);
+  assert.match(textExport.stderr, /Export · Preparing renderer/);
+  assert.match(textExport.stderr, /Export · Encoding video/);
+  assert.match(textExport.stderr, /Export 100% · 24\/24 frames/);
+  assert.match(textExport.stderr, /Export · Finalizing MP4/);
+  assert.match(textExport.stderr, /Export · Saving file/);
+  assert.doesNotMatch(textExport.stderr, /[\r\u001b]|Export:|video-encode/);
   const video = join(artifacts, "video.mp4");
-  const exported = JSON.parse(
-    (
-      await run([
-        "export",
-        "--project",
-        root,
-        "--resolution",
-        "720p",
-        "--bitrate",
-        "2000000",
-        "--keyframe-interval",
-        "1",
-        "--fps",
-        "30",
-        "-o",
-        video,
-        "--force",
-        "--json",
-      ])
-    ).stdout,
+  const exportLog = await run([
+    "export",
+    "--project",
+    root,
+    "--resolution",
+    "720p",
+    "--bitrate",
+    "2000000",
+    "--keyframe-interval",
+    "1",
+    "--fps",
+    "30",
+    "-o",
+    video,
+    "--force",
+    "--json",
+  ]);
+  const exported = JSON.parse(exportLog.stdout);
+  const exportEvents = exportLog.stderr
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.ok(
+    exportEvents.every(({ event }) => ["stage", "progress"].includes(event)),
   );
+  assert.ok(
+    exportEvents.some(
+      ({ event, stage }) => event === "stage" && stage === "mux",
+    ),
+  );
+  assert.equal(
+    exportEvents.filter(({ event }) => event === "progress").at(-1).percent,
+    100,
+  );
+  assert.doesNotMatch(exportLog.stderr, /[\r\u001b]/);
   assert.equal(exported.bitrate, 2000000);
   assert.equal(exported.latencyMode, "quality");
   assert.equal(exported.keyFrameInterval, 1);
@@ -395,6 +429,8 @@ scenes: [videoClip({id:"footage",name:"Footage",source:"manifest.ts",url:"/sourc
       "external TSX manifest with JS scene",
       "out-of-range rejection",
       "timeout cleanup",
+      "plain-text export progress and labeled result",
+      "JSON export progress contract",
       "240-frame MP4 export",
       "native playback and seeking",
       "studio SVG favicon with project public assets",

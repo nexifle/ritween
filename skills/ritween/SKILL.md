@@ -7,12 +7,12 @@ description: >-
   or MP4 export, even without an explicit request for a skill. Not intended for
   developing framework internals or working with other video frameworks.
 metadata:
-  ritween-version: "0.2.3"
+  ritween-version: "0.2.4"
 ---
 
 # Creating videos with Ritween
 
-Help the user produce a runnable project, not just code snippets. This skill targets Ritween 0.2.3. Check the installed version before using examples; for a different version, inspect its types and CLI help. Do not automatically change the user's dependency version.
+Help the user produce a runnable project, not just code snippets. This skill targets Ritween 0.2.4. Check the installed version before using examples; for a different version, inspect its types and CLI help. Do not automatically change the user's dependency version.
 
 ## Workflow
 

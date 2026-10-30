@@ -30,6 +30,8 @@ import {
   LocateIcon,
   Cancel01Icon,
   StopIcon,
+  InformationCircleIcon,
+  Delete02Icon,
 } from "@hugeicons/core-free-icons";
 
 export const icons: Record<string, IconSvgElement> = {
@@ -65,6 +67,8 @@ export const icons: Record<string, IconSvgElement> = {
   locate: LocateIcon,
   cancel: Cancel01Icon,
   stop: StopIcon,
+  info: InformationCircleIcon,
+  delete: Delete02Icon,
 };
 
 export function Icon({

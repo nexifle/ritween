@@ -5,6 +5,7 @@ import { Renderer } from "./engine/render/renderer";
 import { exportMp4 as exportVideo } from "./engine/export/formats/mp4/export-mp4";
 import {
   resolveExportRequest,
+  projectExportSettings,
   type ExportOverrides,
 } from "./engine/export/project-settings";
 import { validateProject } from "./engine/timeline";
@@ -25,6 +26,7 @@ const api = {
       name: project.name,
       duration: project.duration,
       resolution: project.resolution,
+      exportFps: projectExportSettings(project).fps,
       scenes: project.scenes.map(({ id, name, start, duration }) => ({
         id,
         name,
@@ -78,6 +80,9 @@ const api = {
       onStage: (stage) => {
         void window.ritweenStage?.(stage);
       },
+      onStageComplete: (stage) => {
+        void window.ritweenStageComplete?.(stage);
+      },
       onProgress: (done, total) => {
         void window.ritweenProgress?.({ done, total });
       },
@@ -100,6 +105,7 @@ declare global {
   interface Window {
     ritween: typeof api;
     ritweenStage?: (stage: string) => Promise<void>;
+    ritweenStageComplete?: (stage: string) => Promise<void>;
     ritweenProgress?: (progress: {
       done: number;
       total: number;

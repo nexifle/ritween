@@ -19,6 +19,7 @@ import { exportFilename } from "../src/engine/export/filename";
 import { resolveProject } from "./project.ts";
 import { startServer } from "./server.ts";
 import { chromium } from "playwright-core";
+import { createExportProgress, formatExportResult } from "./export-progress.ts";
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 async function checkOutput(output: string, force?: boolean) {
@@ -38,6 +39,7 @@ export async function main(argv = process.argv.slice(2)) {
   let browser: Browser | undefined;
   let temporary: string | undefined;
   let task: Promise<void> | undefined;
+  let exportProgress: ReturnType<typeof createExportProgress> | undefined;
   let cancelled = false;
   let interrupted = false;
   let timer;
@@ -90,6 +92,8 @@ export async function main(argv = process.argv.slice(2)) {
         activeOptions.timeout,
       );
     const started = performance.now();
+    if (activeOptions.command === "export")
+      exportProgress = createExportProgress({ json: activeOptions.json });
     // The timer/signal races include server and browser startup, not just rendering.
     async function execute() {
       const serving = await startServer({
@@ -99,6 +103,11 @@ export async function main(argv = process.argv.slice(2)) {
         watch: activeOptions.command === "preview",
         mediaLoading: activeOptions.mediaLoading,
         mediaActivation: activeOptions.mediaActivation,
+        exports: {
+          browser: activeOptions.browser,
+          channel: activeOptions.channel,
+          timeout: activeOptions.previewExportTimeout,
+        },
       });
       server = serving.server;
       if (cancelled || interrupted) throw Error("Cancelled.");
@@ -173,25 +182,15 @@ export async function main(argv = process.argv.slice(2)) {
       const failures: string[] = [];
       page.on("pageerror", (error) => failures.push(error.message));
       await page.exposeFunction("ritweenStage", (stage: string) => {
-        console.error(
-          activeOptions.json
-            ? JSON.stringify({ event: "stage", stage })
-            : `Export: ${stage}`,
-        );
+        exportProgress?.stage(stage);
       });
-      let lastPercent = -1;
+      await page.exposeFunction("ritweenStageComplete", (stage: string) => {
+        exportProgress?.stageComplete(stage);
+      });
       await page.exposeFunction(
         "ritweenProgress",
         ({ done, total }: { done: number; total: number }) => {
-          const percent = Math.floor((done / total) * 10) * 10;
-          if (percent !== lastPercent) {
-            lastPercent = percent;
-            console.error(
-              activeOptions.json
-                ? JSON.stringify({ event: "progress", done, total, percent })
-                : `Export ${percent}% (${done}/${total} frames)`,
-            );
-          }
+          exportProgress?.update(done, total);
         },
       );
       await page.goto(`${serving.url}/__ritween/render`);
@@ -261,6 +260,7 @@ export async function main(argv = process.argv.slice(2)) {
       ]);
       if (failures.length) throw Error(failures.join("\n"));
       if (cancelled) throw Error("Cancelled.");
+      exportProgress?.saving();
       await mkdir(dirname(output), { recursive: true });
       temporary = join(
         dirname(output),
@@ -283,16 +283,24 @@ export async function main(argv = process.argv.slice(2)) {
         ...details,
         elapsedSeconds: (performance.now() - started) / 1000,
       };
+      exportProgress?.stop();
       console.log(
         activeOptions.json
           ? JSON.stringify(result)
-          : `Saved ${output}\n${"time" in details ? `Frame at ${details.time}s · ${details.width}×${details.height}` : `${details.frames} frames · ${details.duration}s · ${details.width}×${details.height} at ${details.fps} FPS`} · ${(details.bytes / 2 ** 20).toFixed(2)} MiB\nCompleted in ${result.elapsedSeconds.toFixed(2)}s`,
+          : "time" in details
+            ? `Saved ${output}\nFrame at ${details.time}s · ${details.width}×${details.height} · ${(details.bytes / 2 ** 20).toFixed(2)} MiB\nCompleted in ${result.elapsedSeconds.toFixed(2)}s`
+            : formatExportResult({
+                ...details,
+                output,
+                elapsedSeconds: result.elapsedSeconds,
+              }),
       );
     }
     // Keep execute handled even when cancellation wins.
     task = execute();
     await Promise.race([task, stop]);
   } catch (error) {
+    exportProgress?.stop();
     if (interrupted && options?.command === "preview") {
       process.exitCode = 0;
       return;
@@ -305,6 +313,7 @@ export async function main(argv = process.argv.slice(2)) {
     );
     process.exitCode = interrupted ? 130 : 1;
   } finally {
+    exportProgress?.stop();
     cancelled = true;
     clearTimeout(timer);
     process.off("SIGINT", interrupt);

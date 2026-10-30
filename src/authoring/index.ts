@@ -20,7 +20,21 @@ export type {
   StageScene,
   OverlayOptions,
 } from "./stage";
-export { Box, Text, Spacer, HStack, VStack, ZStack, ViewNode } from "./nodes";
+export {
+  Box,
+  Text,
+  Spacer,
+  HStack,
+  VStack,
+  ZStack,
+  Group,
+  ForEach,
+  ViewNode,
+} from "./nodes";
+export { Circle, Line } from "./shapes";
+export type { CircleStyle, LineStyle } from "./shapes";
+export { Image, Video } from "./media";
+export type { MediaStyle } from "./media";
 export type {
   Alignment,
   Dimension,
@@ -28,9 +42,10 @@ export type {
   BoxStyle,
   StackOptions,
 } from "./nodes";
-export { motion, keyframes } from "./motion";
+export { motion, keyframes, Motion, stagger } from "./motion";
 export type {
   Tween,
+  MotionOptions,
   AnimatedNumber,
   Easing,
   Keyframe,

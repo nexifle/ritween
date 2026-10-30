@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { validateStageTwo } from "./authoring-stage-two-checks.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { createServer } from "vite";
@@ -689,6 +690,8 @@ try {
       mp4Bytes: mp4.blob.size,
     };
   });
+  const stageTwo = await validateStageTwo(page);
+  console.log("Stage two validation:", JSON.stringify(stageTwo));
   assert.deepEqual(report.errors, []);
   for (const check of report.overlayChecks) {
     assert.deepEqual(

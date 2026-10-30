@@ -122,6 +122,7 @@ export function Shot(options: ShotOptions): SceneEntry {
     source,
     start,
     duration,
+    mediaClips: stageOptions.mediaClips,
     transition: Object.freeze({ ...transition }),
     create: () =>
       Stage(

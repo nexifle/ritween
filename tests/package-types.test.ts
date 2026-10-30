@@ -116,7 +116,7 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
     writeFileSync(
       join(consumer, "consumer.ts"),
       `import { parseProjectSettings, mergeProjectSettings, validateProject, videoClip, imageScene, audioFile, videoResource, loadVideoTexture, loadImageTexture } from "ritween";
-import { Stage, Overlay, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive } from "ritween";
+import { Stage, Overlay, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive, Circle, Line, Group, ForEach, Image, Video, Motion } from "ritween";
 import type { Project, ProjectSettings, StageScene, ViewNode, EvaluatedFrame } from "ritween";
 const reusable: ViewNode = Text("Declarative", { size: 32, maxWidth: 400, tracking: 1 });
 const stage: StageScene = Stage(({ theme }) => VStack([
@@ -157,6 +157,15 @@ Overlay(() => reusable, { background: "#FFFFFF" });
 validateProject(project);
 const footage = videoResource({ id: "footage", name: "Footage", url: "/shot.mp4", start: 0, duration: 1 });
 project.mediaClips = [footage];
+const mediaWorld = World(() => Group([
+  Video(footage, { width: 320, height: 180, fit: "cover" }),
+  Image({ url: "/logo.png", width: 40, height: 40 }),
+  Circle({ radius: 10, stroke: "#FFFFFF", strokeWidth: 2, trim: [0, Motion.fade()] }),
+  Line({ from: [0, 0], to: [20, 20], progress: Motion.fade() }),
+  HStack(ForEach([{ id: "one" }], (item) => item.id, (_item, index) => reusable.offset(0, Motion.stagger(index, 0.1, Motion.slide())))),
+]), { size: [320, 180] });
+const mediaShot = Shot({ id: "media", source: "manifest.ts", start: 0, duration: 1, world: mediaWorld, mediaClips: [footage], images: ["/later.png"] });
+void mediaShot;
 project.scenes = [videoClip({ id: "video", name: "Video", source: "manifest.ts", url: "/shot.mp4", start: 0,
   trim: { in: 0, out: 1 }, audio: { muted: false } })];
 const still = imageScene({ id: "image", name: "Image", source: "manifest.ts", url: "/logo.png", start: 0, duration: 1,

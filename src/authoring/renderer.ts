@@ -1,4 +1,7 @@
 import { flattenPath } from "./path-geometry";
+import type { ImageTexture } from "../engine/render/visual";
+import { fitMedia } from "./media";
+import { mediaKey } from "./media-runtime";
 import type { RenderContext, SetupContext } from "../engine/types";
 import { identity, inverse, multiply } from "../engine/render/shared-elements";
 import type { DrawCommand, EvaluatedFrame, TextRun } from "./layout";
@@ -7,7 +10,7 @@ const shader = `
 struct Controls {
   rect: vec4f, transform: vec4f, resolution: vec2f, radius: f32, strokeWidth: f32,
   fill: vec4f, stroke: vec4f, opacity: f32, textured: f32, padding: vec2f,
-  cameraX: vec4f, cameraY: vec4f
+  cameraX: vec4f, cameraY: vec4f, uvRect: vec4f
 };
 @group(0) @binding(0) var<uniform> c: Controls;
 @group(0) @binding(1) var image: texture_2d<f32>;
@@ -36,7 +39,7 @@ struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     let coverage=clamp(0.5+select(-distance,distance,inside)/aa,0.,1.);
     return vec4f(c.fill.rgb,c.fill.a*c.opacity*coverage);
   }
-  let sample=textureSample(image,samp,i.uv);
+  let sample=textureSample(image,samp,i.uv*c.uvRect.xy+c.uvRect.zw);
   if(c.textured>1.5) { return vec4f(sample.rgb/max(sample.a,0.00001),sample.a*c.opacity); }
   if(c.textured>0.5) { return vec4f(sample.rgb,sample.a*c.opacity); }
   let halfSize=c.rect.zw*0.5; let r=min(c.radius,min(halfSize.x,halfSize.y));
@@ -247,6 +250,7 @@ export class ViewRenderer {
     debug: boolean,
     textResolution = 1,
     clear = true,
+    media: ReadonlyMap<string, ImageTexture> = new Map(),
   ) {
     if (this.disposed || !this.pipeline || !this.white || !this.sampler)
       throw Error("View renderer is not ready.");
@@ -340,6 +344,8 @@ export class ViewRenderer {
           "#00000000",
           debug,
           textResolution,
+          true,
+          media,
         );
         if (c.overlay) {
           surface.overlay ??= this.fork();
@@ -351,6 +357,7 @@ export class ViewRenderer {
             debug,
             textResolution,
             false,
+            media,
           );
         } else {
           surface.overlay?.dispose();
@@ -455,8 +462,31 @@ export class ViewRenderer {
           }
           texture = cached.texture;
         }
-        const b = c.bounds,
-          [sx, sy, tx, ty] = c.transform;
+        let b = c.bounds;
+        let uv: readonly number[] = [1, 1, 0, 0];
+        if (c.kind === "media") {
+          const resource = media.get(mediaKey(c.source));
+          if (!resource)
+            throw Error(
+              "Media is not prepared; use renderAsync() and declare time-dependent media before setup.",
+            );
+          const fitted = fitMedia(
+            b.width,
+            b.height,
+            resource.width,
+            resource.height,
+            c.source.style.fit ?? "contain",
+          );
+          b = {
+            x: b.x + fitted.x,
+            y: b.y + fitted.y,
+            width: fitted.width,
+            height: fitted.height,
+          };
+          uv = fitted.uv;
+          texture = resource.texture;
+        }
+        const [sx, sy, tx, ty] = c.transform;
         let drawCamera = [
           ca * scale,
           cb * scale,
@@ -512,6 +542,7 @@ export class ViewRenderer {
             drawCamera[3],
             drawCamera[5],
             0,
+            ...uv,
           ],
           (i * stride) / 4,
         );
@@ -524,7 +555,7 @@ export class ViewRenderer {
                 resource: {
                   buffer: this.uniform!,
                   offset: i * stride,
-                  size: 128,
+                  size: 144,
                 },
               },
               { binding: 1, resource: texture.createView() },

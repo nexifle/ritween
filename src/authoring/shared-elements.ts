@@ -27,6 +27,7 @@ export function collectSharedElements(
     frame.camera?.matrix ?? identity,
   );
   const result: SharedElement[] = [];
+  const sourcePaths = new Set<string>();
   for (const c of frame.commands) {
     const [sx, sy, tx, ty] = c.transform,
       b = c.bounds;
@@ -38,7 +39,11 @@ export function collectSharedElements(
       b.x * sx + tx,
       b.y * sy + ty,
     ]);
-    if (c.sharedId) result.push({ id: c.sharedId, matrix });
+    // A filled/stroked shape emits multiple paint commands for one source node.
+    if (c.sharedId && !sourcePaths.has(c.path)) {
+      result.push({ id: c.sharedId, matrix });
+      sourcePaths.add(c.path);
+    }
     // A tagged composition is one flattened shared element; do not double-transform descendants.
     if (c.kind === "composition" && !c.sharedId) {
       const pixels = [

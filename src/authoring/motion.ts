@@ -16,6 +16,54 @@ export interface Keyframes {
   readonly keyframes: readonly Keyframe[];
 }
 export type AnimatedNumber = number | Tween | Keyframes;
+export type MotionOptions = Partial<
+  Pick<Tween, "from" | "to" | "duration" | "delay" | "ease">
+>;
+function preset(options: MotionOptions, from: number, to: number): Tween {
+  const value = Object.freeze({
+    from,
+    to,
+    duration: 0.6,
+    ease: "ease-out" as const,
+    ...options,
+  });
+  motion(value, 0);
+  return value;
+}
+/** Shift a numeric track without introducing a second animation clock. */
+export function stagger(
+  index: number,
+  interval: number,
+  value: AnimatedNumber,
+): AnimatedNumber {
+  if (
+    !Number.isInteger(index) ||
+    index < 0 ||
+    !Number.isFinite(interval) ||
+    interval < 0
+  )
+    throw Error(
+      "Stagger needs a non-negative integer index and finite non-negative interval.",
+    );
+  const delay = index * interval;
+  if (!Number.isFinite(delay)) throw Error("Stagger delay must be finite.");
+  if (typeof value === "number") return resolveNumber(value, 0);
+  if ("keyframes" in value)
+    return keyframes(
+      value.keyframes.map((frame) => ({ ...frame, at: frame.at + delay })),
+    );
+  const result = { ...value, delay: (value.delay ?? 0) + delay };
+  motion(result, 0);
+  return Object.freeze(result);
+}
+/** Data presets compose with existing opacity/offset/scale modifiers. */
+export const Motion = Object.freeze({
+  fade: (options: MotionOptions = {}) => preset(options, 0, 1),
+  slide: (options: MotionOptions = {}) => preset(options, 32, 0),
+  scale: (options: MotionOptions = {}) => preset(options, 0.9, 1),
+  stagger,
+  keyframes,
+});
 
 function easing(ease: Easing, t: number): number {
   switch (ease) {

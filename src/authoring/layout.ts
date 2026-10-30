@@ -1,5 +1,7 @@
 import { evaluatePath, pathData, type PathOutline } from "./path";
 import { resolveNumber } from "./motion";
+import { shapeGeometry } from "./shapes";
+import type { MediaSpec } from "./media";
 import { evaluateCamera, type CameraState } from "./camera";
 import type { StageContext } from "./stage";
 import type { Alignment, TextStyle, ViewNode } from "./nodes";
@@ -62,6 +64,11 @@ export type DrawCommand = {
       readonly fillRule: "nonzero" | "evenodd";
     }
   | { readonly kind: "text"; readonly text: TextRun }
+  | {
+      readonly kind: "media";
+      readonly source: MediaSpec;
+      readonly time: number;
+    }
 );
 export interface LayoutNode {
   readonly path: string;
@@ -91,6 +98,7 @@ interface Measured {
   text?: TextRun;
   composition?: EvaluatedFrame;
   overlay?: EvaluatedFrame;
+  shape?: ReturnType<typeof shapeGeometry>;
 }
 function positive(value: number, name: string): number {
   if (!Number.isFinite(value) || value < 0)
@@ -258,6 +266,14 @@ export function evaluateView(
           ...frame.warnings.map((w) => `${path}/world/${w}`),
           ...(m.overlay?.warnings.map((w) => `${path}/overlay/${w}`) ?? []),
         );
+      } else if (s.kind === "circle" || s.kind === "line") {
+        const geometry = shapeGeometry(s, time);
+        m.shape = geometry;
+        m.width = geometry.width;
+        m.height = geometry.height;
+      } else if (s.kind === "image" || s.kind === "video") {
+        m.width = s.style.width;
+        m.height = s.style.height;
       } else if (s.kind === "path") {
         m.width = s.style.width;
         m.height = s.style.height;
@@ -312,7 +328,7 @@ export function evaluateView(
       } else {
         const gap = positive(s.options.gap ?? 0, "Stack gap");
         const horizontal = s.kind === "hstack",
-          overlay = s.kind === "zstack";
+          overlay = s.kind === "zstack" || s.kind === "group";
         const main = horizontal ? w : h;
         const available = Math.max(
           0,
@@ -429,6 +445,50 @@ export function evaluateView(
         frame: m.composition,
         overlay: m.overlay,
       });
+    if (
+      s.kind === "image" ||
+      (s.kind === "video" &&
+        (options.context?.time ?? time) >= s.clip.start &&
+        (options.context?.time ?? time) <= s.clip.start + s.clip.duration)
+    )
+      commands.push({
+        kind: "media",
+        source: s,
+        time: options.context?.time ?? time,
+        sharedId: m.node.key,
+        path: m.path,
+        bounds,
+        transform: current,
+        opacity,
+      });
+    if (s.kind === "circle" || s.kind === "line") {
+      const geometry = m.shape!;
+      const fill =
+        s.kind === "circle"
+          ? (s.style.fill ??
+            (s.style.stroke
+              ? undefined
+              : (theme.colors.accent ?? theme.textColor)))
+          : (s.style.color ?? theme.textColor);
+      for (const [outline, color] of [
+        [geometry.fill, fill],
+        [geometry.stroke, s.kind === "circle" ? s.style.stroke : undefined],
+      ] as const)
+        if (outline.length && color) {
+          commands.push({
+            kind: "path",
+            sharedId: m.node.key,
+            path: m.path,
+            bounds,
+            transform: current,
+            opacity,
+            outline,
+            data: pathData(outline),
+            fill: color,
+            fillRule: "nonzero",
+          });
+        }
+    }
     if (s.kind === "path")
       commands.push({
         kind: "path",
@@ -487,7 +547,7 @@ export function evaluateView(
         cx += align(s.options.align ?? "center", m.width - child.width);
         cursor += child.height + (s.options.gap ?? 0);
       }
-      if (s.kind === "zstack") {
+      if (s.kind === "zstack" || s.kind === "group") {
         cx += align(s.options.align ?? "center", m.width - child.width);
         cy += align(s.options.align ?? "center", m.height - child.height);
       }

@@ -30,7 +30,45 @@ export const project: Project = {
 
 `source` is inspector metadata relative to the manifest directory, not an import instruction. Import the scene module separately. Keep source paths inside that directory.
 
-## Minimal runnable scene
+## Declarative scenes (current checkout)
+
+Prefer public authoring nodes for ordinary 2D scenes rather than writing shaders:
+`Stage`, `Text`, `Box`, `HStack/VStack/ZStack`, `Spacer`, `Circle`, `Line`, `Group`,
+`ForEach`, `Image`, and `Video`. Components are ordinary functions returning nodes.
+Modifiers are immutable; layout, paint, and motion remain deterministic when seeking.
+
+```ts
+import { Stage, HStack, ForEach, Box, Motion } from "ritween";
+
+const scene = Stage(() => HStack(
+  ForEach(
+    [{ id: "first", value: 80 }, { id: "second", value: 120 }],
+    (item) => item.id,
+    (item, index) => Box({ width: 40, height: item.value })
+      .scale(1, Motion.stagger(index, 0.08, Motion.fade()), [0.5, 1]),
+  ),
+  { gap: 16, align: "end" },
+));
+```
+
+`ForEach` returns an array for its parent Stack. `Group` overlays children in one
+layout slot; opacity is per primitive. Circle trim uses fractions of a clockwise
+turn from twelve o'clock. Line supports `from/to`, `width`, and animated `progress`.
+Motion presets produce tween data for `.opacity()`, `.offset()`, and `.scale()`;
+`Motion.keyframes` shares the same scene-local clock.
+
+Image needs `url/width/height/fit`. Video takes an immutable `videoResource` clip
+and `{ width, height, fit }`, using **project-clock** timing even in remapped Worlds.
+Declare the same clip list on `Shot.mediaClips` for video resource ownership and
+automatic scene-linked footage audio. Manual SceneEntry + Stage must receive the
+same list in both places. Overlay audio also needs `project.mediaClips`. Declare
+conditionally introduced image URLs in Stage/Shot `images`; initial images are
+found automatically. Media Stages require async rendering; CLI/preview/export
+already handle preparation. For the complete API see `docs/authoring.md` in the
+checkout/package and `examples/authoring-media` in the checkout. These APIs are not
+present in older installed packages; confirm the installed version before using.
+
+## Minimal runnable low-level scene
 
 This example intentionally uses a changing clear color to verify the pipeline. Replace it with actual WebGPU drawing for a substantive visual brief.
 
@@ -89,7 +127,7 @@ Synthesis and arrangement are authored project techniques, not built-in instrume
 
 ## Deterministic motion and seeking
 
-Compute positions directly, for example `x = from + (to - from) * easedProgress`. Use explicit clamp/easing functions rather than assuming the framework exports animation helpers. Do not increment position on each render.
+Compute positions directly, for example `x = from + (to - from) * easedProgress`. Use `Motion` tween/keyframe descriptors with declarative nodes; for custom GPU scenes use explicit clamp/easing functions. Do not increment position on each render.
 
 For moving animation, test a time inside the scene, then an earlier time, then the first time again within the same browser session and renderer instance. The first and third frames must match; choose times where the geometry or animation visibly differs so the middle frame also confirms that the scene is not static. Compare canvas pixels or hashes when automating this check. Separate CLI frame renders and GPU mocks do not prove in-session seeking; report them as narrower checks if browser verification is unavailable. Also inspect the beginning, each cut, and the final frame. A frame counter or accumulated delta can look correct during playback but fail during seeking and export.
 

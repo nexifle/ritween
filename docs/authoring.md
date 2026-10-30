@@ -4,8 +4,9 @@ Stage is an additive authoring layer over the existing `Scene` contract. Existin
 WebGPU scenes, media helpers, timeline, audio, preview, and export remain unchanged.
 The authoring layer provides Stack layout, Text, Box, immutable modifiers,
 deterministic motion, Camera 2D, reusable Worlds, nested Compositions, timeline
-Shots, overlap transitions, and a CPU-inspectable tree/display list. Media nodes,
-Group, ForEach, arbitrary masks, and chart components are not implemented yet.
+Shots, overlap transitions, Circle/Line shapes, Group/ForEach, Image/Video nodes,
+motion presets, and a CPU-inspectable tree/display list. Arbitrary masks and
+chart components are not implemented yet.
 
 ## A complete project
 
@@ -60,6 +61,114 @@ npm run build
 node bin/ritween.mjs preview --project examples/authoring --open
 node bin/ritween.mjs frame --project examples/authoring --time 4.2 -o artifacts/authoring-cli.png
 ```
+
+## Shapes, groups, and data-driven lists
+
+```ts
+import { Circle, Line, Group, ForEach, HStack, Box, Motion } from "ritween";
+
+const bars = HStack(
+  ForEach(
+    [{ id: "sales", value: 80 }, { id: "cost", value: 45 }],
+    (item) => item.id,
+    (item, index) =>
+      Box({ width: 24, height: item.value })
+        .scale(1, Motion.stagger(index, 0.08, Motion.fade()), [0.5, 1]),
+  ),
+  { gap: 12, align: "end" },
+);
+const badge = Group([
+  Circle({ radius: 40, fill: "#4268EC" }),
+  Circle({ radius: 40, stroke: "#FFFFFF", strokeWidth: 6, trim: [0, Motion.fade()] }),
+]).opacity(Motion.fade()).offset(0, Motion.slide());
+const connector = Line({
+  from: [0, 0], to: [200, 60], width: 4, color: "#4268EC",
+  progress: Motion.fade(),
+});
+```
+
+`Group(children)` occupies **one layout slot**, overlays children at its top-left,
+and draws nothing itself. Its size is the largest child width/height, like a
+start-aligned ZStack. Modifiers apply to all descendants. Opacity remains
+per-primitive, not isolated group compositing; use Composition for flattened alpha.
+
+`ForEach(items, key, view)` returns a frozen array of keyed nodes; pass it directly
+to a Stack or spread it alongside other children. Keys must be unique non-empty
+strings and should come from data, not array position. Each item keeps its key
+even when the returned node ends in modifiers.
+
+Circle uses a radius in design units. Trim is `[start, end]` in clockwise turns
+from twelve o'clock, with `0 <= start <= end <= 1`; use stroke/strokeWidth for a
+ring or donut. Stroke is inside the radius. A filled partial circle is a sector.
+Line endpoints are local coordinates: its layout box normalizes their minimum
+coordinates and includes stroke width. Line has butt caps; progress reveals the
+segment without changing its layout bounds. Position either shape with modifiers.
+Both use the existing GPU Path painter. Circle arcs use 96 segments per arc;
+very large close-ups may reveal faceting. No separate shape pipeline is created.
+
+`Motion.fade`, `Motion.slide`, and `Motion.scale` return frozen tween descriptors,
+not running animations. Defaults are respectively 0→1, 32→0, and 0.9→1, with a
+0.6-second ease-out. Override `from/to/duration/delay/ease`. Apply them with
+`.opacity()`, `.offset()`, or `.scale()`. `Motion.stagger(index, interval, track)`
+shifts a tween/keyframe track in scene-local seconds; `Motion.keyframes` and
+`keyframes` use the same evaluator. Negative stagger indices/intervals are rejected.
+
+## Image and Video nodes
+
+```ts
+import { Group, Image, Video, World, Shot, videoResource } from "ritween";
+
+const footage = videoResource({
+  id: "interview", name: "Interview", url: "/media/interview.mp4",
+  start: 0, duration: 4, offset: 2, volume: 0.8,
+});
+const world = World(() => Group([
+  Video(footage, { width: 1920, height: 1080, fit: "cover" }),
+  Image({ url: "/media/logo.png", width: 160, height: 80, fit: "contain" })
+    .offset(80, 80),
+]), { size: [1920, 1080] });
+const shot = Shot({
+  id: "interview-shot", source: "manifest.ts", start: 0, duration: 4,
+  world, mediaClips: [footage],
+});
+```
+
+Use explicit positive `width/height` in design units so CPU layout never depends
+on asynchronous metadata. `contain` centers the whole image inside those bounds;
+`cover` crops UVs to fill them. Cameras, modifiers, nested Compositions, shared
+transitions, and persistent Overlays use the same media painter. URLs follow the
+engine's same-origin HTTP(S), byte, and texture budget restrictions.
+
+Video receives the same immutable clip descriptor used by `mediaClips`; do not
+repeat trim/timing values in the node. **Video uses project time**, including inside
+a World whose clock is frozen/reversed/remapped. It paints during the clip interval
+and reserves its layout size outside it. Opacity does not mute audio or deactivate
+an otherwise present video. Use distinct clip IDs/timing for independent playback;
+multiple nodes referencing one clip share its prepared texture within a Stage.
+
+`Shot.mediaClips` forwards that declaration to both Stage resources and the existing
+footage audio resolver. Scene-linked audio follows existing transition envelopes.
+For manually authored SceneEntry objects, pass the same list to `entry.mediaClips`
+and `Stage(..., { mediaClips })`; for persistent Overlay audio also register the
+clips in `project.mediaClips`. Node discovery alone never creates audio tracks.
+
+Stages with media use async frame preparation: use `await renderer.renderAsync(t)`;
+FrameSource, preview, and export already do this. A prepared frame's evaluated tree
+is reused for rendering and shared-element inspection. Media-free Stages retain
+synchronous rendering. Initial images are discovered during setup. If images only
+appear later, declare their URLs with `Stage(..., { images: [url] })` (or Shot/Overlay
+options) so async preparation is enabled before the first frame. Videos must be
+declared in `mediaClips`, including ones introduced later in a conditional tree.
+
+Each Stage owns its resources; nodes remain immutable CPU data. Eager mode loads
+declared clips during setup. `--media-activation active-only` loads videos when
+needed, releases videos absent from the current frame and inactive scenes, and
+retains both active scenes across transitions. Images absent from the current
+frame are released in either mode. Disposal, cancellation, and partial loading
+failures clean up owned resources; scene reactivation reloads released videos.
+
+Run `examples/authoring-media/manifest.ts` for shapes, keyed bars, motion presets,
+and an image node together. The Video example above expects your own footage.
 
 ## Time and environment
 

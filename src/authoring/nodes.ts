@@ -1,6 +1,8 @@
 import { snapshotNumber, type AnimatedNumber } from "./motion";
 import type { PathSpec } from "./path";
 import type { CompositionSpec } from "./composition";
+import type { ShapeSpec } from "./shapes";
+import type { MediaSpec } from "./media";
 
 export type Alignment = "start" | "center" | "end";
 export type Dimension = number | "fill";
@@ -29,12 +31,14 @@ export interface StackOptions {
 }
 export type NodeSpec =
   | PathSpec
+  | ShapeSpec
+  | MediaSpec
   | CompositionSpec
   | { readonly kind: "text"; readonly text: string; readonly style: TextStyle }
   | { readonly kind: "box"; readonly style: BoxStyle }
   | { readonly kind: "spacer" }
   | {
-      readonly kind: "hstack" | "vstack" | "zstack";
+      readonly kind: "hstack" | "vstack" | "zstack" | "group";
       readonly options: StackOptions;
       readonly children: readonly ViewNode[];
     }
@@ -152,7 +156,7 @@ export function Spacer(): ViewNode {
   return new ViewNode({ kind: "spacer" });
 }
 function stack(
-  kind: "hstack" | "vstack" | "zstack",
+  kind: "hstack" | "vstack" | "zstack" | "group",
   children: readonly ViewNode[],
   options: StackOptions,
 ): ViewNode {
@@ -173,6 +177,27 @@ export function VStack(
   options: StackOptions = {},
 ): ViewNode {
   return stack("vstack", children, options);
+}
+/** One layout slot, top-left overlay children; opacity remains per primitive. */
+export function Group(children: readonly ViewNode[]): ViewNode {
+  return stack("group", children, { align: "start" });
+}
+/** Expand into a parent Stack, preserving semantic IDs through modifier wrappers. */
+export function ForEach<T>(
+  items: readonly T[],
+  key: (item: T, index: number) => string,
+  view: (item: T, index: number) => ViewNode,
+): readonly ViewNode[] {
+  const keys = new Set<string>();
+  return Object.freeze(
+    items.map((item, index) => {
+      const id = key(item, index);
+      if (typeof id !== "string" || !id || keys.has(id))
+        throw Error(`ForEach needs unique non-empty IDs: ${id}`);
+      keys.add(id);
+      return view(item, index).id(id);
+    }),
+  );
 }
 export function ZStack(
   children: readonly ViewNode[],

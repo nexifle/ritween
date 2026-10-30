@@ -14,7 +14,7 @@ Manifests export a named project or default Project; TS, TSX and JS work.
 
 Options:
   --project PATH           Explicit project directory or manifest
-  --demo                   Use bundled eight-second example
+  --demo                   Use bundled 45-second example
   --output, -o PATH        Override output path (default: frame.png for frame;
                            manifest project name for MP4 export)
   --time SECONDS           Frame timestamp (default: 0)

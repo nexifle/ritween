@@ -1,0 +1,440 @@
+# Declarative authoring foundation
+
+Stage is an additive authoring layer over the existing `Scene` contract. Existing
+WebGPU scenes, media helpers, timeline, audio, preview, and export remain unchanged.
+The authoring layer provides Stack layout, Text, Box, immutable modifiers,
+deterministic motion, Camera 2D, reusable Worlds, nested Compositions, timeline
+Shots, overlap transitions, and a CPU-inspectable tree/display list. Media nodes,
+Group, ForEach, arbitrary masks, and chart components are not implemented yet.
+
+## A complete project
+
+```ts
+import { Stage, Text, Box, VStack, type Project } from "ritween";
+
+export const project: Project = {
+  name: "Hello Stage",
+  resolution: [1920, 1080],
+  aspectRatio: [16, 9],
+  duration: 3,
+  scenes: [
+    {
+      id: "hello",
+      name: "Hello",
+      source: "manifest.ts",
+      start: 0,
+      duration: 3,
+      transition: { type: "cut" },
+      create: () =>
+        Stage(
+          ({ theme }) =>
+            VStack(
+              [
+                Text("Make ideas move.", { size: 96, color: theme.textColor }),
+                Box({
+                  width: 360,
+                  height: 12,
+                  radius: 6,
+                  fill: theme.colors.accent,
+                }),
+              ],
+              { gap: 32 },
+            )
+              .offset(0, { from: 28, to: 0, duration: 0.8 })
+              .opacity({ from: 0, to: 1, duration: 0.8 })
+              .frame({ width: "fill", height: "fill" }),
+          { designSize: [1920, 1080] },
+        ),
+    },
+  ],
+};
+```
+
+Save as `manifest.ts`, then run `ritween preview --project . --open` or
+`ritween frame --project . --time 1.5 -o frame.png`.
+
+The checkout has a title-card/bar-chart example in `examples/authoring/manifest.ts`:
+
+```sh
+npm run build
+node bin/ritween.mjs preview --project examples/authoring --open
+node bin/ritween.mjs frame --project examples/authoring --time 4.2 -o artifacts/authoring-cli.png
+```
+
+## Time and environment
+
+The Stage callback receives `time` (composition seconds), `localTime` (scene
+seconds), `progress` (scene progress), output `resolution`, `designSize`, and
+`theme`. All tween descriptors use **scene-local seconds**. Compute every visual
+value from these inputs; do not increment counters or use unseeded randomness.
+The callback is also evaluated at local time zero during setup to discover fonts.
+It must not create side effects or GPU resources.
+
+`designSize` defaults to the composition resolution, not the preview resolution.
+Output scaling preserves aspect ratio using contain/letterboxing; no nonuniform
+stretch is applied. Drawing is clipped at the Stage boundary. Layout stays in
+design units and does not change when output resolution changes.
+
+Theme is a copied, frozen environment with `font`, `textColor`, and named `colors`.
+There is no token resolver: read `theme.colors.accent` in the view factory. Colors
+must be explicit browser-supported colors, not `currentColor` or CSS variables.
+Bundle fonts with the project for consistent typography across machines.
+
+## Nodes and reusable components
+
+- `Text(content, style)` supports font family, size, weight, color, wrap, maxWidth,
+  alignment, tracking, and lineHeight. Size, tracking, and lineHeight use design
+  units; lineHeight is an absolute distance, not a multiplier.
+- `Box({ width, height, fill, radius, stroke, strokeWidth })` draws a rounded
+  rectangle. Stroke is inside its bounds. Width and height accept numbers or tweens.
+- `HStack(children, { gap, align })` arranges left to right.
+- `VStack(children, { gap, align })` arranges top to bottom.
+- `ZStack(children, { align })` overlays children in input/paint order.
+- `Spacer()` consumes an equal share of remaining space on a Stack's main axis.
+
+Reuse is just a function returning a `ViewNode`. Array `.map()` is sufficient for
+this first slice; call `.id(item.id)` on the final child node for useful paths and
+stable explicit identity. Duplicate sibling IDs throw. There is no reconciler or
+component lifecycle. Do not construct `ViewNode` specs manually; use the factories.
+
+### Layout contract
+
+Parents offer finite width/height; children report their size; parents place them.
+Stacks measure non-flexible children first. Spacers and children whose main-axis
+frame is `"fill"` divide remaining space equally. Fixed content does not shrink;
+excess is reported in inspection warnings. This is intentionally not CSS flexbox:
+there is no layout priority, weighted growth, baseline alignment, or constraint solver.
+
+Stack `align` controls the cross axis (`start`, `center`, `end`); ZStack applies it
+to both axes. Empty stacks have zero intrinsic size. Spacer's cross-axis intrinsic
+size is zero. Use an explicit frame when a container should fill its offered space.
+A flexible child's own padding remains part of the space it consumes.
+
+### Ordered, immutable modifiers
+
+Each modifier wraps its input and returns a new node:
+
+| Modifier                                | Semantics                                                                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.padding(x, y = x)`                    | Adds horizontal/vertical space to layout size.                                                                                              |
+| `.frame({ width, height, align })`      | Number fixes an axis, `"fill"` uses offered space, omission keeps intrinsic size. Alignment defaults to center on both axes. Does not clip. |
+| `.offset(x, y = 0)`                     | Translates paint without moving siblings or changing layout size.                                                                           |
+| `.scale(x, y = x, anchor = [0.5, 0.5])` | Scales paint around a normalized local anchor; does not reflow.                                                                             |
+| `.opacity(value)`                       | Multiplies each descendant primitive's alpha.                                                                                               |
+| `.id(key)`                              | Names the resulting node for sibling identity and inspection.                                                                               |
+
+`Text("A").padding(20).frame({ width: 200 })` differs from
+`Text("A").frame({ width: 200 }).padding(20)`. Transform order also matters.
+Opacity is **per primitive**, not isolated group compositing: overlapping children
+are blended separately. There is no offscreen group-opacity pass in this slice.
+
+## Motion
+
+An animated number is a number, `{ from, to, duration, delay?, ease? }`, or
+`keyframes([{ at, value, ease? }, ...])`.
+Duration must be positive. Values clamp to `from` before delay and `to` after the
+end. Easing is `"linear"`, `"ease-in"`, `"ease-out"` (default), or `"ease-in-out"`;
+nonlinear curves are cubic. `motion(descriptor, localTime)` exposes the same pure
+evaluator for custom calculations. Offset, scale, opacity, and Box dimensions accept
+these descriptors. Stagger can be expressed as `delay: index * 0.1`; named motion
+presets are deferred. Keyframe times are strictly increasing scene-local seconds.
+Values clamp outside the track; repeat a value at a later time to hold. Each
+keyframe's easing describes the segment **arriving at that keyframe**. The default
+is ease-out; use ease-in-out for smooth start/stop camera moves.
+
+## Camera 2D
+
+A camera changes the view of the world **after layout**, before output scaling and
+letterboxing. It does not shrink/reflow Stack contents or change overflow warnings.
+World content can extend outside `designSize`; the viewport, not the world, is
+clipped. Place connected beats in one Stage for a continuous reveal/refocus.
+For multiple engine scenes with continuity or overlap, use World and Shot below.
+
+```ts
+import { Camera, Stage, keyframes } from "ritween";
+
+const camera = Camera({
+  x: keyframes([
+    { at: 0, value: 400 },
+    { at: 1, value: 400 },
+    { at: 2.4, value: 1360, ease: "ease-in-out" },
+    { at: 3.2, value: 1360 },
+    { at: 4.6, value: 2320, ease: "ease-in-out" },
+  ]),
+  y: keyframes([
+    { at: 0, value: 220 },
+    { at: 1, value: 220 },
+    { at: 2.4, value: 780, ease: "ease-in-out" },
+    { at: 3.2, value: 780 },
+    { at: 4.6, value: 1340, ease: "ease-in-out" },
+  ]),
+  zoom: keyframes([
+    { at: 0, value: 1.7 },
+    { at: 1, value: 1.7 },
+    { at: 2.4, value: 0.55, ease: "ease-in-out" },
+    { at: 3.2, value: 0.55 },
+    { at: 4.6, value: 1.8, ease: "ease-in-out" },
+  ]),
+});
+// `world` is your ViewNode or a pure function returning one.
+const createScene = () =>
+  Stage(() => world, {
+    designSize: [1920, 1080],
+    camera,
+    textResolution: 2,
+  });
+```
+
+A complete nine-card example is in `examples/camera/manifest.ts`:
+
+```sh
+npm run build
+node bin/ritween.mjs preview --project examples/camera --open
+node bin/ritween.mjs export --project examples/camera -o artifacts/camera.mp4
+```
+
+### Pose and coordinates
+
+`Camera(options)` returns an immutable snapshot. Stage also accepts an inline
+camera object. Every numeric property accepts constants, tweens, or keyframes:
+
+| Property   | Meaning / default                                                                                                                  |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `x`, `y`   | World point held at the viewport anchor; default design center.                                                                    |
+| `zoom`     | Positive magnification; 1 is original size, 0.5 zooms out, 2 zooms in.                                                             |
+| `rotation` | Camera roll in radians, clockwise in Y-down coordinates; default 0. The world rotates in the opposite direction.                   |
+| `anchor`   | Normalized viewport position `[x, y]`; default `[0.5, 0.5]`. Components can animate independently; values outside 0–1 are allowed. |
+
+The mapping is `view = anchor * designSize + zoom * R(-rotation) * (world - position)`.
+Position stays pinned to the anchor at every zoom/rotation. Increasing camera X
+moves the world left. Rotation interpolates literal radians, not the shortest arc,
+so authored multi-turn moves work. Unwrap angles yourself when crossing ±π.
+
+For tracking, paths, shake, or a custom interpolation, use a pure callback:
+
+```ts
+Stage(() => world, {
+  camera: ({ localTime, designSize }) => ({
+    x: designSize[0] / 2 + Math.sin(localTime * 0.5) * 80,
+    y: designSize[1] / 2,
+    zoom: 1.2,
+    rotation: Math.sin(localTime * 0.3) * 0.02,
+  }),
+});
+```
+
+Callbacks receive the same StageContext as the view. Do not integrate deltas, read
+wall-clock time, or use unseeded randomness. There is no imposed speed, world-bound
+clamping, or smoothing state; motion is fully authored and seekable.
+
+### Framing and debugging
+
+`fitCamera(worldBounds, designSize, { padding?, rotation? })` returns a centered
+camera pose that contains the rectangle, including its rotated extent. Padding is
+in design viewport units. Bounds must already include any node paint transforms;
+raw layout bounds are not necessarily world-space visible bounds. You can use the
+returned pose as keyframe endpoints. This helper does not look up IDs or create
+layout/camera feedback loops.
+
+`evaluateCamera(options, localTime, designSize)` evaluates a pose without the
+browser or GPU. `worldToView(state, point)` and `viewToWorld(state, point)` convert
+points in design units, not output pixels. `stage.inspect().camera` exposes the
+last rendered state, including its affine matrix and inverse. Layout bounds and
+node transforms stay in world coordinates. Debug bounds use the same camera as
+visible primitives.
+
+### Text during zoom
+
+`textResolution` is a fixed Stage raster-quality multiplier (default 1, minimum 1).
+For a shot that zooms to 2×, use 2 to raster text at twice output density. This
+keeps static text cached while zoom animates instead of rerasterizing every frame.
+Memory grows approximately with the square of this multiplier; existing text
+cache/device limits still apply. It does not add motion blur or antialiasing
+supersampling for boxes, which are rendered analytically on the GPU.
+
+## Worlds, compositions, and shots
+
+These are distinct concepts, not aliases:
+
+- **World** is pure reusable content with its own layout size. It owns no GPU
+  state and can be viewed by multiple shots/cameras at once.
+- **Composition** is a node embedding a World in a clipped viewport. It can have
+  its own camera, local clock mapping, theme, and screen-space overlay. Place it
+  inside Stacks, apply modifiers, and nest other compositions inside its World.
+- **Shot** is a normal `SceneEntry`: it views a World for a timeline interval,
+  using an independent camera and independent renderer-owned resources.
+- **Stage** remains the low-level adapter from a view factory to Scene. Shot uses
+  it internally; custom scenes and existing Stage code remain valid.
+
+```ts
+import { World, Shot, Composition, Camera, Text, Box, ZStack } from "ritween";
+
+const world = World(
+  ({ localTime }) =>
+    ZStack([
+      Box({ width: 2000, height: 1000, fill: "#FFFFFF" }),
+      Text("One world, multiple shots", { size: 64 }).offset(localTime * 10, 0),
+    ]),
+  { size: [2000, 1000] },
+);
+
+const scenes = [
+  Shot({
+    id: "wide",
+    source: "manifest.ts",
+    start: 0,
+    duration: 5,
+    world,
+    camera: Camera({ x: 1000, y: 500, zoom: 0.8 }),
+    overlay: () => Text("SCREEN-SPACE TITLE").padding(48),
+  }),
+  Shot({
+    id: "close",
+    source: "manifest.ts",
+    start: 4,
+    duration: 4,
+    world,
+    worldOffset: 4,
+    camera: Camera({ x: 1000, y: 500, zoom: 1.5 }),
+    transition: { type: "crossfade", duration: 1 },
+  }),
+]; // Project duration is 8 seconds, not 9.
+
+// A reusable viewport node, suitable for placing inside another World:
+const inset = Composition(world, {
+  size: [640, 360],
+  camera: { x: 1000, y: 500, zoom: 0.3 },
+}).offset(48, 48);
+```
+
+### Clocks and continuity
+
+World callbacks receive `localTime = shotLocalTime * worldRate + worldOffset`.
+`worldRate` defaults to 1; zero freezes and negative values reverse the World.
+Set `worldOffset` to the shot's timeline start to keep World animation continuous
+across shots (when rate is 1). This is explicit so Worlds can also be replayed,
+frozen, or reused elsewhere. Camera tracks and overlays use **shot-local time**,
+not World time. `time` remains absolute project time and `progress` remains shot
+progress; a World does not have an inferred duration of its own.
+
+Within a nested Composition, the corresponding properties are `offset` and `rate`.
+Its camera/overlay use the parent's local clock; only its World clock is remapped.
+World callbacks see World layout dimensions in `designSize`; camera/overlay
+callbacks see viewport dimensions. Theme inherits unless explicitly overridden.
+
+A camera path can continue through a cut by supplying matching end/start poses,
+or by returning a camera pose derived from absolute `time`. Reusing a World does
+not automatically match cameras, object identity, or animation clocks.
+
+### Overlays and subcomposition rendering
+
+An overlay is drawn after its World and does not inherit that composition's camera.
+It remains part of the composition, so an outer composition's camera/modifiers
+still affect it. Shot overlays participate in that shot's transition; for an overlay
+that must remain completely unchanged across a boundary, include the same overlay
+in both shots or keep the sequence in an enclosing composition.
+
+Composition uses an isolated transparent offscreen surface: clipping, nested
+cameras, and alpha are resolved before painting into the parent. Applying opacity
+to a Composition therefore fades its flattened result, unlike per-primitive opacity
+on a normal Stack. Surface pixels are premultiplied internally; nested alpha is
+handled explicitly. This requires an additional pass per composition/overlay.
+Nesting is limited to 32 composition levels; shared offscreen surfaces are bounded
+at 256 MiB per Stage. Limits fail explicitly instead of allocating without bounds.
+Subcomposition surfaces are rasterized at their viewport output resolution; very
+large parent camera zooms can soften the whole surface, not only text.
+
+### Timeline transitions
+
+The **incoming scene** owns its transition. A non-cut transition overlaps the end
+of its predecessor by its declared duration:
+
+```text
+A: 0 ───────── 5
+B:         4 ───────── 8
+Overlap:   4 ─ 5       (duration 1)
+```
+
+Both scenes render at their actual local times during overlap. There is no hidden
+preroll or negative local time. `cut` retains the original sequential timing.
+Validation rejects gaps, first-scene transitions, invalid durations/directions,
+non-increasing starts, and triple overlaps. Audio timing is unchanged: visual
+crossfades do not automatically fade audio; author audio envelopes separately.
+
+Built-in transition data:
+
+- `{ type: "cut" }`
+- `{ type: "crossfade", duration }`
+- `{ type: "wipe", duration, direction?: "left" | "right" | "up" | "down" }`
+- `{ type: "slide", duration, direction?: ... }`
+- `{ type: "zoom", duration }` — center zoom plus crossfade, not a shared-element match.
+
+Direction describes the movement of the reveal/slide, default left. These also
+work on legacy WebGPU scenes and built-in footage scenes because the compositor
+receives their output textures. Both async scenes are prepared before rendering;
+active-only media retains both active resources during overlap.
+
+`evaluate(project, time)` returns the incoming scene during overlap for inspection.
+`evaluateActive(project, time)` exposes both scene-local clocks and transition
+progress. The renderer uses that same evaluator for sync, async, preview, and export.
+Two full-output transition textures are allocated only for projects that use
+non-cut transitions, with a 256 MiB budget. There is no custom transition shader
+registration or automatic shared-element matching in this release.
+
+Run `examples/composition/manifest.ts` for camera continuity across two Shots,
+a nested badge World, screen-space overlays, and a crossfade to another World:
+
+```sh
+node bin/ritween.mjs preview --project examples/composition --open
+node bin/ritween.mjs export --project examples/composition -o artifacts/composition.mp4
+```
+
+## Inspection and tests
+
+Keep a reference to the Stage returned by a scene factory. After rendering,
+`stage.inspect()` returns the last successful `EvaluatedFrame`:
+
+- `tree`: paths, kinds, layout bounds, cumulative transforms, and children.
+- `commands`: paint order, source paths, styles/text runs, and opacity. Composition
+  commands contain their own evaluated World/overlay frames (and cameras).
+- `warnings`: content exceeding offered layout bounds, including local time.
+
+Bounds are before paint transforms; transform is `[scaleX, scaleY, translateX,
+translateY]`. Enable `{ debugBounds: true }` on Stage for rendered bounds outlines.
+Inspection data is diagnostic output: do not mutate it.
+
+`evaluateView(node, { time, width, height, theme?, measureText })` runs without a
+browser/GPU. Supply a deterministic text measurer with `(text, font, tracking)`;
+use the same font/spacing semantics as your renderer. Tests can compare full output
+for direct seeks, forward playback, and backward seeks.
+
+```sh
+npx tsx --test tests/authoring.test.ts
+node scripts/validate-authoring.mjs
+```
+
+The browser validator starts its own temporary Vite server and Chrome, checks
+seek-identical pixels, overlap alpha, bounds inspection, letterboxing, camera
+pan/zoom/rotation, card-world seek determinism, and short MP4 export. Screenshots are written under ignored `artifacts/authoring/`.
+
+## Internal boundaries and current limits
+
+`composition.ts` owns World/Composition/Shot authoring; `nodes.ts` owns immutable
+declarations; `motion.ts` resolves animated values;
+`layout.ts` measures/places and emits a display list; `stage.ts` adapts the existing
+scene lifecycle; `renderer.ts` owns GPU buffers/textures and painting. GPU ownership
+is per scene instance; no GPU resources are stored in the authoring tree.
+
+Box uses a GPU rounded-rectangle shader. Text is shaped/rasterized with Canvas 2D
+and cached as textures; moving/fading static text does not rerasterize it. Text
+cache capacity is 128 distinct active runs or 64 MiB per Stage, with device texture
+limits checked. Entries not used by the current frame are released. Fonts in the
+initial tree are awaited in setup; fonts introduced only later must be preloaded
+before renderer creation. Unsupported/unready fonts fail rather than silently
+changing layout later.
+
+This is not yet a glyph atlas or a high-throughput thousands-of-labels renderer.
+There is one draw per primitive and bind groups are rebuilt per frame. Measure real
+workloads before adding batching, incremental layout, or shared caches. Scaling
+text far above its original raster resolution can soften it. Text advance bounds
+are not a full typographic ink-bounds model; unusual font overhangs may clip.

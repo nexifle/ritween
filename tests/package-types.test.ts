@@ -116,7 +116,27 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
     writeFileSync(
       join(consumer, "consumer.ts"),
       `import { parseProjectSettings, mergeProjectSettings, validateProject, videoClip, imageScene, audioFile, videoResource, loadVideoTexture, loadImageTexture } from "ritween";
-import type { Project, ProjectSettings } from "ritween";
+import { Stage, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive } from "ritween";
+import type { Project, ProjectSettings, StageScene, ViewNode, EvaluatedFrame } from "ritween";
+const reusable: ViewNode = Text("Declarative", { size: 32, maxWidth: 400, tracking: 1 });
+const stage: StageScene = Stage(({ theme }) => VStack([
+  reusable.opacity({ from: 0, to: 1, duration: 0.8 }), Spacer(),
+  HStack([Box({ width: 100, height: 40, fill: theme.colors.accent }), reusable]),
+  ZStack([]),
+]).padding(24).frame({ width: "fill", height: "fill" }));
+const evaluated: EvaluatedFrame = evaluateView(reusable, { time: 0, width: 400, height: 300, measureText: (text) => text.length * 10 });
+const value: number = motion({ from: 0, to: 1, duration: 1 }, 0.5);
+// @ts-expect-error Unsupported easing must not silently become linear.
+reusable.opacity({ from: 0, to: 1, duration: 1, ease: "unknown" });
+const camera = Camera({ x: 100, zoom: keyframes([{ at: 0, value: 1 }, { at: 2, value: 0.5 }]), rotation: 0 });
+const cameraStage: StageScene = Stage(() => reusable, { camera, textResolution: 2 });
+const proceduralStage = Stage(() => reusable, { camera: ({ localTime, designSize }) => ({ x: designSize[0] / 2 + Math.sin(localTime) * 20 }) });
+const cameraState = evaluateCamera(fitCamera({ x: 0, y: 0, width: 100, height: 100 }, [1920, 1080]), 0, [1920, 1080]);
+const point = worldToView(cameraState, viewToWorld(cameraState, [0, 0]));
+const world = World(() => reusable, { size: [1920, 1080] });
+const nested = Composition(world, { size: [640, 360], camera, overlay: () => reusable, rate: 1, offset: 2 });
+const shot = Shot({ id: "shot", source: "manifest.ts", start: 1, duration: 2, world, camera, transition: { type: "crossfade", duration: 0.5 } });
+void [stage, evaluated, value, cameraStage, proceduralStage, point, nested, shot, evaluateActive];
 const settings: ProjectSettings = mergeProjectSettings(undefined, parseProjectSettings({ version: 1 }));
 const version: 1 = settings.version;
 // @ts-expect-error The parser result must retain its declared version type.

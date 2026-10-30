@@ -16,18 +16,40 @@ export function validateProject(p: Project) {
     throw Error("Invalid project resolution or aspect ratio.");
   let end = 0;
   const ids = new Set<string>();
-  for (const s of p.scenes) {
+  let previousStart = 0;
+  for (const [index, s] of p.scenes.entries()) {
+    const transition = s.transition;
+    const overlap = transition.type === "cut" ? 0 : transition.duration;
+    if (
+      !["cut", "crossfade", "wipe", "slide", "zoom"].includes(
+        transition.type,
+      ) ||
+      (transition.type !== "cut" &&
+        (!Number.isFinite(overlap) ||
+          overlap <= 0 ||
+          overlap >= s.duration ||
+          index === 0 ||
+          s.start <= previousStart + 1e-8)) ||
+      (transition.type !== "cut" &&
+        transition.direction !== undefined &&
+        !["left", "right", "up", "down"].includes(transition.direction))
+    )
+      throw Error(`Invalid scene transition: ${s.id}`);
     if (
       ids.has(s.id) ||
       !s.id ||
       !Number.isFinite(s.start) ||
       !Number.isFinite(s.duration) ||
       s.duration <= 0 ||
-      Math.abs(s.start - end) > 1e-8 ||
-      s.transition.type !== "cut"
+      s.start < 0 ||
+      Math.abs(s.start - (end - overlap)) > 1e-8 ||
+      (index > 1 &&
+        s.start <
+          p.scenes[index - 2].start + p.scenes[index - 2].duration - 1e-8)
     )
       throw Error(`Invalid sequential scene: ${s.id}`);
     ids.add(s.id);
+    previousStart = s.start;
     end = s.start + s.duration;
   }
   if (Math.abs(end - p.duration) > 1e-8)
@@ -60,14 +82,46 @@ export function validateProject(p: Project) {
 export function evaluate(p: Project, time: number) {
   if (!Number.isFinite(time)) throw Error("Timeline time must be finite.");
   const t = Math.max(0, Math.min(time, p.duration));
-  const entry =
-    p.scenes.find((s) => t >= s.start && t < s.start + s.duration) ??
-    p.scenes[p.scenes.length - 1];
+  const active = p.scenes.filter(
+    (s) => t >= s.start && t < s.start + s.duration,
+  );
+  const entry = active[active.length - 1] ?? p.scenes[p.scenes.length - 1];
+  if (!entry) throw Error("Timeline needs at least one scene.");
   return {
     entry,
     time: t,
     localTime: t - entry.start,
     progress: (t - entry.start) / entry.duration,
+  };
+}
+/** At most two active scenes; the incoming entry owns overlap timing. */
+export function evaluateActive(p: Project, time: number) {
+  const primary = evaluate(p, time);
+  const entries = p.scenes.filter(
+    (s) => primary.time >= s.start && primary.time < s.start + s.duration,
+  );
+  if (!entries.length) entries.push(primary.entry);
+  return {
+    primary,
+    active: entries.map((entry) => ({
+      entry,
+      time: primary.time,
+      localTime: primary.time - entry.start,
+      progress: (primary.time - entry.start) / entry.duration,
+    })),
+    transition:
+      entries.length === 2 && primary.entry.transition.type !== "cut"
+        ? {
+            ...primary.entry.transition,
+            progress: Math.max(
+              0,
+              Math.min(
+                1,
+                primary.localTime / primary.entry.transition.duration,
+              ),
+            ),
+          }
+        : undefined,
   };
 }
 export function frameCount(duration: number, fps: number) {

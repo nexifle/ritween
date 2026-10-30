@@ -35,6 +35,13 @@ export interface MediaClip {
   muted?: boolean;
   volume?: number;
 }
+export type Transition =
+  | { readonly type: "cut" }
+  | {
+      readonly type: "crossfade" | "wipe" | "slide" | "zoom";
+      readonly duration: number;
+      readonly direction?: "left" | "right" | "up" | "down";
+    };
 export interface SceneEntry {
   mediaClips?: readonly MediaClip[];
   id: string;
@@ -43,7 +50,8 @@ export interface SceneEntry {
   start: number;
   duration: number;
   create: () => Scene;
-  transition: { type: "cut" };
+  /** Incoming transition: overlaps the end of the preceding scene. */
+  transition: Transition;
 }
 /** Clip-local time maps through `at`. Context time 0 is composition time 0. */
 export interface AudioHost {

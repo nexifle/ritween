@@ -1,0 +1,166 @@
+import type { RenderContext, Scene, SetupContext } from "../engine/types";
+import {
+  defaultTheme,
+  evaluateView,
+  type EvaluatedFrame,
+  type Theme,
+} from "./layout";
+import type { ViewNode } from "./nodes";
+import { ViewRenderer } from "./renderer";
+import { Camera, evaluateCamera, type CameraOptions } from "./camera";
+
+export interface StageContext {
+  /** Composition time and scene-local time, both in seconds. */
+  readonly time: number;
+  readonly localTime: number;
+  readonly progress: number;
+  readonly resolution: readonly [number, number];
+  readonly designSize: readonly [number, number];
+  readonly theme: Theme;
+}
+export interface StageOptions {
+  readonly designSize?: readonly [number, number];
+  readonly theme?: Theme;
+  readonly background?: string;
+  readonly debugBounds?: boolean;
+  /** Static/animated data, or a pure function for procedural paths and tracking. */
+  readonly camera?: CameraOptions | ((context: StageContext) => CameraOptions);
+  /** Text raster scale relative to output pixels; raise for close camera shots. */
+  readonly textResolution?: number;
+}
+export interface StageScene extends Scene {
+  /** Last rendered layout and display list; no GPU readback required. */
+  inspect(): EvaluatedFrame | undefined;
+}
+
+/** Pure view factory adapted to the existing scene lifecycle; no second timeline. */
+export function Stage(
+  view: (context: StageContext) => ViewNode,
+  options: StageOptions = {},
+): StageScene {
+  const designSize = options.designSize
+    ? (Object.freeze([...options.designSize]) as readonly [number, number])
+    : undefined;
+  const sourceTheme = options.theme ?? defaultTheme;
+  const theme: Theme = Object.freeze({
+    ...sourceTheme,
+    colors: Object.freeze({ ...sourceTheme.colors }),
+  });
+  const background = options.background ?? theme.colors.background ?? "#FFFFFF";
+  const debug = options.debugBounds ?? false;
+  const camera =
+    typeof options.camera === "function"
+      ? options.camera
+      : options.camera
+        ? Camera(options.camera)
+        : undefined;
+  const textResolution = options.textResolution ?? 1;
+  if (!Number.isFinite(textResolution) || textResolution < 1)
+    throw Error("Stage textResolution must be finite and at least 1.");
+  let renderer: ViewRenderer | undefined;
+  let frame: EvaluatedFrame | undefined;
+  let disposed = false;
+  let initialized = false;
+  let ready = false;
+  function contextFor(
+    context: SetupContext,
+    timing = { time: 0, localTime: 0, progress: 0 },
+  ): StageContext {
+    const size =
+      designSize ?? context.compositionResolution ?? context.resolution;
+    if (!size.every((v) => Number.isFinite(v) && v > 0))
+      throw Error("Stage design size must be positive and finite.");
+    return {
+      ...timing,
+      resolution: context.resolution,
+      designSize: size,
+      theme,
+    };
+  }
+  return {
+    async setup(context: SetupContext) {
+      if (initialized || disposed)
+        throw Error("Stage has already been initialized or disposed.");
+      initialized = true;
+      const env = contextFor(context);
+      const root = view(env);
+      const fonts = new Set<string>();
+      // Discovery uses the same composition traversal as rendering, before fonts are loaded.
+      evaluateView(root, {
+        time: 0,
+        width: env.designSize[0],
+        height: env.designSize[1],
+        theme,
+        context: env,
+        measureText: (_text, font) => {
+          fonts.add(font);
+          return 0;
+        },
+      });
+      await Promise.all([...fonts].map((font) => document.fonts.load(font)));
+      await document.fonts.ready;
+      if (disposed) throw Error("Stage was disposed during setup.");
+      const instance = new ViewRenderer();
+      renderer = instance;
+      try {
+        await instance.setup(context);
+        if (disposed) throw Error("Stage was disposed during setup.");
+        ready = true;
+      } catch (error) {
+        instance.dispose();
+        throw error;
+      }
+    },
+    render(context: RenderContext) {
+      if (!ready || disposed || !renderer) throw Error("Stage is not ready.");
+      const env = contextFor(context, {
+        time: context.time,
+        localTime: context.localTime,
+        progress: context.progress,
+      });
+      const root = view(env);
+      const activeRenderer = renderer;
+      const layout = evaluateView(root, {
+        time: context.localTime,
+        width: env.designSize[0],
+        height: env.designSize[1],
+        theme,
+        measureText: (text, font, tracking) => {
+          if (!document.fonts.check(font))
+            throw Error(
+              `Font is not ready: ${font}. Preload fonts used by time-dependent content before creating the renderer.`,
+            );
+          return activeRenderer.measureText(text, font, tracking);
+        },
+        context: env,
+      });
+      const evaluated: EvaluatedFrame = camera
+        ? {
+            ...layout,
+            camera: evaluateCamera(
+              typeof camera === "function" ? camera(env) : camera,
+              env.localTime,
+              env.designSize,
+            ),
+          }
+        : layout;
+      renderer.render(
+        evaluated,
+        context,
+        env.designSize,
+        background,
+        debug,
+        textResolution,
+      );
+      frame = evaluated;
+    },
+    inspect: () => frame,
+    dispose() {
+      disposed = true;
+      ready = false;
+      renderer?.dispose();
+      renderer = undefined;
+      frame = undefined;
+    },
+  };
+}

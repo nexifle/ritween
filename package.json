@@ -14,6 +14,7 @@
     "preview": "node bin/ritween.mjs preview --demo",
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "node scripts/validate-browser.mjs",
+    "test:authoring": "node scripts/validate-authoring.mjs",
     "test:media": "node --import tsx scripts/validate-media.mjs",
     "test:mp4-input": "node --import tsx scripts/validate-mp4-input.mjs",
     "test:preview": "node --import tsx scripts/validate-preview.mjs",
@@ -67,7 +68,8 @@
     "README.md",
     "CLI.md",
     "LICENSE",
-    "docs/technical-guide.md"
+    "docs/technical-guide.md",
+    "docs/authoring.md"
   ],
   "allowScripts": {
     "esbuild@0.28.2": true,

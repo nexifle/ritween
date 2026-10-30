@@ -2,6 +2,7 @@
 export type {
   Scene,
   SceneEntry,
+  Transition,
   FramePreparationContext,
   MediaClip,
   Project,
@@ -17,6 +18,7 @@ export type {
   ProjectExportSettings,
 } from "./engine/types";
 export { Renderer } from "./engine/render/renderer";
+export * from "./authoring/index";
 export { audioFile } from "./engine/decode/audio-file";
 export type { AudioFileOptions } from "./engine/decode/audio-file";
 export {
@@ -42,6 +44,7 @@ export type { EncodingOptions } from "./engine/export/settings";
 export { resolveEncodingOptions } from "./engine/export/settings";
 export {
   evaluate,
+  evaluateActive,
   validateProject,
   frameCount,
   frameTiming,

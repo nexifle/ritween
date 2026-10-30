@@ -279,6 +279,72 @@ test("renderer releases inactive managed media before preparation, never custom 
   renderer.dispose();
 });
 
+test("overlap prepares both scenes, retains both active media, and renders separate targets", async () => {
+  const events: string[] = [];
+  const a = testScene(
+    ({ localTime, target }) => {
+      assert.equal(localTime, 1.5);
+      assert.equal(target, targets[0]);
+      events.push("render-a");
+    },
+    () => {
+      events.push("prepare-a");
+    },
+  );
+  const b = testScene(
+    ({ localTime, target }) => {
+      assert.equal(localTime, 0.5);
+      assert.equal(target, targets[1]);
+      events.push("render-b");
+    },
+    () => {
+      events.push("prepare-b");
+    },
+  );
+  const targets = [{}, {}] as GPUTexture[];
+  managedVideoScenes.set(a, { deactivate: () => events.push("deactivate-a") });
+  managedVideoScenes.set(b, { deactivate: () => events.push("deactivate-b") });
+  const renderer = createTestRenderer(a);
+  const original = renderer.project.scenes[0];
+  Object.assign(renderer.project, {
+    duration: 3,
+    scenes: [
+      { ...original, id: "a", duration: 2 },
+      {
+        ...original,
+        id: "b",
+        start: 1,
+        duration: 2,
+        transition: { type: "crossfade", duration: 1 },
+      },
+    ],
+  });
+  Object.assign(renderer, {
+    scenes: new Map([
+      ["a", a],
+      ["b", b],
+    ]),
+    transition: {
+      targets,
+      render(_context: unknown, transition: { progress: number }) {
+        assert.equal(transition.progress, 0.5);
+        events.push("composite");
+      },
+      dispose() {},
+    },
+  });
+  assert.throws(() => renderer.render(1.5), /renderAsync/);
+  await renderer.renderAsync(1.5);
+  assert.deepEqual(events, [
+    "prepare-a",
+    "prepare-b",
+    "render-a",
+    "render-b",
+    "composite",
+  ]);
+  renderer.dispose();
+});
+
 test("preparation failures reject and leave the async render queue usable", async () => {
   const rendered: number[] = [];
   const failure = Error("frame preparation failed");

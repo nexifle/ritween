@@ -1,4 +1,8 @@
-# Authoring reference — Ritween 0.1.0
+# Authoring reference
+
+Prefer the declarative authoring API when the installed package exports it. Check
+package types, not only its version label. Read [composition](composition.md) for
+World, Composition, Shot, transitions, clock mapping, and persistent overlays.
 
 ## Project contract
 
@@ -30,7 +34,7 @@ export const project: Project = {
 
 `source` is inspector metadata relative to the manifest directory, not an import instruction. Import the scene module separately. Keep source paths inside that directory.
 
-## Declarative scenes (current checkout)
+## Declarative scenes
 
 Prefer public authoring nodes for ordinary 2D scenes rather than writing shaders:
 `Stage`, `Text`, `Box`, `HStack/VStack/ZStack`, `Spacer`, `Circle`, `Line`, `Group`,
@@ -38,9 +42,11 @@ Prefer public authoring nodes for ordinary 2D scenes rather than writing shaders
 Modifiers are immutable; layout, paint, and motion remain deterministic when seeking.
 
 ```ts
-import { Stage, HStack, ForEach, Box, Motion } from "ritween";
+import { StageEntry, HStack, ForEach, Box, Motion } from "ritween";
 
-const scene = Stage(() => HStack(
+const entry = StageEntry({
+  id: "bars", source: "manifest.ts", start: 0, duration: 3,
+  view: () => HStack(
   ForEach(
     [{ id: "first", value: 80 }, { id: "second", value: 120 }],
     (item) => item.id,
@@ -48,7 +54,9 @@ const scene = Stage(() => HStack(
       .scale(1, Motion.stagger(index, 0.08, Motion.fade()), [0.5, 1]),
   ),
   { gap: 16, align: "end" },
-));
+  ),
+});
+// Put entry in project.scenes; project.duration is 3 for this single entry.
 ```
 
 `ForEach` returns an array for its parent Stack. `Group` overlays children in one
@@ -116,8 +124,8 @@ For custom pipelines, uniforms, text assets, and multipass rendering, read [GPU 
 
 - Project resolution contains positive integers and matches `aspectRatio`.
 - Scene IDs are unique; durations are positive.
-- Scenes start at zero and fill the project duration consecutively without gaps or overlaps.
-- Only `{ type: "cut" }` is supported.
+- Scenes start at zero and cover the project duration without gaps. Cuts are consecutive; non-cut transitions explicitly overlap the previous scene by the incoming transition duration. Triple overlaps are invalid.
+- The incoming scene owns its transition. Built-ins include cut, crossfade, wipe, slide, and zoom; see [composition](composition.md#transitions-and-duration-arithmetic).
 - `time` is composition time, `localTime` is time since the active scene started, and `progress` is local time divided by scene duration.
 - Intervals are `[start, end)`: exactly at a cut, the following scene is active. Exactly at project end, the final scene has progress 1.
 - `evaluate(project, time)` clamps finite time to the composition range. `validateProject(project)` validates the structure.
@@ -146,6 +154,6 @@ For moving animation, test a time inside the scene, then an earlier time, then t
 
 The Ritween CLI supplies the browser bundler; a direct Node import is not a browser renderer. For standalone typechecking, import from `ritween` and use the installed package's public type entry with the consumer project's TypeScript tooling and WebGPU declarations (for example `@webgpu/types` when needed). Do not deep-import framework modules or redirect type resolution to framework source.
 
-Do not enable `allowJs` or weaken strict checking merely to suppress missing declarations inside Ritween. Check the installed package version and its type entry, record the actual diagnostic, and report a package typing issue if declarations are missing. The checkout has an automatic declaration-generation fix, but it has not yet been published; do not assume an npm installation labeled `0.1.0` contains that fix. Keep consumer typechecking separate from whether preview or export succeeds.
+Do not enable `allowJs` or weaken strict checking merely to suppress missing declarations inside Ritween. Check the installed package version and its type entry, record the actual diagnostic, and report a package typing issue if declarations are missing. Keep consumer typechecking separate from whether preview or export succeeds.
 
 The CLI accepts a direct manifest path or discovers common names such as `manifest.ts` in a project directory. Prefer explicit `--project ./manifest.ts` when discovery is uncertain. Do not assume the CLI loads the consumer's `vite.config`; it creates its own Vite server.

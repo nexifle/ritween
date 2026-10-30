@@ -358,8 +358,9 @@ Overlap:   4 ─ 5       (duration 1)
 Both scenes render at their actual local times during overlap. There is no hidden
 preroll or negative local time. `cut` retains the original sequential timing.
 Validation rejects gaps, first-scene transitions, invalid durations/directions,
-non-increasing starts, and triple overlaps. Audio timing is unchanged: visual
-crossfades do not automatically fade audio; author audio envelopes separately.
+non-increasing starts, and triple overlaps. Audio clips linked with `sceneId` automatically follow the incoming/outgoing
+transition envelope. Unlinked tracks remain independent, so music beds do not
+fade at every shot. Set `audioCrossfade: false` on a transition to opt out.
 
 Built-in transition data:
 
@@ -378,8 +379,7 @@ active-only media retains both active resources during overlap.
 `evaluateActive(project, time)` exposes both scene-local clocks and transition
 progress. The renderer uses that same evaluator for sync, async, preview, and export.
 Two full-output transition textures are allocated only for projects that use
-non-cut transitions, with a 256 MiB budget. There is no custom transition shader
-registration or automatic shared-element matching in this release.
+non-cut transitions, with a 256 MiB budget. Custom shaders and automatic shared-element matching are described below.
 
 Run `examples/composition/manifest.ts` for camera continuity across two Shots,
 a nested badge World, screen-space overlays, and a crossfade to another World:
@@ -388,6 +388,117 @@ a nested badge World, screen-space overlays, and a crossfade to another World:
 node bin/ritween.mjs preview --project examples/composition --open
 node bin/ritween.mjs export --project examples/composition -o artifacts/composition.mp4
 ```
+
+### Automatic shared elements
+
+Use `transition: { type: "shared", duration: 1 }` and give matching drawable nodes
+semantic IDs with `.id("hero")` in both scenes. The renderer matches IDs, measures
+their output-space poses (including cameras, nested viewport transforms, and
+letterboxing), and smoothly interpolates position/scale/affine pose while
+crossfading their appearance. No previous frame is used. Unmatched elements use
+an ordinary crossfade; duplicate shared IDs fail explicitly.
+
+IDs belong to drawable Text, Box, or Composition nodes. To animate a whole group,
+wrap it in a Composition and apply `.id()` to that Composition. A tagged
+Composition is flattened as one element; its descendants are not matched again.
+Normal Stack IDs remain layout keys, not group isolation. Apply an ID to the
+primitive before modifiers, e.g. `Box({...}).id("hero").offset(100, 20)`.
+
+This interpolates current affine poses, not glyph outlines or arbitrary topology.
+Content changes crossfade; clipped content remains clipped by its viewport.
+Zero-area/singular shared poses are rejected. Opposite rotations/scales can
+collapse during affine interpolation; use compatible poses or a custom transition.
+Legacy scenes can implement `Scene.sharedElements(context)` and apply the
+`context.sharedTransforms` output-space affine corrections in their own renderer.
+
+### Path and glyph outline morphs
+
+Use `Path` when geometry itself must change, rather than two appearances fading.
+Outlines are absolute SVG-style command tuples: `M`, `L`, `Q`, `C`, and `Z`.
+
+```ts
+const square = [
+  ["M", 0, 0],
+  ["L", 100, 0],
+  ["L", 100, 100],
+  ["L", 0, 100],
+  ["Z"],
+] as const;
+const diamond = [
+  ["M", 50, 0],
+  ["L", 100, 50],
+  ["L", 50, 100],
+  ["L", 0, 50],
+  ["Z"],
+] as const;
+Path(square, {
+  width: 100,
+  height: 100,
+  fill: "#4268EC",
+  to: diamond,
+  progress: { from: 0, to: 1, duration: 1 },
+});
+```
+
+`progress` accepts the same deterministic number/tween/keyframe as other
+animated properties. `morphPath(from, to, progress)` exposes CPU-only interpolation.
+Coordinates use the declared width/height viewport; overflowing contours are clipped.
+
+For font outlines, use `Glyph({ outline, advance }, { width, height, toGlyph,
+progress, fillRule: "evenodd" })`. This morphs the actual supplied glyph contours,
+including holes, without double-image crossfading. Supply outlines extracted from
+fonts in advance, normalized to the same coordinate system. Browser Text remains
+font-shaped text; Glyph is explicit outline artwork, not a text shaping engine.
+
+Both endpoints must have identical command types/counts, contour order, and winding.
+Normalize curves to matching cubic segments before authoring incompatible outlines;
+invalid topology fails explicitly, rather than producing a misleading crossfade.
+Up to 4096 commands are accepted. The implementation rasterizes the interpolated
+vector outline via Canvas Path2D before WebGPU compositing; it is not GPU tessellation.
+Morph geometry inside a World and optionally use shared transitions to move that
+World/element between shots. The `shared` transition does not infer outline pairs.
+
+AI selection: use **shared** for layout/pose continuity, **Path** for geometric
+shape morphs, **Glyph** for pre-extracted letter contours, and **custom WGSL** for
+pixel-based effects. Automatic font-file parsing, shaping, and contour topology
+normalization are not provided.
+
+### Custom WGSL transitions
+
+```ts
+transition: {
+  type: "custom",
+  duration: 1,
+  shader: `
+    fn transition(uv: vec2f, progress: f32) -> vec4f {
+      let a = textureSample(outgoing, samp, uv);
+      let b = textureSample(incoming, samp, uv);
+      return mix(a, b, smoothstep(0., 1., progress));
+    }
+  `,
+}
+```
+
+The snippet defines `transition(uv, progress)` and may include helper functions.
+The compositor provides `outgoing`, `incoming`, and `samp`; UV is top-left-origin,
+progress is linear 0..1. Return a texture-space RGBA color and preserve endpoints.
+Shaders compile during renderer setup, with WGSL diagnostics surfaced on failure;
+identical shader source reuses one pipeline per renderer. Shader source is limited
+to 64 KiB. WGSL is trusted project code, not a sandbox for untrusted user shaders.
+
+### Automatic audio crossfades
+
+Add `sceneId: "close"` to an AudioClip to link its bus to that SceneEntry. Clips
+remain explicitly placed on the project timeline; linking never shifts notes or
+changes source offsets. Scene-local footage audio is linked automatically; global
+`project.mediaClips` remains independent. Use separate audio tracks for overlapping
+clips (the existing no-overlap-within-one-track rule still applies).
+
+The engine applies complementary linear amplitude fades across each overlap,
+on top of the source's own gain automation, identically in preview, seeking, and
+offline export. Linked audio is gated to its scene interval. Uncorrelated sources
+can dip in perceived power at the midpoint; this is not an equal-power mix.
+`audioCrossfade: false` disables transition fading but keeps scene gating.
 
 ## Inspection and tests
 

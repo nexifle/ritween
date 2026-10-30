@@ -1,3 +1,4 @@
+import { evaluatePath, pathData } from "./path";
 import { resolveNumber } from "./motion";
 import { evaluateCamera, type CameraState } from "./camera";
 import type { StageContext } from "./stage";
@@ -36,6 +37,7 @@ export interface TextRun {
 export type Transform = readonly [number, number, number, number]; // scale X/Y, translation X/Y
 export type DrawCommand = {
   readonly path: string;
+  readonly sharedId?: string;
   readonly bounds: Bounds;
   readonly transform: Transform;
   readonly opacity: number;
@@ -51,6 +53,12 @@ export type DrawCommand = {
       readonly radius: number;
       readonly stroke?: string;
       readonly strokeWidth: number;
+    }
+  | {
+      readonly kind: "path";
+      readonly data: string;
+      readonly fill: string;
+      readonly fillRule: "nonzero" | "evenodd";
     }
   | { readonly kind: "text"; readonly text: TextRun }
 );
@@ -249,6 +257,9 @@ export function evaluateView(
           ...frame.warnings.map((w) => `${path}/world/${w}`),
           ...(m.overlay?.warnings.map((w) => `${path}/overlay/${w}`) ?? []),
         );
+      } else if (s.kind === "path") {
+        m.width = s.style.width;
+        m.height = s.style.height;
       } else if (s.kind === "text") {
         m.text = textLayout(s.text, s.style, w, theme, measureText);
         m.width = Math.max(0, ...m.text.widths);
@@ -409,6 +420,7 @@ export function evaluateView(
     if (m.composition)
       commands.push({
         kind: "composition",
+        sharedId: m.node.key,
         path: m.path,
         bounds,
         transform: current,
@@ -416,9 +428,22 @@ export function evaluateView(
         frame: m.composition,
         overlay: m.overlay,
       });
+    if (s.kind === "path")
+      commands.push({
+        kind: "path",
+        path: m.path,
+        sharedId: m.node.key,
+        bounds,
+        transform: current,
+        opacity,
+        data: pathData(evaluatePath(s, time)),
+        fill: s.style.fill ?? theme.textColor,
+        fillRule: s.style.fillRule ?? "nonzero",
+      });
     if (s.kind === "box")
       commands.push({
         kind: "box",
+        sharedId: m.node.key,
         path: m.path,
         bounds,
         transform: current,
@@ -431,6 +456,7 @@ export function evaluateView(
     if (m.text)
       commands.push({
         kind: "text",
+        sharedId: m.node.key,
         path: m.path,
         bounds,
         transform: current,

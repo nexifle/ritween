@@ -34,8 +34,13 @@ export class TransitionRenderer {
   private uniform: GPUBuffer;
   private pipeline: GPURenderPipeline;
   private bind: GPUBindGroup;
+  private custom = new Map<string, GPURenderPipeline>();
+  private device: GPUDevice;
+  private format: GPUTextureFormat;
   constructor(context: SetupContext) {
     const { device, format, resolution } = context;
+    this.device = device;
+    this.format = format;
     const targets: GPUTexture[] = [];
     let uniform: GPUBuffer | undefined;
     try {
@@ -60,7 +65,34 @@ export class TransitionRenderer {
       });
       const module = device.createShaderModule({ code });
       this.pipeline = device.createRenderPipeline({
-        layout: "auto",
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [
+            device.createBindGroupLayout({
+              entries: [
+                {
+                  binding: 0,
+                  visibility: GPUShaderStage.FRAGMENT,
+                  texture: {},
+                },
+                {
+                  binding: 1,
+                  visibility: GPUShaderStage.FRAGMENT,
+                  texture: {},
+                },
+                {
+                  binding: 2,
+                  visibility: GPUShaderStage.FRAGMENT,
+                  sampler: {},
+                },
+                {
+                  binding: 3,
+                  visibility: GPUShaderStage.FRAGMENT,
+                  buffer: { type: "uniform" },
+                },
+              ],
+            }),
+          ],
+        }),
         vertex: { module, entryPoint: "vs" },
         fragment: { module, entryPoint: "fs", targets: [{ format }] },
         primitive: { topology: "triangle-list" },
@@ -88,6 +120,39 @@ export class TransitionRenderer {
       throw error;
     }
   }
+  async prepare(transitions: readonly Transition[]) {
+    for (const transition of transitions) {
+      if (
+        transition.type !== "custom" ||
+        !transition.shader ||
+        this.custom.has(transition.shader)
+      )
+        continue;
+      const header = code.slice(0, code.indexOf("@fragment fn fs"));
+      const module = this.device.createShaderModule({
+        code: `${header}\n${transition.shader}\n@fragment fn fs(i:Out)->@location(0) vec4f { return transition(i.uv,c.progress); }`,
+      });
+      const info = await module.getCompilationInfo();
+      const errors = info.messages.filter((m) => m.type === "error");
+      if (errors.length)
+        throw Error(
+          `Custom transition WGSL: ${errors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`).join("; ")}`,
+        );
+      const pipeline = await this.device.createRenderPipelineAsync({
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [this.pipeline.getBindGroupLayout(0)],
+        }),
+        vertex: { module, entryPoint: "vs" },
+        fragment: {
+          module,
+          entryPoint: "fs",
+          targets: [{ format: this.format }],
+        },
+        primitive: { topology: "triangle-list" },
+      });
+      this.custom.set(transition.shader, pipeline);
+    }
+  }
   render(
     context: RenderContext,
     transition: Exclude<Transition, { type: "cut" }> & { progress: number },
@@ -104,7 +169,10 @@ export class TransitionRenderer {
       0,
       new Float32Array([
         transition.progress,
-        ["crossfade", "wipe", "slide", "zoom"].indexOf(transition.type),
+        Math.max(
+          0,
+          ["crossfade", "wipe", "slide", "zoom"].indexOf(transition.type),
+        ),
         dx,
         dy,
       ]),
@@ -119,7 +187,12 @@ export class TransitionRenderer {
         },
       ],
     });
-    pass.setPipeline(this.pipeline);
+    const pipeline =
+      transition.type === "custom"
+        ? this.custom.get(transition.shader!)
+        : this.pipeline;
+    if (!pipeline) throw Error("Custom transition shader is not prepared.");
+    pass.setPipeline(pipeline);
     pass.setBindGroup(0, this.bind);
     pass.draw(3);
     pass.end();
@@ -127,5 +200,6 @@ export class TransitionRenderer {
   dispose() {
     this.targets.forEach((t) => t.destroy());
     this.uniform.destroy();
+    this.custom.clear();
   }
 }

@@ -1,3 +1,10 @@
+export { Path, Glyph, morphPath } from "./path";
+export type {
+  PathCommand,
+  PathOutline,
+  PathStyle,
+  GlyphDefinition,
+} from "./path";
 export { Stage } from "./stage";
 export { World, Composition, Shot } from "./composition";
 export type {

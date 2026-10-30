@@ -56,6 +56,9 @@ export function resolveMediaProject(project: Project): Project {
       clips: [
         {
           id: clip.id,
+          sceneId: project.scenes.find((scene) =>
+            scene.mediaClips?.includes(clip),
+          )?.id,
           name: clip.name,
           start: clip.start,
           duration: clip.duration,

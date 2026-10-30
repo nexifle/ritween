@@ -21,15 +21,28 @@ export function validateProject(p: Project) {
     const transition = s.transition;
     const overlap = transition.type === "cut" ? 0 : transition.duration;
     if (
-      !["cut", "crossfade", "wipe", "slide", "zoom"].includes(
-        transition.type,
-      ) ||
+      ![
+        "cut",
+        "crossfade",
+        "wipe",
+        "slide",
+        "zoom",
+        "shared",
+        "custom",
+      ].includes(transition.type) ||
       (transition.type !== "cut" &&
         (!Number.isFinite(overlap) ||
           overlap <= 0 ||
           overlap >= s.duration ||
           index === 0 ||
           s.start <= previousStart + 1e-8)) ||
+      (transition.type === "custom" &&
+        (typeof transition.shader !== "string" ||
+          !transition.shader.trim() ||
+          transition.shader.length > 65536)) ||
+      (transition.type !== "cut" &&
+        transition.audioCrossfade !== undefined &&
+        typeof transition.audioCrossfade !== "boolean") ||
       (transition.type !== "cut" &&
         transition.direction !== undefined &&
         !["left", "right", "up", "down"].includes(transition.direction))
@@ -65,6 +78,7 @@ export function validateProject(p: Project) {
     for (const clip of clips) {
       if (
         !clip.id ||
+        (clip.sceneId !== undefined && !ids.has(clip.sceneId)) ||
         clipIds.has(clip.id) ||
         !Number.isFinite(clip.start) ||
         !Number.isFinite(clip.duration) ||

@@ -1,6 +1,7 @@
 import type { Project, Scene } from "../types";
 import { evaluateActive, validateProject } from "../timeline";
 import { TransitionRenderer } from "./transition";
+import { matchSharedElements } from "./shared-elements";
 import { managedVideoScenes } from "./visual";
 /** Observe late setup failures even after a sibling pipeline cancels this wait. */
 function waitForSetup<T>(
@@ -116,6 +117,10 @@ export class Renderer {
           format,
           resolution: renderer.resolution,
         });
+      if (renderer.transition)
+        await renderer.transition.prepare(
+          project.scenes.map((s) => s.transition),
+        );
       context.configure({
         device,
         format,
@@ -240,14 +245,27 @@ export class Renderer {
     };
     if (evaluation.transition) {
       if (!this.transition) throw Error("Transition compositor is not ready.");
+      const shared =
+        evaluation.transition.type === "shared"
+          ? matchSharedElements(
+              this.scenes
+                .get(evaluation.active[0].entry.id)!
+                .sharedElements?.({ ...context, ...evaluation.active[0] }) ??
+                [],
+              this.scenes
+                .get(evaluation.active[1].entry.id)!
+                .sharedElements?.({ ...context, ...evaluation.active[1] }) ??
+                [],
+              evaluation.transition.progress,
+            )
+          : undefined;
       evaluation.active.forEach((active, i) =>
-        this.scenes
-          .get(active.entry.id)!
-          .render({
-            ...context,
-            ...active,
-            target: this.transition!.targets[i],
-          }),
+        this.scenes.get(active.entry.id)!.render({
+          ...context,
+          ...active,
+          target: this.transition!.targets[i],
+          sharedTransforms: shared?.[i],
+        }),
       );
       this.transition.render(
         { ...context, ...evaluation.primary },

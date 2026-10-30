@@ -1,4 +1,5 @@
 import type { RenderContext, SetupContext } from "../engine/types";
+import { identity, inverse, multiply } from "../engine/render/shared-elements";
 import type { DrawCommand, EvaluatedFrame, TextRun } from "./layout";
 
 const shader = `
@@ -149,12 +150,11 @@ export class ViewRenderer {
     return JSON.stringify([text, width, height, scale]);
   }
   private rasterText(
-    command: Extract<DrawCommand, { kind: "text" }>,
+    command: Extract<DrawCommand, { kind: "text" | "path" }>,
     scale: number,
     context: RenderContext,
   ): CachedText {
-    const b = command.bounds,
-      t = command.text;
+    const b = command.bounds;
     const width = Math.max(1, Math.ceil(b.width * scale)),
       height = Math.max(1, Math.ceil(b.height * scale));
     const bytes = width * height * 4;
@@ -177,24 +177,30 @@ export class ViewRenderer {
     this.canvas.height = height;
     const p = this.context;
     p.scale(scale, scale);
-    p.font = t.font;
-    p.fillStyle = t.color;
-    p.textBaseline = "alphabetic";
-    const metrics = p.measureText("Mg");
-    const ascent = metrics.fontBoundingBoxAscent ?? t.size,
-      descent = metrics.fontBoundingBoxDescent ?? t.size * 0.25;
-    p.letterSpacing = `${t.tracking}px`;
-    t.lines.forEach((line, i) => {
-      const x =
-        t.align === "center"
-          ? (b.width - t.widths[i]) / 2
-          : t.align === "right"
-            ? b.width - t.widths[i]
-            : 0;
-      const y =
-        i * t.lineHeight + (t.lineHeight - ascent - descent) / 2 + ascent;
-      p.fillText(line, x, y);
-    });
+    if (command.kind === "path") {
+      p.fillStyle = command.fill;
+      p.fill(new Path2D(command.data), command.fillRule);
+    } else {
+      const t = command.text;
+      p.font = t.font;
+      p.fillStyle = t.color;
+      p.textBaseline = "alphabetic";
+      const metrics = p.measureText("Mg");
+      const ascent = metrics.fontBoundingBoxAscent ?? t.size,
+        descent = metrics.fontBoundingBoxDescent ?? t.size * 0.25;
+      p.letterSpacing = `${t.tracking}px`;
+      t.lines.forEach((line, i) => {
+        const x =
+          t.align === "center"
+            ? (b.width - t.widths[i]) / 2
+            : t.align === "right"
+              ? b.width - t.widths[i]
+              : 0;
+        const y =
+          i * t.lineHeight + (t.lineHeight - ascent - descent) / 2 + ascent;
+        p.fillText(line, x, y);
+      });
+    }
     const texture = context.device.createTexture({
       label: command.path,
       size: [width, height],
@@ -284,8 +290,30 @@ export class ViewRenderer {
           this.budget.bytes += width * height * 4;
           this.surfaces.set(c.path, surface);
         }
+        const [sx, sy, tx, ty] = c.transform;
+        const worldToPixels = [
+          ca * scale,
+          cb * scale,
+          cc * scale,
+          cd * scale,
+          ce * scale + ox,
+          cf * scale + oy,
+        ];
+        const childSpace = multiply(
+          context.sharedSpace ?? identity,
+          multiply(worldToPixels, [
+            (c.bounds.width * sx) / width,
+            0,
+            0,
+            (c.bounds.height * sy) / height,
+            c.bounds.x * sx + tx,
+            c.bounds.y * sy + ty,
+          ]),
+        );
         const childContext = {
           ...context,
+          sharedTransforms: c.sharedId ? undefined : context.sharedTransforms,
+          sharedSpace: childSpace,
           target: surface.texture,
           resolution: [width, height] as const,
         };
@@ -335,8 +363,24 @@ export class ViewRenderer {
     }
     const keys = new Set(
       commands.flatMap((c) =>
-        c.kind === "text"
-          ? [this.textKey(c.text, c.bounds.width, c.bounds.height, rasterScale)]
+        c.kind === "text" || c.kind === "path"
+          ? [
+              c.kind === "path"
+                ? JSON.stringify([
+                    c.data,
+                    c.fill,
+                    c.fillRule,
+                    c.bounds.width,
+                    c.bounds.height,
+                    rasterScale,
+                  ])
+                : this.textKey(
+                    c.text,
+                    c.bounds.width,
+                    c.bounds.height,
+                    rasterScale,
+                  ),
+            ]
           : [],
       ),
     );
@@ -368,16 +412,26 @@ export class ViewRenderer {
           c.kind === "composition"
             ? compositionTextures.get(c.path)!
             : this.white!;
-        if (c.kind === "text") {
-          const key = this.textKey(
-            c.text,
-            c.bounds.width,
-            c.bounds.height,
-            rasterScale,
-          );
+        if (c.kind === "text" || c.kind === "path") {
+          const key =
+            c.kind === "path"
+              ? JSON.stringify([
+                  c.data,
+                  c.fill,
+                  c.fillRule,
+                  c.bounds.width,
+                  c.bounds.height,
+                  rasterScale,
+                ])
+              : this.textKey(
+                  c.text,
+                  c.bounds.width,
+                  c.bounds.height,
+                  rasterScale,
+                );
           let cached = this.texts.get(key);
           if (!cached) {
-            this.color(c.text.color);
+            this.color(c.kind === "path" ? c.fill : c.text.color);
             cached = this.rasterText(c, rasterScale, context);
             this.texts.set(key, cached);
           }
@@ -385,6 +439,24 @@ export class ViewRenderer {
         }
         const b = c.bounds,
           [sx, sy, tx, ty] = c.transform;
+        let drawCamera = [
+          ca * scale,
+          cb * scale,
+          cc * scale,
+          cd * scale,
+          ce * scale + ox,
+          cf * scale + oy,
+        ];
+        const correction = c.sharedId
+          ? context.sharedTransforms?.get(c.sharedId)
+          : undefined;
+        if (correction) {
+          const space = context.sharedSpace ?? identity;
+          drawCamera = multiply(
+            multiply(multiply(inverse(space), correction), space),
+            drawCamera,
+          );
+        }
         values.set(
           [
             b.x,
@@ -406,13 +478,13 @@ export class ViewRenderer {
             c.kind === "box" ? 0 : c.kind === "composition" ? 2 : 1,
             0,
             0,
-            ca * scale,
-            cc * scale,
-            ce * scale + ox,
+            drawCamera[0],
+            drawCamera[2],
+            drawCamera[4],
             0,
-            cb * scale,
-            cd * scale,
-            cf * scale + oy,
+            drawCamera[1],
+            drawCamera[3],
+            drawCamera[5],
             0,
           ],
           (i * stride) / 4,

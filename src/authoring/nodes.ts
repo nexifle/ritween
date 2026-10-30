@@ -1,4 +1,5 @@
 import { snapshotNumber, type AnimatedNumber } from "./motion";
+import type { PathSpec } from "./path";
 import type { CompositionSpec } from "./composition";
 
 export type Alignment = "start" | "center" | "end";
@@ -27,6 +28,7 @@ export interface StackOptions {
   readonly align?: Alignment;
 }
 export type NodeSpec =
+  | PathSpec
   | CompositionSpec
   | { readonly kind: "text"; readonly text: string; readonly style: TextStyle }
   | { readonly kind: "box"; readonly style: BoxStyle }

@@ -270,8 +270,120 @@ try {
     } finally {
       alphaSource.dispose();
     }
+    const { renderAudio } = await import("/src/engine/render/audio.ts");
+    const audioScenes = [0, 1].map((i) =>
+      Shot({
+        id: `audio-${i}`,
+        source: "fixture",
+        start: i,
+        duration: 2,
+        world: alphaWorld,
+        transition: i ? { type: "crossfade", duration: 1 } : { type: "cut" },
+      }),
+    );
+    const audioProject = {
+      ...fixture,
+      duration: 3,
+      scenes: audioScenes,
+      audioTracks: [
+        {
+          id: "tone",
+          name: "tone",
+          clips: [
+            {
+              id: "tone-a",
+              name: "tone",
+              sceneId: "audio-0",
+              start: 0,
+              duration: 2,
+              create: () => ({
+                schedule(host) {
+                  const source = new ConstantSourceNode(host.context, {
+                    offset: 0.2,
+                  });
+                  source.connect(host.destination);
+                  source.start(host.at(0));
+                  source.stop(host.at(2));
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    };
+    const audioBuffer = await renderAudio(audioProject, [], 30);
+    const audioEnvelopeSamples = [0.5, 1.5, 2.5].map(
+      (t) =>
+        audioBuffer.getChannelData(0)[Math.round(t * audioBuffer.sampleRate)],
+    );
+    if (
+      Math.abs(audioEnvelopeSamples[0] - 0.21356) > 0.005 ||
+      Math.abs(audioEnvelopeSamples[1] - audioEnvelopeSamples[0] * 0.5) >
+        0.005 ||
+      Math.abs(audioEnvelopeSamples[2]) > 0.001
+    )
+      throw Error(`Audio crossfade PCM mismatch: ${audioEnvelopeSamples}`);
+    const { Path } = await import("/src/authoring/index.ts");
+    const morphProject = {
+      ...fixture,
+      scenes: [
+        {
+          ...fixture.scenes[0],
+          create: () =>
+            Stage(
+              () =>
+                Path(
+                  [
+                    ["M", 0, 0],
+                    ["L", 100, 0],
+                    ["L", 100, 100],
+                    ["L", 0, 100],
+                    ["Z"],
+                  ],
+                  {
+                    width: 100,
+                    height: 100,
+                    fill: "#FF0000",
+                    to: [
+                      ["M", 50, 0],
+                      ["L", 100, 50],
+                      ["L", 50, 100],
+                      ["L", 0, 50],
+                      ["Z"],
+                    ],
+                    progress: { from: 0, to: 1, duration: 1, ease: "linear" },
+                  },
+                ),
+              { designSize: [100, 100], background: "#FFFFFF" },
+            ),
+        },
+      ],
+    };
+    const morphSource = await FrameSource.create(morphProject, {
+      width: 100,
+      height: 100,
+      onError: (e) => errors.push(e),
+    });
+    try {
+      const pixels = [];
+      for (const time of [0, 1, 0.5, 0]) {
+        const canvas = await morphSource.render(time),
+          copy = new OffscreenCanvas(100, 100),
+          ctx = copy.getContext("2d");
+        ctx.drawImage(canvas, 0, 0);
+        pixels.push([...ctx.getImageData(5, 5, 1, 1).data]);
+      }
+      if (
+        JSON.stringify(pixels[0]) !== JSON.stringify([255, 0, 0, 255]) ||
+        JSON.stringify(pixels[1]) !== JSON.stringify([255, 255, 255, 255]) ||
+        JSON.stringify(pixels[0]) !== JSON.stringify(pixels[3])
+      )
+        throw Error(`Path morph pixel mismatch: ${JSON.stringify(pixels)}`);
+    } finally {
+      morphSource.dispose();
+    }
     const transitionPixels = {};
-    for (const type of ["crossfade", "wipe", "slide", "zoom"]) {
+    for (const type of ["crossfade", "wipe", "slide", "zoom", "custom"]) {
       const red = World(
         () => Box({ width: 100, height: 100, fill: "#FF0000" }),
         { size: [100, 100] },
@@ -297,7 +409,15 @@ try {
             start: 1,
             duration: 2,
             world: blue,
-            transition: { type, duration: 1 },
+            transition: {
+              type,
+              duration: 1,
+              ...(type === "custom"
+                ? {
+                    shader: `fn transition(uv: vec2f, progress: f32) -> vec4f { return mix(textureSample(outgoing,samp,uv),textureSample(incoming,samp,uv),progress); }`,
+                  }
+                : {}),
+            },
           }),
         ],
       };
@@ -321,6 +441,49 @@ try {
       } finally {
         src.dispose();
       }
+    }
+    const sharedProject = {
+      ...fixture,
+      duration: 3,
+      scenes: [0, 1].map((i) =>
+        Shot({
+          id: `shared-${i}`,
+          source: "fixture.ts",
+          start: i,
+          duration: 2,
+          world: World(
+            () =>
+              Box({ width: 20, height: 20, fill: "#FF0000" })
+                .id("hero")
+                .offset(i * 60, 40),
+            { size: [100, 100] },
+          ),
+          transition: i ? { type: "shared", duration: 1 } : { type: "cut" },
+        }),
+      ),
+    };
+    const sharedSource = await FrameSource.create(sharedProject, {
+      width: 100,
+      height: 100,
+      onError: (e) => errors.push(e),
+    });
+    let sharedPixels;
+    try {
+      const captures = [];
+      for (const t of [1.5, 2.5, 1.5]) {
+        const canvas = await sharedSource.render(t),
+          copy = new OffscreenCanvas(100, 100),
+          ctx = copy.getContext("2d");
+        ctx.drawImage(canvas, 0, 0);
+        captures.push(
+          [10, 40, 70].map((x) => [...ctx.getImageData(x, 50, 1, 1).data]),
+        );
+      }
+      if (JSON.stringify(captures[0]) !== JSON.stringify(captures[2]))
+        throw Error("Shared-element seeking changed pixels.");
+      sharedPixels = captures[0];
+    } finally {
+      sharedSource.dispose();
     }
     const { project: compositionExample } =
       await import("/examples/composition/manifest.ts");
@@ -419,6 +582,8 @@ try {
       compositionPixels,
       compositionAlpha,
       transitionPixels,
+      sharedPixels,
+      audioEnvelopeSamples,
       cameraShots: cameraShots.slice(0, 3),
       pixel,
       tree,
@@ -429,6 +594,9 @@ try {
     };
   });
   assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.sharedPixels[1], [255, 0, 0, 255]);
+  assert.notDeepEqual(report.sharedPixels[0], [255, 0, 0, 255]);
+  assert.notDeepEqual(report.sharedPixels[2], [255, 0, 0, 255]);
   assert.equal(report.tree.commands.length, 2);
   // Per-primitive opacity: white → half red → half blue.
   for (const [i, expected] of [128, 64, 191, 255].entries())
@@ -475,7 +643,7 @@ try {
       samples[3],
       `${type}: overlap seek is deterministic`,
     );
-    if (type === "crossfade" || type === "zoom")
+    if (type === "crossfade" || type === "zoom" || type === "custom")
       for (const pixel of samples[1]) {
         assert.ok(
           Math.abs(pixel[0] - 128) <= 1 && Math.abs(pixel[2] - 128) <= 1,

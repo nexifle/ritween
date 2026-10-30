@@ -2,6 +2,7 @@
 export type {
   Scene,
   SceneEntry,
+  SharedElement,
   Transition,
   FramePreparationContext,
   MediaClip,

@@ -6,6 +6,7 @@ import {
   type Theme,
 } from "./layout";
 import type { ViewNode } from "./nodes";
+import { collectSharedElements } from "./shared-elements";
 import { ViewRenderer } from "./renderer";
 import { Camera, evaluateCamera, type CameraOptions } from "./camera";
 
@@ -77,7 +78,47 @@ export function Stage(
       theme,
     };
   }
+  function evaluate(context: RenderContext) {
+    if (!ready || disposed || !renderer) throw Error("Stage is not ready.");
+    const env = contextFor(context, context);
+    const activeRenderer = renderer;
+    const layout = evaluateView(view(env), {
+      time: context.localTime,
+      width: env.designSize[0],
+      height: env.designSize[1],
+      theme,
+      context: env,
+      measureText: (text, font, tracking) => {
+        if (!document.fonts.check(font))
+          throw Error(
+            `Font is not ready: ${font}. Preload fonts used by time-dependent content before creating the renderer.`,
+          );
+        return activeRenderer.measureText(text, font, tracking);
+      },
+    });
+    return {
+      env,
+      evaluated: camera
+        ? {
+            ...layout,
+            camera: evaluateCamera(
+              typeof camera === "function" ? camera(env) : camera,
+              env.localTime,
+              env.designSize,
+            ),
+          }
+        : layout,
+    };
+  }
   return {
+    sharedElements(context) {
+      const { env, evaluated } = evaluate(context);
+      return collectSharedElements(
+        evaluated,
+        env.designSize,
+        context.resolution,
+      );
+    },
     async setup(context: SetupContext) {
       if (initialized || disposed)
         throw Error("Stage has already been initialized or disposed.");
@@ -113,37 +154,7 @@ export function Stage(
     },
     render(context: RenderContext) {
       if (!ready || disposed || !renderer) throw Error("Stage is not ready.");
-      const env = contextFor(context, {
-        time: context.time,
-        localTime: context.localTime,
-        progress: context.progress,
-      });
-      const root = view(env);
-      const activeRenderer = renderer;
-      const layout = evaluateView(root, {
-        time: context.localTime,
-        width: env.designSize[0],
-        height: env.designSize[1],
-        theme,
-        measureText: (text, font, tracking) => {
-          if (!document.fonts.check(font))
-            throw Error(
-              `Font is not ready: ${font}. Preload fonts used by time-dependent content before creating the renderer.`,
-            );
-          return activeRenderer.measureText(text, font, tracking);
-        },
-        context: env,
-      });
-      const evaluated: EvaluatedFrame = camera
-        ? {
-            ...layout,
-            camera: evaluateCamera(
-              typeof camera === "function" ? camera(env) : camera,
-              env.localTime,
-              env.designSize,
-            ),
-          }
-        : layout;
+      const { env, evaluated } = evaluate(context);
       renderer.render(
         evaluated,
         context,

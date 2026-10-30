@@ -116,8 +116,9 @@ Scene entries retain sequential cuts by default. Incoming `crossfade`, `wipe`,
 `evaluateActive` returns both local clocks and overlap progress; the renderer
 prepares both active scenes and preserves both managed video activations. Triple
 overlaps and gaps are rejected. Transition targets are owned by the renderer,
-allocated only for projects using transitions, and released with it. Audio remains
-independent; a visual transition does not create an audio crossfade.
+allocated only for projects using transitions, and released with it. Scene-linked audio (`AudioClip.sceneId`) follows overlap envelopes in preview and
+export; unlinked music remains independent. Custom WGSL is compiled during setup.
+Shared transitions match authoring element IDs in output space before drawing.
 
 ## Resource ownership
 

@@ -649,13 +649,15 @@ test("rotated and sheared quads do not claim AABB area, and unsupported boundari
     const rounded = await renderOnce(
       Box({ width: 12, height: 10, fill: "#123456" }).clip({ shape: "rect", radius: 4 }),
     );
-    assert.equal(rounded.records[0].accuracy, "unavailable");
-    if (rounded.records[0].accuracy === "unavailable")
-      assert.match(rounded.records[0].unsupported, /clip mask shape "rounded" is not projected/);
+    const roundedRecord = geometry(rounded.records[0], "rounded");
+    assert.equal(roundedRecord.accuracy, "conservative");
+    assert.equal(roundedRecord.clipProjection?.coverage, "outer-clipped-draw-quad");
+    assert.deepEqual(roundedRecord.clipProjection?.clipShapes, ["rounded"]);
     assert.equal(rounded.records.some((record) => record.kind === "composition"), false);
     const circle = await renderOnce(Box({ width: 12, height: 10, fill: "#123456" }).clip({ shape: "circle" }));
-    if (circle.records[0].accuracy === "unavailable")
-      assert.match(circle.records[0].unsupported, /"circle"/);
+    const circleRecord = geometry(circle.records[0], "circle");
+    assert.equal(circleRecord.accuracy, "conservative");
+    assert.deepEqual(circleRecord.clipProjection?.clipShapes, ["circle"]);
 
     const grouped = await renderOnce(
       Group([Box({ width: 8, height: 8, fill: "#111111" }).id("inner")]).clip().id("window"),
@@ -696,11 +698,19 @@ test("owners, snapshots, inspection-off, and failed renders do not double-count 
     assert.equal(quiet.records.length, 0);
     assert.equal(quiet.calls, 0);
     assert.equal(quiet.traces.length, 0);
+    const quietCircle = await renderOnce(
+      Box({ width: 8, height: 8, fill: "#111111" }).clip({ shape: "circle" }),
+      { collect: false },
+    );
+    assert.equal(quietCircle.records.length, 0);
+    assert.equal(quietCircle.calls, 0);
 
     const gpu = createDevice();
     const renderer = new ViewRenderer();
     await renderer.setup({ device: gpu.device, format: "bgra8unorm", resolution: [20, 20] });
-    const good = evaluateView(Box({ width: 8, height: 8, fill: "#111111" }).clip().id("window"), {
+    const good = evaluateView(
+      Box({ width: 8, height: 8, fill: "#111111" }).clip({ shape: "circle" }).id("window"),
+      {
       time: 0,
       width: 20,
       height: 20,
@@ -781,6 +791,225 @@ test("owners, snapshots, inspection-off, and failed renders do not double-count 
   });
 });
 
+test("non-rect clips publish the outer quad, not mask pixels, in both chain orders", async () => {
+  await withGpuGlobals(async () => {
+    const photo = { kind: "image" as const, url: "photo.png", style: { width: 30, height: 16 } };
+    const mask = { kind: "image" as const, url: "/mask.png", style: { width: 1, height: 1 } };
+    const media = new Map([
+      [mediaKey(photo), imageTexture(30, 16)],
+      [mediaKey(mask), imageTexture(1, 1)],
+    ]);
+    const rect = await renderOnce(
+      Box({ width: 12, height: 10, fill: "#123456" }).clip().id("mask"),
+    );
+    const rectRecord = geometry(rect.records[0], "rect");
+    assert.equal(rectRecord.accuracy, "exact-rectangle");
+    assert.equal(rectRecord.clipProjection?.coverage, "rect-clipped-draw-quad");
+    assert.equal(rectRecord.clipProjection?.clipShapes, undefined);
+
+    const outside = [
+      ["M", 400, 400],
+      ["L", 401, 400],
+      ["L", 400, 401],
+      ["Z"],
+    ] as const;
+    const shapes = [
+      { shape: "rect" as const, radius: 4 },
+      { shape: "circle" as const },
+      { shape: "path" as const, outline: outside },
+      { shape: "image" as const, url: "/mask.png", mode: "alpha" as const },
+      { shape: "image" as const, url: "/mask.png", mode: "luminance" as const },
+    ];
+    const expected = ["rounded", "circle", "path", "image", "image"] as const;
+    for (const [index, shape] of shapes.entries()) {
+      const rendered = await renderOnce(
+        Box({ width: 12, height: 10, fill: "#123456" }).clip(shape).id("mask"),
+        { media },
+      );
+      const record = geometry(rendered.records[0], expected[index]);
+      assert.equal(record.accuracy, "conservative", expected[index]);
+      assert.deepEqual(record.bounds, rectRecord.bounds, expected[index]);
+      assert.equal(record.clipProjection?.coverage, "outer-clipped-draw-quad");
+      assert.deepEqual(record.clipProjection?.clipShapes, [expected[index]]);
+      assert.deepEqual(record.clipProjection?.clipOccurrenceIds, [
+        rendered.traces[0].occurrenceId,
+      ]);
+      assert.equal(rendered.records.some((entry) => entry.kind === "composition"), false);
+      assert.equal("url" in record, false);
+      assert.equal("outline" in record, false);
+      assert.equal("bitmap" in record, false);
+    }
+
+    const orders = [
+      Box({ width: 12, height: 8, fill: "#abcdef" })
+        .clip({ shape: "circle" })
+        .id("inner")
+        .frame({ width: 20, height: 16, align: "start" })
+        .clip()
+        .id("outer"),
+      Box({ width: 12, height: 8, fill: "#abcdef" })
+        .clip()
+        .id("inner")
+        .frame({ width: 20, height: 16, align: "start" })
+        .clip({ shape: "circle" })
+        .id("outer"),
+    ];
+    for (const view of orders) {
+      const rendered = await renderOnce(view);
+      const record = geometry(
+        rendered.records.find((entry) => entry.path.includes("inner"))!,
+        "mixed",
+      );
+      const inner = rendered.traces.find((trace) => trace.path.endsWith("inner"));
+      const outer = rendered.traces.find((trace) => trace.path.endsWith("outer"));
+      assert.ok(inner && outer);
+      assert.equal(record.accuracy, "conservative");
+      assert.deepEqual(record.clipProjection?.clipOccurrenceIds, [
+        inner.occurrenceId,
+        outer.occurrenceId,
+      ]);
+      assert.deepEqual(record.clipProjection?.clipShapes, [inner.shape, outer.shape]);
+      assert.notEqual(record.inspection?.nodeId, inner.ownerNodeId);
+      assert.notEqual(record.inspection?.nodeId, outer.ownerNodeId);
+    }
+
+    const photoRecord = geometry(
+      (
+        await renderOnce(
+          Image({ url: "photo.png", width: 30, height: 16 })
+            .clip({ shape: "circle" })
+            .id("photo"),
+          { media },
+        )
+      ).records[0],
+      "media",
+    );
+    assert.equal(photoRecord.kind, "media");
+    assert.equal(photoRecord.accuracy, "conservative");
+    assert.deepEqual(photoRecord.clipProjection?.clipShapes, ["circle"]);
+
+    const correction = [1, 0, 0, 1, 30, -4] as const;
+    const sharedRect = geometry(
+      (
+        await renderOnce(Box({ width: 8, height: 6, fill: "#111111" }).clip().id("window"), {
+          sharedTransforms: new Map([["window", correction]]),
+        })
+      ).records[0],
+      "shared rect",
+    );
+    const sharedCircle = await renderOnce(
+      Box({ width: 8, height: 6, fill: "#111111" }).clip({ shape: "circle" }).id("window"),
+      { sharedTransforms: new Map([["window", correction]]) },
+    );
+    const sharedRecord = geometry(sharedCircle.records[0], "shared circle");
+    assert.deepEqual(sharedRecord.bounds, sharedRect.bounds);
+    assert.equal(sharedRecord.accuracy, "conservative");
+    const sharedParent = sharedCircle.uniforms.at(-1)![0];
+    const sharedTrace = sharedCircle.traces[0];
+    const once = clipPolygon(
+      leafCorners(sharedCircle.uniforms[0][0]).map((point) =>
+        apply(
+          mappingFromUpload(
+            sharedParent,
+            sharedTrace.childResolution[0],
+            sharedTrace.childResolution[1],
+          ),
+          point[0],
+          point[1],
+        ),
+      ),
+      { x: 0, y: 0, width: 100, height: 100 },
+    );
+    assert.deepEqual(sharedRecord.bounds, boundsOf(once));
+    assert.notDeepEqual(
+      boundsOf(once),
+      boundsOf(once.map((point) => apply(correction, point[0], point[1]))),
+    );
+
+    const turnedCamera = evaluateCamera(
+      Camera({ zoom: 2, rotation: Math.PI / 2 }),
+      0,
+      [80, 60],
+    );
+    const turned = async (shape: { shape: "rect" } | { shape: "circle" }) => {
+      const view = Box({ width: 10, height: 6, fill: "#123456" }).clip(shape);
+      const frame = evaluateView(view, {
+        time: 0,
+        width: 80,
+        height: 60,
+        measureText: measure,
+        inspection: true,
+      });
+      return renderOnce(view, {
+        design: [80, 60],
+        target: [80, 60],
+        frame: { ...frame, camera: turnedCamera },
+      });
+    };
+    const turnedRect = geometry((await turned({ shape: "rect" })).records[0], "turned rect");
+    const turnedCircle = geometry(
+      (await turned({ shape: "circle" })).records[0],
+      "turned circle",
+    );
+    assert.deepEqual(turnedCircle.bounds, turnedRect.bounds);
+    assert.equal(turnedCircle.geometryVisible, turnedRect.geometryVisible);
+    assert.equal(turnedCircle.accuracy, "conservative");
+
+    const negative = geometry(
+      (
+        await renderOnce(
+          Box({ width: 10, height: 8, fill: "#123456" })
+            .scale(-2, 3, [0, 0])
+            .clip({ shape: "circle" }),
+        )
+      ).records[0],
+      "negative",
+    );
+    const negativeRect = geometry(
+      (
+        await renderOnce(
+          Box({ width: 10, height: 8, fill: "#123456" }).scale(-2, 3, [0, 0]).clip(),
+        )
+      ).records[0],
+      "negative rect",
+    );
+    assert.equal(negativeRect.accuracy, "exact-rectangle");
+    assert.equal(negative.accuracy, "conservative");
+    assert.deepEqual(negative.bounds, negativeRect.bounds);
+
+    const zero = geometry(
+      (
+        await renderOnce(
+          Box({ width: 10, height: 8, fill: "#123456" })
+            .scale(0, 1, [0, 0])
+            .clip({ shape: "path", outline: outside }),
+        )
+      ).records[0],
+      "zero",
+    );
+    assert.equal(zero.geometryVisible, false);
+    assert.equal(zero.bounds.width, 0);
+    assert.equal(zero.accuracy, "conservative");
+    assert.ok(Number.isFinite(zero.bounds.x));
+
+    const hidden = await renderOnce(
+      Box({ width: 10, height: 8, fill: "#123456" }).opacity(-0).clip({ shape: "circle" }),
+    );
+    assert.equal(geometry(hidden.records[0], "-0").geometryVisible, false);
+    const faint = await renderOnce(
+      Box({ width: 10, height: 8, fill: "#123456" }).opacity(1e-12).clip({ shape: "circle" }),
+    );
+    assert.equal(geometry(faint.records[0], "near zero").geometryVisible, true);
+    const clipHidden = await renderOnce(
+      Box({ width: 10, height: 8, fill: "#123456" }).clip({ shape: "circle" }).opacity(0),
+    );
+    assert.equal(geometry(clipHidden.records[0], "clip zero").geometryVisible, false);
+
+    const empty = await renderOnce(ZStack([]).clip({ shape: "circle" }).id("empty"));
+    assert.equal(empty.records.length, 0);
+  });
+});
+
 test("clipProjection is whitelisted, owned, and budgeted on both target paths without truncation", () => {
   const raw = {
     kind: "box",
@@ -815,7 +1044,35 @@ test("clipProjection is whitelisted, owned, and budgeted on both target paths wi
     () => paintRecord({ ...raw, clipProjection: { clipOccurrenceIds: [1], coverage: "pixels" } }, "paint"),
     (error: unknown) => error instanceof InspectionSerializationError && /coverage/.test(error.message),
   );
-
+  assert.equal(
+    "clipShapes" in (published.accuracy === "unavailable" ? {} : published.clipProjection ?? {}),
+    false,
+  );
+  const outerRaw = {
+    ...raw,
+    accuracy: "conservative",
+    clipProjection: {
+      clipOccurrenceIds: [7, 8],
+      coverage: "outer-clipped-draw-quad",
+      clipShapes: ["circle", "rect"],
+    },
+  };
+  const outerBudget = new InspectionBudget();
+  const outerPublished = paintRecord(outerRaw, "paint", outerBudget);
+  const outerBytes = new TextEncoder().encode(JSON.stringify(outerPublished)).length;
+  assert.equal(outerBudget.bytes, outerBytes);
+  assert.deepEqual(
+    outerPublished.accuracy === "unavailable" ? undefined : outerPublished.clipProjection,
+    {
+      clipOccurrenceIds: [7, 8],
+      coverage: "outer-clipped-draw-quad",
+      clipShapes: ["circle", "rect"],
+    },
+  );
+  assert.throws(
+    () => paintRecord(outerRaw, "paint", new InspectionBudget(outerBytes - 1)),
+    (error: unknown) => error instanceof InspectionSerializationError && /bytes of UTF-8/.test(error.message),
+  );
   const tree = {
     path: "root",
     kind: "clip",
@@ -867,6 +1124,25 @@ test("clipProjection is whitelisted, owned, and budgeted on both target paths wi
   });
   const project = { name: "a", duration: 1, resolution: [8, 8] as const };
   const target = { scope: "scene:main", id: "card" };
+  const outerOwned = {
+    ...outerRaw,
+    inspection: { id: 3, nodeId: 4, role: "content" as const },
+  };
+  const outerFull = buildInspectionDocument({
+    packageVersion: "0.0.0-test",
+    project,
+    frame: frame(tree, [outerOwned]),
+  });
+  const outerBuilt = buildInspectionDocument({
+    packageVersion: "0.0.0-test",
+    project,
+    frame: frame(tree, [outerOwned]),
+    target,
+  });
+  assert.deepEqual(
+    outerBuilt.scenes[0].paintRecords,
+    applyInspectionTarget(outerFull, target).scenes[0].paintRecords,
+  );
   const full = buildInspectionDocument({ packageVersion: "0.0.0-test", project, frame: frame(tree, [owned]) });
   const built = buildInspectionDocument({ packageVersion: "0.0.0-test", project, frame: frame(tree, [owned]), target });
   const second = applyInspectionTarget(full, target);

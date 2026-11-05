@@ -11,6 +11,7 @@ import { planSurface } from "../src/authoring/surface-plan";
 import {
   EMPTY_SURFACE_TRACES,
   NON_CLIP_PARENT_REASON,
+  projectRectClipChain,
   type SurfaceTrace,
 } from "../src/authoring/surface-projection";
 import {
@@ -1174,5 +1175,125 @@ test("finite rounded clip uniforms that overflow a float32 vertex stage do not p
     assert.equal(nestedBox.unsupported, ancestor);
     assert.equal("bounds" in nestedBox, false);
     assert.equal("clipProjection" in nestedBox, false);
+
+    const rounded = await renderOnce(
+      Box({ width: 50, height: 50, fill: "#123456" })
+        .clip({ shape: "rect", radius: 4 })
+        .id("hero"),
+      { sharedTransforms },
+    );
+    assert.equal(rounded.records[0].accuracy, "unavailable");
+    assert.equal("bounds" in rounded.records[0], false);
   });
+});
+
+test("non-rect chains reuse the outer quad bounds, including scissor and nonfinite failure", () => {
+  const corners = [
+    [0, 0],
+    [20, 0],
+    [20, 10],
+    [0, 10],
+  ] as const;
+  const child = {
+    resolution: [20, 10] as const,
+    scissor: { x: 0, y: 0, width: 20, height: 10 },
+  };
+  const root = {
+    resolution: [100, 100] as const,
+    scissor: { x: 0, y: 0, width: 100, height: 100 },
+  };
+  const translated = [1, 0, 0, 1, 5, 7] as const;
+  for (const shape of ["rounded", "circle", "path", "image"] as const) {
+    const projected = projectRectClipChain(
+      corners,
+      1,
+      [{ occurrenceId: 3, shape, opacity: 1, matrix: translated, child }],
+      root,
+    );
+    assert.equal(projected.status, "bounds", shape);
+    if (projected.status !== "bounds") continue;
+    assert.deepEqual(projected.bounds, { x: 5, y: 7, width: 20, height: 10 });
+    assert.equal(projected.axisAligned, true, shape);
+    assert.equal(projected.geometryVisible, true, shape);
+  }
+  const scissored = projectRectClipChain(
+    corners,
+    1,
+    [
+      {
+        occurrenceId: 3,
+        shape: "circle",
+        opacity: 1,
+        matrix: translated,
+        child,
+      },
+    ],
+    {
+      resolution: [100, 100],
+      scissor: { x: 10, y: 8, width: 10, height: 6 },
+    },
+  );
+  assert.equal(scissored.status, "bounds");
+  if (scissored.status === "bounds")
+    assert.deepEqual(scissored.bounds, { x: 10, y: 8, width: 10, height: 6 });
+
+  const hidden = projectRectClipChain(
+    corners,
+    -0,
+    [{ occurrenceId: 1, shape: "path", opacity: -0, matrix: translated, child }],
+    root,
+  );
+  assert.equal(hidden.status, "bounds");
+  if (hidden.status === "bounds") assert.equal(hidden.geometryVisible, false);
+  const faint = projectRectClipChain(
+    corners,
+    1e-12,
+    [{ occurrenceId: 1, shape: "image", opacity: 1, matrix: translated, child }],
+    root,
+  );
+  assert.equal(faint.status, "bounds");
+  if (faint.status === "bounds") assert.equal(faint.geometryVisible, true);
+
+  const empty = projectRectClipChain(
+    corners,
+    1,
+    [
+      {
+        occurrenceId: 1,
+        shape: "rounded",
+        opacity: 1,
+        matrix: translated,
+        child: {
+          resolution: [20, 10],
+          scissor: { x: 0, y: 0, width: 0, height: 10 },
+        },
+      },
+    ],
+    root,
+  );
+  assert.equal(empty.status, "bounds");
+  if (empty.status === "bounds") {
+    assert.equal(empty.geometryVisible, false);
+    assert.equal(empty.bounds.width, 0);
+    assert.ok(Number.isFinite(empty.bounds.x) && Number.isFinite(empty.bounds.y));
+  }
+  const blown = projectRectClipChain(
+    corners,
+    1,
+    [
+      {
+        occurrenceId: 1,
+        shape: "circle",
+        opacity: 1,
+        matrix: [1, 0, 0, 1, Number.POSITIVE_INFINITY, 7],
+        child,
+      },
+    ],
+    root,
+  );
+  assert.equal(blown.status, "unavailable");
+  if (blown.status === "unavailable") {
+    assert.match(blown.reason, /not finite/);
+    assert.equal("bounds" in blown, false);
+  }
 });

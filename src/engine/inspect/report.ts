@@ -166,9 +166,10 @@ export interface InspectionScene {
    * nothing. Records are ideal projected top-level Box, Text, and Media draw quads in
    * `scene-target-pixels` before transition projection. A Text quad is the texture/line box,
    * not glyph ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or ink
-   * coverage. A rect Clip chain adds `clipProjection` for those quads; that is still not
-   * fragment visibility or a GPU rounding guarantee. Non-rect masks and nested
-   * Group/Composition paint stay unavailable. This is not completed G3.
+   * coverage. A Clip chain adds `clipProjection` for those quads: rect-only keeps the old
+   * coverage, and any non-rect boundary publishes the outer draw quad with paired shapes.
+   * That is still not mask pixels, fragment visibility, or a GPU rounding guarantee. Nested
+   * Group/Composition paint stays unavailable. This is not completed G3.
    */
   readonly paintRecords?: readonly InspectionPaintRecord[];
   /** Legacy `EvaluatedFrame.warnings` strings, preserved verbatim and in order. */
@@ -193,7 +194,8 @@ export interface InspectionCapability {
      * in `scene-target-pixels` before transition. A Text quad is the texture/line box, not glyph
      * ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or pixel coverage.
      * Nothing here is final visual coverage, fragment visibility, or a GPU rounding guarantee.
-     * Nested Group/Composition, clip, mask, and path paint stay unrecorded. G3 is not complete.
+     * Clip leaves record an outer draw quad, not mask pixels. Nested Group/Composition paint
+     * stays unrecorded. G3 is not complete.
      */
     readonly paint: "partial";
   };
@@ -1153,14 +1155,24 @@ const PAINT_UNAVAILABLE_STRUCTURE = 15;
 /** `,"clipProjection":` on a geometry record, charged only when the field is present. */
 const CLIP_PROJECTION_KEY = 19;
 /**
- * `{"clipOccurrenceIds":,"coverage":"rect-clipped-draw-quad"}` excluding id digits.
+ * `{"clipOccurrenceIds":[],"coverage":"rect-clipped-draw-quad"}` excluding id digits.
  * Brackets are included; a separator is charged before every id after the first.
+ * Coverage length is charged after the enum read and before the id array is copied.
  */
 const CLIP_PROJECTION_BODY = 59;
+const CLIP_COVERAGES = [
+  "rect-clipped-draw-quad",
+  "outer-clipped-draw-quad",
+] as const;
+const CLIP_SHAPES = ["rect", "rounded", "circle", "path", "image"] as const;
+/** `,"clipShapes":[]` excluding shape tokens and the commas between them. */
+const CLIP_SHAPES_STRUCTURE = 16;
 export interface InspectionClipProjection {
   /** Covering clip occurrences, leaf target first. */
   readonly clipOccurrenceIds: readonly number[];
-  readonly coverage: "rect-clipped-draw-quad";
+  readonly coverage: (typeof CLIP_COVERAGES)[number];
+  /** Required with `outer-clipped-draw-quad`, same order and length as the ids. Omitted for rect-only. */
+  readonly clipShapes?: readonly (typeof CLIP_SHAPES)[number][];
 }
 /** Opt-in inspection identity of one paint record: counter IDs only, never the owner node. */
 function clipProjection(
@@ -1168,7 +1180,17 @@ function clipProjection(
   where: string,
   budget?: InspectionBudget,
 ): InspectionClipProjection {
-  budget?.charge(CLIP_PROJECTION_KEY + CLIP_PROJECTION_BODY);
+  budget?.charge(
+    CLIP_PROJECTION_KEY +
+      CLIP_PROJECTION_BODY -
+      "rect-clipped-draw-quad".length,
+  );
+  const coverage = oneOf(
+    read(value, "coverage", where),
+    CLIP_COVERAGES,
+    `${where}.coverage`,
+  );
+  budget?.charge(coverage.length);
   const ids = list(
     read(value, "clipOccurrenceIds", where),
     `${where}.clipOccurrenceIds`,
@@ -1185,12 +1207,43 @@ function clipProjection(
       ),
     );
   }
-  const coverage = oneOf(
-    read(value, "coverage", where),
-    ["rect-clipped-draw-quad"] as const,
-    `${where}.coverage`,
-  );
-  return { clipOccurrenceIds, coverage };
+  const rawShapes = read(value, "clipShapes", where);
+  if (coverage === "rect-clipped-draw-quad") {
+    if (rawShapes !== undefined)
+      throw new InspectionSerializationError(
+        `${where}.clipShapes must be absent when coverage is "rect-clipped-draw-quad".`,
+      );
+    return { clipOccurrenceIds, coverage };
+  }
+  if (rawShapes === undefined)
+    throw new InspectionSerializationError(
+      `${where}.clipShapes must be present when coverage is "outer-clipped-draw-quad".`,
+    );
+  const shapes = list(rawShapes, `${where}.clipShapes`);
+  const shapeCount = size(shapes, `${where}.clipShapes`);
+  if (shapeCount !== count)
+    throw new InspectionSerializationError(
+      `${where}.clipShapes must have ${count} entries, received ${shapeCount}.`,
+    );
+  budget?.charge(CLIP_SHAPES_STRUCTURE);
+  const clipShapes: (typeof CLIP_SHAPES)[number][] = [];
+  let nonRect = false;
+  for (let index = 0; index < shapeCount; index++) {
+    if (index > 0) budget?.charge(1);
+    const shape = oneOf(
+      reading(() => shapes[index]),
+      CLIP_SHAPES,
+      `${where}.clipShapes[${index}]`,
+    );
+    budget?.charge(shape.length + 2);
+    if (shape !== "rect") nonRect = true;
+    clipShapes.push(shape);
+  }
+  if (!nonRect)
+    throw new InspectionSerializationError(
+      `${where}.coverage must be "rect-clipped-draw-quad" when every clip shape is "rect".`,
+    );
+  return { clipOccurrenceIds, coverage, clipShapes };
 }
 function paintIdentity(
   value: unknown,
@@ -1866,7 +1919,7 @@ export function buildInspectionDocument(options: {
       transitions: {
         projection: "unavailable",
         reason:
-          "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. Nested Group and Composition paint, clip, mask, path, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
+          "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. A Clip chain records the outer draw quad, not mask pixels or outline coverage. Nested Group and Composition paint and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
       },
     },
     scenes: targetScene ? [targetScene] : scenes,

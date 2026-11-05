@@ -4433,6 +4433,101 @@ test("targeted media records follow retained, orphan, and duplicate owners on bo
   }
 });
 
+test("outer clipProjection rejects bad pairing and does not read foreign mask data", () => {
+  const base = paintFields({
+    accuracy: "conservative",
+    clipProjection: {
+      clipOccurrenceIds: [4, 9],
+      coverage: "outer-clipped-draw-quad",
+      clipShapes: ["circle", "rect"],
+    },
+  });
+  const rejected = (clipProjection: unknown, pattern: RegExp) =>
+    assert.throws(
+      () => paintRecord({ ...base, clipProjection }, "paint"),
+      (error: unknown) =>
+        error instanceof InspectionSerializationError &&
+        pattern.test(error.message),
+      pattern.source,
+    );
+  rejected(
+    { clipOccurrenceIds: [4], coverage: "outer-clipped-draw-quad" },
+    /clipShapes must be present/,
+  );
+  rejected(
+    {
+      clipOccurrenceIds: [4],
+      coverage: "outer-clipped-draw-quad",
+      clipShapes: ["circle", "rect"],
+    },
+    /must have 1 entries/,
+  );
+  rejected(
+    {
+      clipOccurrenceIds: [4],
+      coverage: "outer-clipped-draw-quad",
+      clipShapes: ["mask"],
+    },
+    /clipShapes\[0\]/,
+  );
+  rejected(
+    {
+      clipOccurrenceIds: [4, 9],
+      coverage: "rect-clipped-draw-quad",
+      clipShapes: ["circle", "rect"],
+    },
+    /clipShapes must be absent/,
+  );
+  rejected(
+    {
+      clipOccurrenceIds: [4],
+      coverage: "outer-clipped-draw-quad",
+      clipShapes: ["rect"],
+    },
+    /every clip shape is "rect"/,
+  );
+  let foreign = 0;
+  const forbidden = () => {
+    foreign++;
+    throw Error("foreign mask data was read");
+  };
+  const ids = [4, 9];
+  const shapes = ["circle", "rect"];
+  const raw = Object.defineProperties(
+    {
+      clipOccurrenceIds: ids,
+      coverage: "outer-clipped-draw-quad",
+      clipShapes: shapes,
+    },
+    {
+      outline: { enumerable: true, get: forbidden },
+      url: { enumerable: true, get: forbidden },
+      bitmap: { enumerable: true, get: forbidden },
+      provider: { enumerable: true, get: forbidden },
+      mask: { enumerable: true, get: forbidden },
+    },
+  );
+  const budget = new InspectionBudget();
+  const published = paintRecord({ ...base, clipProjection: raw }, "paint", budget);
+  assert.equal(foreign, 0);
+  if (published.accuracy === "unavailable") throw Error("expected geometry");
+  assert.deepEqual(published.clipProjection?.clipShapes, ["circle", "rect"]);
+  ids.push(1);
+  shapes[0] = "path";
+  assert.deepEqual(published.clipProjection?.clipOccurrenceIds, [4, 9]);
+  assert.deepEqual(published.clipProjection?.clipShapes, ["circle", "rect"]);
+  assert.equal(JSON.stringify(published).includes("outline"), false);
+  const counted = published;
+  const bytes = new TextEncoder().encode(JSON.stringify(counted)).length;
+  assert.equal(budget.bytes, bytes);
+  assert.throws(
+    () => paintRecord(base, "paint", new InspectionBudget(bytes - 1)),
+    (error: unknown) =>
+      error instanceof InspectionSerializationError &&
+      /bytes of UTF-8/.test(error.message),
+  );
+});
+
 test("public inspection exports do not gain a media paint alias", async () => {
   const api = await import("../src/index.ts");
   assert.equal("paintRecord" in api, false);

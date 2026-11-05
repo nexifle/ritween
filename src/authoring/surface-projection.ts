@@ -386,11 +386,6 @@ export type CapturedPaint =
     }
   | { readonly kind: "nested"; readonly occurrenceId: number };
 
-/** Mask shapes this unit does not project. Not a conservative extent. */
-export function clipMaskUnprojectedReason(shape: ClipSurfaceShape): string {
-  return `clip mask shape "${shape}" is not projected.`;
-}
-
 export interface ClipTracePass {
   readonly book: ClipSurfaceTraces;
   readonly sink: PendingClip[];
@@ -459,6 +454,8 @@ function emit(
 
 export interface RectClipLevel {
   readonly occurrenceId: number;
+  /** Paired with `occurrenceId`. The chain clips the outer quad, not this shape's outline. */
+  readonly shape: ClipSurfaceShape;
   readonly opacity: number;
   readonly matrix: Matrix6;
   /** Child target this level's polygon is clipped in, before `matrix`. */

@@ -18,12 +18,12 @@ import { checkVertexFloat32 } from "./vertex-float32";
 import {
   childPixelsToParent,
   ClipSurfaceTraces,
-  clipMaskUnprojectedReason,
   copySurfaceUniform,
   EMPTY_SURFACE_TRACES,
   NON_CLIP_PARENT_REASON,
   projectRectClipChain,
   type CapturedPaint,
+  type ClipSurfaceShape,
   type ClipTracePass,
   type CopiedSurfaceUniform,
   type PixelRect,
@@ -109,14 +109,19 @@ const MAX_TEXT_ENTRIES = 128;
  * target, not final transition output.
  * `accuracy` is the discriminant: `unavailable` means no rectangle this collector can honestly
  * record, so coverage stays partial instead of claiming the paint is out of frame. Nested
- * Group/Composition paint is not forwarded. A rect Clip chain projects its Box, Text, and Media
- * leaves into this space; non-rect masks stay unavailable. This is not a completed G3 projection.
+ * Group/Composition paint is not forwarded. Every Clip chain, including rounded, circle, path,
+ * and image, projects the outer draw quad of its Box, Text, and Media leaves into this space.
+ * That quad is not mask pixels, an outline, or fragment coverage. This is not a completed G3
+ * projection.
  */
-/** Draw-quad provenance after a rect Clip chain. Not a pixel-coverage claim. */
+/** Draw-quad provenance after a Clip chain. Not a pixel-coverage or mask-visibility claim. */
 export interface ClipProjection {
   /** Covering clip occurrences, leaf target first. */
   readonly clipOccurrenceIds: readonly number[];
-  readonly coverage: "rect-clipped-draw-quad";
+  /** Rect-only chains keep the old token. Any non-rect boundary uses the outer quad token. */
+  readonly coverage: "rect-clipped-draw-quad" | "outer-clipped-draw-quad";
+  /** Leaf→root shapes. Omitted for a rect-only chain so that published shape stays unchanged. */
+  readonly clipShapes?: readonly ClipSurfaceShape[];
 }
 export type PaintRecord = {
   readonly path: string;
@@ -137,11 +142,11 @@ export type PaintRecord = {
       readonly bounds: Bounds;
       readonly provenance: "projected-box-draw-quad";
       /**
-       * Positive area, invertible matrix, and nonzero opacity of that ideal quad. Geometry only,
-       * never proof that a fragment was visible.
+       * Positive area of the outer quad and nonzero opacity, including `-0` as hidden. Potential
+       * visibility only: an empty mask can still be true, and this is not fragment proof.
        */
       readonly geometryVisible: boolean;
-      /** Present only when this draw was projected through a rect Clip chain. */
+      /** Present only when this draw was projected through a Clip chain. */
       readonly clipProjection?: ClipProjection;
       readonly unsupported?: never;
     }
@@ -506,16 +511,14 @@ function projectNode(
         status: "unavailable" as const,
         reason: "clip child scissor was not recorded.",
       };
-  const ownMask =
-    clip.shape !== "rect" ? clipMaskUnprojectedReason(clip.shape) : undefined;
   const blocked =
-    ownMask ??
     inherited ??
     (mapped.status === "unavailable" ? mapped.reason : undefined);
   const level: RectClipLevel | undefined =
     child && mapped.status === "mapped"
       ? {
           occurrenceId: clip.occurrenceId,
+          shape: clip.shape,
           opacity: clip.uniform.opacity,
           matrix: mapped.matrix,
           child,
@@ -584,14 +587,24 @@ function projectNode(
       );
       continue;
     }
+    const shapes = chain.map((entry) => entry.shape);
+    const nonRect = shapes.some((shape) => shape !== "rect");
+    // Any non-rect boundary is conservative even when the outer quad is axis-aligned or empty.
     const accuracy =
-      paint.commandKind === "media" || !projected.axisAligned
+      paint.commandKind === "media" || nonRect || !projected.axisAligned
         ? "conservative"
         : "exact-rectangle";
-    const clipProjection: ClipProjection = {
-      clipOccurrenceIds: chain.map((entry) => entry.occurrenceId),
-      coverage: "rect-clipped-draw-quad",
-    };
+    const clipOccurrenceIds = chain.map((entry) => entry.occurrenceId);
+    const clipProjection: ClipProjection = nonRect
+      ? {
+          clipOccurrenceIds,
+          coverage: "outer-clipped-draw-quad",
+          clipShapes: shapes,
+        }
+      : {
+          clipOccurrenceIds,
+          coverage: "rect-clipped-draw-quad",
+        };
     const shared = {
       path: paint.path,
       ...(paint.inspection ? { inspection: paint.inspection } : {}),
@@ -1421,26 +1434,6 @@ export class ViewRenderer {
               continue;
             }
             const records = projected.get(slot.clip.occurrenceId) ?? [];
-            const namesMask = records.some(
-              (record) =>
-                record.accuracy === "unavailable" &&
-                record.unsupported.includes("is not projected"),
-            );
-            if (slot.clip.shape !== "rect" && !namesMask)
-              collector(
-                unavailableRecord(
-                  {
-                    kind: "composition",
-                    path: slot.clip.path,
-                    ...(slot.clip.inspection
-                      ? { inspection: slot.clip.inspection }
-                      : {}),
-                    paintRole: slot.clip.paintRole,
-                  },
-                  rootResolution,
-                  clipMaskUnprojectedReason(slot.clip.shape),
-                ),
-              );
             for (const record of records) collector(record);
           }
         }

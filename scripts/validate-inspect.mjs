@@ -13,6 +13,8 @@
  * - authored-ID targeting, atomic --output, exit codes and cancellation,
  * - a flat Box fixture proved through the same CLI, plus one FrameSource
  *   A→B→A pixel seek. G7 production counters are not measured here.
+ * - a flat Text fixture through the same CLI and one FrameSource. Bounds are the
+ *   texture/line-box draw quad, not glyph ink. G7 is not measured there either.
  *
  * Run after `npm run build`:
  *   node scripts/validate-inspect.mjs
@@ -53,6 +55,28 @@ const TIME_CLIP = 2.25;
 const SAMPLE_A = [70, 50];
 const SAMPLE_B = [150, 50];
 const SAMPLE_BG = [16, 16];
+const TEXT_OUTPUT = [320, 180];
+const TEXT_TIME_A = 0.25;
+const TEXT_TIME_B = 1.25;
+const TEXT_OFFSET = 40;
+const TEXT_ORIGIN_X = 80;
+const TEXT_ORIGIN_Y = 72;
+const TEXT_EDGE_CLEARANCE = 40;
+const TEXT_ID = "ink";
+const TEXT_BACKGROUND_ID = "bg-ink";
+const TEXT_STAGE_ID = "flat-stage";
+const TEXT_STYLE_ID = "ink-style";
+const TEXT_FONT_FAMILY = "Ritween Fixture Inter";
+const TEXT_SAMPLE = "H";
+const TEXT_SIZE = 28;
+const TEXT_WEIGHT = 700;
+const TEXT_LINE_HEIGHT = 36;
+const TEXT_QUAD_INSET = 2;
+const TEXT_OUTSIDE_MARGIN = 2;
+const TEXT_BACKGROUND = "#112233";
+const TEXT_INK = "#F7F4EC";
+const TEXT_BACKGROUND_RGBA = [0x11, 0x22, 0x33, 255];
+const TEXT_INK_RGBA = [0xf7, 0xf4, 0xec, 255];
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cli = process.env.CLI_BINARY
@@ -147,6 +171,7 @@ async function createConsumer(directory, manifest) {
 // The proof itself is recorded by the page; this is the shape the run asserted.
 const expectedFontWeights = ["400", "700"];
 const boxConsumer = join(artifacts, "consumer-box");
+const textConsumer = join(artifacts, "consumer-text");
 
 function walk(node, visit) {
   visit(node);
@@ -256,6 +281,274 @@ function assertBoxRecord(record, bounds, role) {
   assert.equal(record.geometryVisible, true);
   assert.equal(record.paintRole, role);
   assert.equal(record.inspection.role, role);
+}
+
+/** Two float32 endpoints can each move by one ulp; the offset is staged through Math.fround. */
+function float32UniformTolerance(...values) {
+  let ulp = 0;
+  for (const value of values) {
+    const rounded = Math.fround(value);
+    const magnitude = Math.abs(rounded);
+    const step =
+      magnitude === 0
+        ? 2 ** -149
+        : 2 ** (Math.floor(Math.log2(magnitude)) - 23);
+    ulp = Math.max(ulp, step);
+  }
+  return 2 * ulp;
+}
+
+function assertFloat32Close(actual, expected, label) {
+  const tolerance = float32UniformTolerance(actual, expected);
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    `${label}: ${actual} expected ${expected} within ${tolerance}`,
+  );
+}
+
+function assertQuadEqual(left, right, label) {
+  for (const key of ["x", "y", "width", "height"])
+    assertFloat32Close(left[key], right[key], `${label}.${key}`);
+}
+
+function fixtureFontsPlugin() {
+  const allowed = new Map([
+    ["/fonts/Inter-Regular.woff2", "font/woff2"],
+    ["/fonts/Inter-Bold.woff2", "font/woff2"],
+    ["/fonts/LICENSE.txt", "text/plain"],
+  ]);
+  return {
+    name: "lane-b-fixture-fonts",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const path = req.url?.split("?")[0];
+        const type = allowed.get(path);
+        if (!type) return next();
+        readFile(join(fonts, path.slice("/fonts/".length)))
+          .then((body) => {
+            res.setHeader("Content-Type", type);
+            res.end(body);
+          })
+          .catch(() => {
+            res.statusCode = 404;
+            res.end();
+          });
+      });
+    },
+  };
+}
+
+async function createProofServer({ port, title }) {
+  const vite = await createViteServer({
+    configFile: false,
+    root,
+    logLevel: "warn",
+    optimizeDeps: { noDiscovery: true },
+    resolve: { alias: { ritween: join(root, "dist/index.js") } },
+    server: { host: "127.0.0.1", port, strictPort: true },
+    plugins: [
+      fixtureFontsPlugin(),
+      {
+        name: "lane-b-proof-page",
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            if (req.url?.split("?")[0] !== "/") return next();
+            res.setHeader("Content-Type", "text/html");
+            res.end(
+              `<!doctype html><link rel="icon" href="data:,"><title>${title}</title>`,
+            );
+          });
+        },
+      },
+    ],
+  });
+  await vite.listen();
+  return vite;
+}
+
+async function launchProofBrowser() {
+  return chromium.launch({
+    channel: process.env.CHROME_CHANNEL ?? "chrome",
+    headless: true,
+    args: ["--enable-unsafe-webgpu"],
+  });
+}
+
+async function openProofPage(browser, vite) {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(90_000);
+  const proofErrors = [];
+  page.on("pageerror", (error) => proofErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") proofErrors.push(message.text());
+  });
+  await page.goto(vite.resolvedUrls.local[0]);
+  page.proofErrors = proofErrors;
+  return page;
+}
+
+/** Shared A-repeat then A→B→A capture. Fonts, when the fixture exports them, load before create. */
+async function captureFlatSequence({ modulePath, inspect }) {
+  const fixture = await import(modulePath);
+  const errors = [];
+  let fontsReadyBeforeCreate = false;
+  let documentFacesBeforeCreate = null;
+  if (fixture.fontProof) {
+    const proof = fixture.fontProof;
+    const family = proof.family;
+    documentFacesBeforeCreate = [];
+    document.fonts.forEach((face) => {
+      if (face.family === family)
+        documentFacesBeforeCreate.push({
+          family: face.family,
+          weight: String(face.weight),
+          status: face.status,
+        });
+    });
+    for (const weight of ["400", "700"]) {
+      const recorded = proof.weights.find((entry) => entry.weight === weight);
+      if (recorded?.status !== "loaded" || recorded.family !== family)
+        throw Error(`FontFace ${weight} was not loaded before create.`);
+      if (
+        !documentFacesBeforeCreate.some(
+          (face) =>
+            face.weight === weight &&
+            face.status === "loaded" &&
+            face.family === family,
+        )
+      )
+        throw Error(`document.fonts is missing loaded ${weight} before create.`);
+      if (!document.fonts.check(`${weight} 20px ${family}`))
+        throw Error(`document.fonts.check failed for ${weight} before create.`);
+    }
+    if (fixture.DRAWN_FONT && !document.fonts.check(fixture.DRAWN_FONT))
+      throw Error(`Drawn font is not ready before create: ${fixture.DRAWN_FONT}`);
+    fontsReadyBeforeCreate = true;
+  }
+  const source = await fixture.FrameSource.create(fixture.project, {
+    width: fixture.OUTPUT[0],
+    height: fixture.OUTPUT[1],
+    inspect: Boolean(inspect),
+    onError: (message) => errors.push(String(message)),
+  });
+  const summarize = (report) => {
+    const scene = report?.scenes?.[0];
+    const frame = scene?.frame;
+    const nodes = [];
+    const walk = (node) => {
+      if (!node || typeof node !== "object") return;
+      if (node.id)
+        nodes.push({
+          id: node.id,
+          kind: node.kind,
+          inspectionId: node.inspectionId ?? null,
+        });
+      for (const child of node.children ?? []) walk(child);
+    };
+    walk(frame?.tree);
+    return {
+      requestedTime: report?.requestedTime ?? null,
+      effectiveTime: report?.effectiveTime ?? null,
+      sceneId: scene?.id ?? null,
+      unavailable: scene?.unavailable ?? null,
+      nodes,
+      records: (frame?.paintRecords ?? []).map((record) => ({
+        kind: record.kind,
+        provenance: record.provenance ?? null,
+        space: record.space ?? null,
+        resolution: record.resolution ? [...record.resolution] : null,
+        accuracy: record.accuracy ?? null,
+        geometryVisible: record.geometryVisible ?? null,
+        paintRole: record.paintRole ?? null,
+        bounds: record.bounds ? { ...record.bounds } : null,
+        inspection: record.inspection
+          ? {
+              id: record.inspection.id,
+              nodeId: record.inspection.nodeId,
+              role: record.inspection.role,
+            }
+          : null,
+        unsupported: record.unsupported ?? null,
+      })),
+    };
+  };
+  const decode = async (time) => {
+    const canvas = await source.render(time);
+    const copy = new OffscreenCanvas(canvas.width, canvas.height);
+    const context = copy.getContext("2d", { willReadFrequently: true });
+    context.drawImage(canvas, 0, 0);
+    const image = context.getImageData(0, 0, canvas.width, canvas.height);
+    const blob = await copy.convertToBlob({ type: "image/png" });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 8192)
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return {
+      width: canvas.width,
+      height: canvas.height,
+      pixels: Array.from(image.data),
+      png: btoa(binary),
+      report: inspect ? summarize(source.inspectFrame()) : null,
+    };
+  };
+  const steps = [];
+  let calibration;
+  let sequence;
+  try {
+    const first = await decode(fixture.TIME_A);
+    const repeat = await decode(fixture.TIME_A);
+    steps.push("calibrate-a", "calibrate-a-repeat");
+    let tolerance = 0;
+    for (let i = 0; i < first.pixels.length; i++)
+      tolerance = Math.max(
+        tolerance,
+        Math.abs(first.pixels[i] - repeat.pixels[i]),
+      );
+    steps.push("tolerance-recorded");
+    calibration = { first, repeat, tolerance };
+    const seqA = await decode(fixture.TIME_A);
+    const seqB = await decode(fixture.TIME_B);
+    const seqA2 = await decode(fixture.TIME_A);
+    steps.push("sequence-a", "sequence-b", "sequence-a");
+    sequence = { seqA, seqB, seqA2 };
+  } finally {
+    source.dispose();
+  }
+  let gpu = null;
+  let gpuError = null;
+  try {
+    const adapter = await navigator.gpu?.requestAdapter();
+    gpu = adapter?.info
+      ? {
+          vendor: adapter.info.vendor ?? null,
+          architecture: adapter.info.architecture ?? null,
+          device: adapter.info.device ?? null,
+          description: adapter.info.description ?? null,
+          isFallbackAdapter: adapter.info.isFallbackAdapter ?? null,
+        }
+      : null;
+    if (!adapter) gpuError = "requestAdapter returned null";
+  } catch (error) {
+    gpuError = String(error);
+  }
+  return {
+    steps,
+    tolerance: calibration.tolerance,
+    frames: {
+      cal1: calibration.first,
+      cal2: calibration.repeat,
+      seqA: sequence.seqA,
+      seqB: sequence.seqB,
+      seqA2: sequence.seqA2,
+    },
+    gpu,
+    gpuError,
+    renderErrors: errors,
+    userAgent: navigator.userAgent,
+    fontProof: fixture.fontProof ?? null,
+    fontsReadyBeforeCreate,
+    documentFacesBeforeCreate,
+  };
 }
 
 /**
@@ -470,124 +763,13 @@ async function proveFlatBoxes() {
       fittingClipDiagnostics: 0,
     };
 
-    vite = await createViteServer({
-      configFile: false,
-      root,
-      logLevel: "warn",
-      optimizeDeps: { noDiscovery: true },
-      resolve: { alias: { ritween: join(root, "dist/index.js") } },
-      server: { host: "127.0.0.1", port: 5175, strictPort: true },
-      plugins: [
-        {
-          name: "lane-b-box-page",
-          configureServer(server) {
-            server.middlewares.use((req, res, next) => {
-              if (req.url !== "/" && !req.url.startsWith("/?"))
-                return next();
-              res.setHeader("Content-Type", "text/html");
-              res.end(
-                '<!doctype html><link rel="icon" href="data:,"><title>Lane B box pixels</title>',
-              );
-            });
-          },
-        },
-      ],
-    });
-    await vite.listen();
-    browser = await chromium.launch({
-      channel: process.env.CHROME_CHANNEL ?? "chrome",
-      headless: true,
-      args: ["--enable-unsafe-webgpu"],
-    });
-    const page = await browser.newPage();
-    page.setDefaultTimeout(90_000);
-    const browserErrors = [];
-    page.on("pageerror", (error) => browserErrors.push(error.message));
-    page.on("console", (message) => {
-      if (message.type() === "error") browserErrors.push(message.text());
-    });
-    await page.goto(vite.resolvedUrls.local[0]);
-    const captured = await page.evaluate(async () => {
-      const fixture = await import("/scripts/inspect-fixture/manifest-box.mjs");
-      const errors = [];
-      const source = await fixture.FrameSource.create(fixture.project, {
-        width: fixture.OUTPUT[0],
-        height: fixture.OUTPUT[1],
-        onError: (message) => errors.push(String(message)),
-      });
-      const decode = async (time) => {
-        const canvas = await source.render(time);
-        const copy = new OffscreenCanvas(canvas.width, canvas.height);
-        const context = copy.getContext("2d", { willReadFrequently: true });
-        context.drawImage(canvas, 0, 0);
-        const image = context.getImageData(0, 0, canvas.width, canvas.height);
-        const blob = await copy.convertToBlob({ type: "image/png" });
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        let binary = "";
-        for (let i = 0; i < bytes.length; i += 8192)
-          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-        return {
-          width: canvas.width,
-          height: canvas.height,
-          pixels: Array.from(image.data),
-          png: btoa(binary),
-        };
-      };
-      const steps = [];
-      let calibration;
-      let sequence;
-      try {
-        const first = await decode(fixture.TIME_A);
-        const repeat = await decode(fixture.TIME_A);
-        steps.push("calibrate-a", "calibrate-a-repeat");
-        let tolerance = 0;
-        for (let i = 0; i < first.pixels.length; i++)
-          tolerance = Math.max(
-            tolerance,
-            Math.abs(first.pixels[i] - repeat.pixels[i]),
-          );
-        steps.push("tolerance-recorded");
-        calibration = { first, repeat, tolerance };
-        const seqA = await decode(fixture.TIME_A);
-        const seqB = await decode(fixture.TIME_B);
-        const seqA2 = await decode(fixture.TIME_A);
-        steps.push("sequence-a", "sequence-b", "sequence-a");
-        sequence = { seqA, seqB, seqA2 };
-      } finally {
-        source.dispose();
-      }
-      let gpu = null;
-      let gpuError = null;
-      try {
-        const adapter = await navigator.gpu?.requestAdapter();
-        gpu = adapter?.info
-          ? {
-              vendor: adapter.info.vendor ?? null,
-              architecture: adapter.info.architecture ?? null,
-              device: adapter.info.device ?? null,
-              description: adapter.info.description ?? null,
-              isFallbackAdapter: adapter.info.isFallbackAdapter ?? null,
-            }
-          : null;
-        if (!adapter) gpuError = "requestAdapter returned null";
-      } catch (error) {
-        gpuError = String(error);
-      }
-      return {
-        steps,
-        tolerance: calibration.tolerance,
-        frames: {
-          cal1: calibration.first,
-          cal2: calibration.repeat,
-          seqA: sequence.seqA,
-          seqB: sequence.seqB,
-          seqA2: sequence.seqA2,
-        },
-        gpu,
-        gpuError,
-        renderErrors: errors,
-        userAgent: navigator.userAgent,
-      };
+    vite = await createProofServer({ port: 5175, title: "Lane B box pixels" });
+    browser = await launchProofBrowser();
+    const page = await openProofPage(browser, vite);
+    const browserErrors = page.proofErrors;
+    const captured = await page.evaluate(captureFlatSequence, {
+      modulePath: "/scripts/inspect-fixture/manifest-box.mjs",
+      inspect: false,
     });
     assert.deepEqual(captured.steps, [
       "calibrate-a",
@@ -688,6 +870,436 @@ async function proveFlatBoxes() {
     await vite?.close();
     await writeFile(
       join(reports, "box-pixel-proof.json"),
+      JSON.stringify(evidence, null, 2),
+    );
+  }
+  return evidence;
+}
+
+function insetQuad(bounds, inset) {
+  return {
+    x0: Math.ceil(bounds.x + inset),
+    y0: Math.ceil(bounds.y + inset),
+    x1: Math.floor(bounds.x + bounds.width - inset),
+    y1: Math.floor(bounds.y + bounds.height - inset),
+  };
+}
+
+function textPixelDelta(frame, x, y, rgba) {
+  const index = (y * TEXT_OUTPUT[0] + x) * 4;
+  let max = 0;
+  for (let channel = 0; channel < 4; channel++)
+    max = Math.max(max, Math.abs(frame[index + channel] - rgba[channel]));
+  return max;
+}
+
+function textRegionDelta(left, right, rect) {
+  let max = 0;
+  let count = 0;
+  for (let y = rect.y0; y < rect.y1; y++) {
+    for (let x = rect.x0; x < rect.x1; x++) {
+      const index = (y * TEXT_OUTPUT[0] + x) * 4;
+      for (let channel = 0; channel < 4; channel++)
+        max = Math.max(max, Math.abs(left[index + channel] - right[index + channel]));
+      count++;
+    }
+  }
+  return { max, count };
+}
+
+function textInkHits(frame, rect, threshold) {
+  const hits = [];
+  for (let y = rect.y0; y < rect.y1; y++) {
+    for (let x = rect.x0; x < rect.x1; x++) {
+      const delta = textPixelDelta(frame, x, y, TEXT_BACKGROUND_RGBA);
+      if (delta > threshold) {
+        hits.push([x, y, delta]);
+        if (hits.length >= 4) return hits;
+      }
+    }
+  }
+  return hits;
+}
+
+function textOutsideInk(frame, bounds, margin, threshold) {
+  const x0 = Math.floor(bounds.x - margin);
+  const y0 = Math.floor(bounds.y - margin);
+  const x1 = Math.ceil(bounds.x + bounds.width + margin);
+  const y1 = Math.ceil(bounds.y + bounds.height + margin);
+  const hits = [];
+  for (let y = 0; y < TEXT_OUTPUT[1]; y++) {
+    for (let x = 0; x < TEXT_OUTPUT[0]; x++) {
+      if (x >= x0 && x < x1 && y >= y0 && y < y1) continue;
+      const delta = textPixelDelta(frame, x, y, TEXT_BACKGROUND_RGBA);
+      if (delta > threshold) {
+        hits.push([x, y, delta]);
+        if (hits.length >= 8) return hits;
+      }
+    }
+  }
+  return hits;
+}
+
+function assertLoadedFaces(proof, label) {
+  assert.equal(proof?.family, TEXT_FONT_FAMILY, label);
+  for (const weight of ["400", "700"]) {
+    const face = proof.weights.find((entry) => entry.weight === weight);
+    assert.ok(face, `${label} ${weight}`);
+    assert.equal(face.status, "loaded", `${label} ${weight}`);
+    assert.equal(face.family, TEXT_FONT_FAMILY, `${label} ${weight}`);
+    assert.ok(
+      proof.documentFaces.some(
+        (entry) =>
+          entry.weight === weight &&
+          entry.status === "loaded" &&
+          entry.family === TEXT_FONT_FAMILY,
+      ),
+      `${label} document.fonts ${weight}`,
+    );
+  }
+}
+
+function assertTextQuad(record, node, label) {
+  assert.equal(record.kind, "text", label);
+  assert.equal(record.provenance, "projected-text-draw-quad", label);
+  assert.equal(record.space, "scene-target-pixels", label);
+  assert.deepEqual([...record.resolution], [...TEXT_OUTPUT], label);
+  assert.equal(record.accuracy, "exact-rectangle", label);
+  assert.equal(record.geometryVisible, true, label);
+  assert.equal(record.paintRole, "content", label);
+  assert.equal(record.inspection.role, "content", label);
+  assert.equal(record.inspection.nodeId, node.inspectionId, label);
+  for (const value of Object.values(record.bounds))
+    assert.equal(Number.isFinite(value), true, `${label} bounds`);
+}
+
+/**
+ * Public CLI inspect of the flat Text fixture, then one FrameSource with the
+ * real measurer. Pixel proof looks for ink inside the reported line-box quad,
+ * not a filled rectangle and not a guessed glyph width.
+ */
+async function proveFlatText() {
+  const evidence = {
+    fixture: "scripts/inspect-fixture/manifest-text.mjs",
+    output: [...TEXT_OUTPUT],
+    offset: TEXT_OFFSET,
+    styleId: TEXT_STYLE_ID,
+    boundsMeaning:
+      "texture/line-box draw quad from the FrameSource measurer, not glyph-ink bounds",
+    quadInset: TEXT_QUAD_INSET,
+    outsideMargin: TEXT_OUTSIDE_MARGIN,
+    outsideMarginReason:
+      "explicit margin for scale-1 linear filtering and font AA; the quad is not a pixel bound",
+    g7: {
+      productionCounters: "unavailable",
+      renderPassReuse: "not-measured",
+      textureReuse: "not-measured",
+      reason:
+        "G7 requires engine instrumentation. This script does not estimate passes or texture reuse.",
+    },
+  };
+  let browser;
+  let vite;
+  try {
+    const fixtureSource = await readFile(
+      join(template, "manifest-text.mjs"),
+      "utf8",
+    );
+    for (const needle of [
+      "TIME_A = 0.25",
+      "TIME_B = 1.25",
+      "OFFSET = 40",
+      "ORIGIN_X = 80",
+      "ORIGIN_Y = 72",
+      "EDGE_CLEARANCE = 40",
+      'TEXT_ID = "ink"',
+      'BACKGROUND_ID = "bg-ink"',
+      'STYLE_ID = "ink-style"',
+      "[320, 180]",
+      "#112233",
+      "#F7F4EC",
+      "SIZE = 28",
+      "WEIGHT = 700",
+      "LINE_HEIGHT = 36",
+      'TEXT = "H"',
+      "QUAD_INSET = 2",
+      "OUTSIDE_MARGIN = 2",
+      "/fonts/Inter-Regular.woff2",
+      "/fonts/Inter-Bold.woff2",
+      "fontProof = await loadFonts()",
+      "Ritween Fixture Inter",
+    ])
+      assert.ok(
+        fixtureSource.includes(needle),
+        `manifest-text.mjs drifted from the Lane B contract: missing ${needle}`,
+      );
+    await createConsumer(textConsumer, "manifest-text.mjs");
+    latestFontProof = null;
+    const inspectAt = (time, extra = []) =>
+      inspectJson([
+        "inspect",
+        "--project",
+        textConsumer,
+        "--time",
+        String(time),
+        ...extra,
+      ]);
+    const stateA = await inspectAt(TEXT_TIME_A);
+    const cliFontProof = latestFontProof;
+    const stateB = await inspectAt(TEXT_TIME_B);
+    assertLoadedFaces(cliFontProof, "CLI FontFace");
+    evidence.cliFontProof = cliFontProof;
+    const cliQuads = {};
+    for (const [label, result, time] of [
+      ["A", stateA, TEXT_TIME_A],
+      ["B", stateB, TEXT_TIME_B],
+    ]) {
+      const { document } = result;
+      assert.equal(document.capability.geometry.paint, "partial", label);
+      assert.deepEqual([...document.project.resolution], [...TEXT_OUTPUT], label);
+      assert.equal(document.time.requested, time, label);
+      assert.equal(document.scenes.length, 1, label);
+      assert.equal(
+        document.diagnostics.some((entry) => entry.severity === "error"),
+        false,
+        label,
+      );
+      const scene = document.scenes[0];
+      assert.equal(scene.scope, "scene:flat", label);
+      const text = nodeById(scene.tree, TEXT_ID);
+      const background = nodeById(scene.tree, TEXT_BACKGROUND_ID);
+      assert.ok(text?.inspectionId !== undefined, TEXT_ID);
+      assert.ok(background?.inspectionId !== undefined, TEXT_BACKGROUND_ID);
+      const textRecord = recordOwnedBy(scene.paintRecords ?? [], text);
+      const backgroundRecord = recordOwnedBy(scene.paintRecords ?? [], background);
+      assert.ok(textRecord, `${TEXT_ID} paint record`);
+      assert.ok(backgroundRecord, `${TEXT_BACKGROUND_ID} paint record`);
+      assertTextQuad(textRecord, text, label);
+      assert.equal(backgroundRecord.kind, "box", label);
+      assert.equal(backgroundRecord.paintRole, "background", label);
+      cliQuads[label] = textRecord.bounds;
+      evidence[label === "A" ? "stateA" : "stateB"] = {
+        scope: scene.scope,
+        text: textRecord.bounds,
+        provenance: textRecord.provenance,
+        space: textRecord.space,
+        resolution: textRecord.resolution,
+        accuracy: textRecord.accuracy,
+        geometryVisible: textRecord.geometryVisible,
+        ownerId: text.inspectionId,
+        backgroundId: TEXT_BACKGROUND_ID,
+      };
+    }
+    assertFloat32Close(
+      cliQuads.B.x - cliQuads.A.x,
+      TEXT_OFFSET,
+      "CLI bounds.x shift",
+    );
+    for (const key of ["y", "width", "height"])
+      assertFloat32Close(cliQuads.A[key], cliQuads.B[key], `CLI ${key}`);
+    assert.ok(
+      cliQuads.A.x + cliQuads.A.width <=
+        cliQuads.B.x +
+          float32UniformTolerance(cliQuads.A.x, cliQuads.A.width, cliQuads.B.x),
+      "reported text quads overlap",
+    );
+    for (const bounds of [cliQuads.A, cliQuads.B]) {
+      assert.ok(bounds.x >= TEXT_EDGE_CLEARANCE, bounds);
+      assert.ok(bounds.y >= TEXT_EDGE_CLEARANCE, bounds);
+      assert.ok(
+        bounds.x + bounds.width <= TEXT_OUTPUT[0] - TEXT_EDGE_CLEARANCE,
+        bounds,
+      );
+      assert.ok(
+        bounds.y + bounds.height <= TEXT_OUTPUT[1] - TEXT_EDGE_CLEARANCE,
+        bounds,
+      );
+    }
+    const targeted = await inspectAt(TEXT_TIME_A, [
+      "--target",
+      `scene:flat#${TEXT_ID}`,
+    ]);
+    const keptScene = targeted.document.scenes[0];
+    const keptIds = idsOf(keptScene.tree).sort();
+    assert.deepEqual(keptIds, [TEXT_ID, TEXT_STAGE_ID].sort());
+    assert.equal(targeted.document.target.id, TEXT_ID);
+    assert.equal(targeted.document.target.matches, 1);
+    assert.equal(targeted.document.target.scope, "scene:flat");
+    const keptText = nodeById(keptScene.tree, TEXT_ID);
+    const keptRecords = keptScene.paintRecords ?? [];
+    assert.equal(keptRecords.length, 1);
+    assert.equal(keptRecords[0].inspection.nodeId, keptText.inspectionId);
+    assert.equal(keptRecords[0].kind, "text");
+    assert.equal(keptRecords[0].provenance, "projected-text-draw-quad");
+    assertFloat32Close(keptRecords[0].bounds.x, cliQuads.A.x, "target bounds.x");
+    assert.equal(
+      keptRecords.some((record) => record.paintRole === "background"),
+      false,
+      "targeting ink must drop the background sibling",
+    );
+    assert.equal(
+      (keptScene.commands ?? []).some(
+        (command) => command.matchId === TEXT_BACKGROUND_ID,
+      ),
+      false,
+    );
+    evidence.target = {
+      ...targeted.document.target,
+      keptIds,
+      droppedSibling: TEXT_BACKGROUND_ID,
+    };
+
+    vite = await createProofServer({ port: 5176, title: "Lane B text pixels" });
+    browser = await launchProofBrowser();
+    const page = await openProofPage(browser, vite);
+    const browserErrors = page.proofErrors;
+    const captured = await page.evaluate(captureFlatSequence, {
+      modulePath: "/scripts/inspect-fixture/manifest-text.mjs",
+      inspect: true,
+    });
+    assert.equal(captured.fontsReadyBeforeCreate, true);
+    assertLoadedFaces(
+      {
+        ...captured.fontProof,
+        documentFaces: captured.documentFacesBeforeCreate,
+      },
+      "harness FontFace",
+    );
+    assert.deepEqual(captured.steps, [
+      "calibrate-a",
+      "calibrate-a-repeat",
+      "tolerance-recorded",
+      "sequence-a",
+      "sequence-b",
+      "sequence-a",
+    ]);
+    const { cal1, cal2, seqA, seqB, seqA2 } = captured.frames;
+    for (const frame of [cal1, cal2, seqA, seqB, seqA2])
+      assert.deepEqual([frame.width, frame.height], [...TEXT_OUTPUT]);
+    const noise = maxChannelDelta(cal1.pixels, cal2.pixels);
+    assert.equal(noise, captured.tolerance);
+    const colorGap = maxChannelDelta(TEXT_INK_RGBA, TEXT_BACKGROUND_RGBA);
+    const inkThreshold = Math.max(noise + 1, Math.min(16, Math.floor(colorGap / 8)));
+    assert.ok(
+      inkThreshold * 2 < colorGap,
+      `ink threshold ${inkThreshold} cannot separate ink from background (gap ${colorGap})`,
+    );
+    assert.ok(noise < inkThreshold, `noise ${noise} is not below ink threshold`);
+    const owned = (frame) => {
+      const node = frame.report.nodes.find((entry) => entry.id === TEXT_ID);
+      const record = frame.report.records.find(
+        (entry) => entry.inspection?.nodeId === node?.inspectionId,
+      );
+      assert.ok(node && record, "browser text record");
+      assertTextQuad(record, node, "browser");
+      assert.equal(frame.report.sceneId, "flat");
+      return record;
+    };
+    const browserA = owned(seqA);
+    const browserB = owned(seqB);
+    const browserA2 = owned(seqA2);
+    assert.equal(seqA.report.requestedTime, TEXT_TIME_A);
+    assert.equal(seqB.report.requestedTime, TEXT_TIME_B);
+    assert.equal(seqA2.report.requestedTime, TEXT_TIME_A);
+    assertQuadEqual(browserA.bounds, cliQuads.A, "browser/CLI A");
+    assertQuadEqual(browserB.bounds, cliQuads.B, "browser/CLI B");
+    assertQuadEqual(browserA2.bounds, browserA.bounds, "browser A/A");
+    assertFloat32Close(
+      browserB.bounds.x - browserA.bounds.x,
+      TEXT_OFFSET,
+      "browser bounds.x shift",
+    );
+    for (const key of ["y", "width", "height"])
+      assertFloat32Close(
+        browserA.bounds[key],
+        browserB.bounds[key],
+        `browser ${key}`,
+      );
+    const fullFrame = {
+      calibration: noise,
+      sequenceAToA: maxChannelDelta(seqA.pixels, seqA2.pixels),
+      sequenceAToB: maxChannelDelta(seqA.pixels, seqB.pixels),
+    };
+    assert.ok(fullFrame.sequenceAToA <= noise);
+    assert.ok(fullFrame.sequenceAToB > noise, "A and B frames must differ");
+    const rectA = insetQuad(browserA.bounds, TEXT_QUAD_INSET);
+    const rectB = insetQuad(browserB.bounds, TEXT_QUAD_INSET);
+    for (const rect of [rectA, rectB])
+      assert.ok(rect.x1 > rect.x0 && rect.y1 > rect.y0, `inset quad empty ${JSON.stringify(rect)}`);
+    const inkA = textInkHits(seqA.pixels, rectA, inkThreshold);
+    const inkB = textInkHits(seqB.pixels, rectB, inkThreshold);
+    assert.ok(inkA.length > 0, "no ink inside reported A quad");
+    assert.ok(inkB.length > 0, "no ink inside reported B quad");
+    const exclusiveA = textRegionDelta(seqA.pixels, seqB.pixels, rectA);
+    const exclusiveB = textRegionDelta(seqA.pixels, seqB.pixels, rectB);
+    assert.ok(exclusiveA.count > 0 && exclusiveA.max > noise, exclusiveA);
+    assert.ok(exclusiveB.count > 0 && exclusiveB.max > noise, exclusiveB);
+    const outsideA = textOutsideInk(
+      seqA.pixels,
+      browserA.bounds,
+      TEXT_OUTSIDE_MARGIN,
+      inkThreshold,
+    );
+    const outsideB = textOutsideInk(
+      seqB.pixels,
+      browserB.bounds,
+      TEXT_OUTSIDE_MARGIN,
+      inkThreshold,
+    );
+    assert.deepEqual(outsideA, [], `ink outside A quad margin: ${JSON.stringify(outsideA)}`);
+    assert.deepEqual(outsideB, [], `ink outside B quad margin: ${JSON.stringify(outsideB)}`);
+    const returnA = textRegionDelta(seqA.pixels, seqA2.pixels, rectA);
+    assert.ok(returnA.max <= noise, returnA);
+    await writeFile(join(reports, "text-a.png"), Buffer.from(seqA.png, "base64"));
+    await writeFile(join(reports, "text-b.png"), Buffer.from(seqB.png, "base64"));
+    evidence.fontProof = {
+      fontsReadyBeforeCreate: captured.fontsReadyBeforeCreate,
+      harness: captured.fontProof,
+      documentFacesBeforeCreate: captured.documentFacesBeforeCreate,
+      drawnFont: `${TEXT_WEIGHT} ${TEXT_SIZE}px ${TEXT_FONT_FAMILY}`,
+    };
+    evidence.pixels = {
+      browser: { version: browser.version(), userAgent: captured.userAgent },
+      gpu: captured.gpu,
+      gpuError: captured.gpuError,
+      renderErrors: captured.renderErrors,
+      pageErrors: browserErrors,
+      resolution: [...TEXT_OUTPUT],
+      noise,
+      colorGap,
+      inkThreshold,
+      fullFrame,
+      rectA,
+      rectB,
+      inkA,
+      inkB,
+      exclusiveA,
+      exclusiveB,
+      outsideA,
+      outsideB,
+      returnA,
+      reports: {
+        A: seqA.report,
+        B: seqB.report,
+        A2: seqA2.report,
+      },
+      captures: [
+        "artifacts/g1b/reports/text-a.png",
+        "artifacts/g1b/reports/text-b.png",
+      ],
+      instance:
+        "one FrameSource; fonts loaded before create; calibrate A twice, then seek A → B → A",
+    };
+    assert.deepEqual(captured.renderErrors, []);
+    assert.deepEqual(browserErrors, []);
+  } catch (error) {
+    evidence.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    await browser?.close();
+    await vite?.close();
+    await writeFile(
+      join(reports, "text-pixel-proof.json"),
       JSON.stringify(evidence, null, 2),
     );
   }
@@ -867,6 +1479,7 @@ try {
     documentFaces: latestFontProof.documentFaces,
   };
   findings.boxProof = await proveFlatBoxes();
+  findings.textProof = await proveFlatText();
 
   // Legacy paths stay unqualified; the scope carries the qualification.
   for (const scene of document.scenes)
@@ -1276,6 +1889,12 @@ try {
       "one FrameSource A→B→A pixels within calibration tolerance",
       "clip --fail-on error follows fixed-allocation-deficit, not a clip code",
       "G7 counters left unavailable",
+      "flat Text CLI: partial paint, projected-text-draw-quad, scene-target-pixels, 320x180",
+      "text bounds.x shifts by the fixture offset within float32 tolerance",
+      "target keeps the text owner and drops the background sibling",
+      "FontFace 400 and 700 loaded and registered before FrameSource.create",
+      "one FrameSource text A→B→A ink inside the reported quad, not a filled rect",
+      "text G7 counters left unavailable",
     ],
   };
   await writeFile(

@@ -25,6 +25,9 @@
  * - rounded, circle, path, and image masks, plus a fully transparent image mask,
  *   through the same CLI and one FrameSource. Bounds are the outer draw quad, not
  *   mask pixels. G7 is not measured. G3 is not claimed.
+ * - one Group and one Composition, side by side, through the same CLI and one
+ *   FrameSource. Bounds are the recipe table, not mask pixels or GPU coverage.
+ *   G7 is not measured. G3 is not claimed.
  *
  * Run after `npm run build`:
  *   node scripts/validate-inspect.mjs
@@ -219,6 +222,58 @@ const MASK_VIEWPORTS = [
     showsInside: false,
   },
 ];
+/** Recipe table for manifest-surface.mjs. Not read back from a report. */
+const SURFACE_PORT = 5182;
+const SURFACE_SCOPE = "scene:surface";
+const SURFACE_TIME_A = 0;
+const SURFACE_TIME_B = 1;
+const SURFACE_GROUP_A = { x: 25, y: 25, width: 20, height: 10 };
+const SURFACE_GROUP_B = { x: 35, y: 25, width: 20, height: 10 };
+const SURFACE_WORLD_A = { x: 110, y: 50, width: 10, height: 10 };
+const SURFACE_WORLD_B = { x: 120, y: 50, width: 10, height: 10 };
+const SURFACE_OVERLAY = { x: 145, y: 40, width: 10, height: 10 };
+const SURFACE_SAMPLE_GROUP_A = [30, 30];
+const SURFACE_SAMPLE_GROUP_B = [50, 30];
+const SURFACE_SAMPLE_WORLD_A = [115, 55];
+const SURFACE_SAMPLE_WORLD_B = [125, 55];
+const SURFACE_SAMPLE_OVERLAY = [150, 45];
+const SURFACE_SAMPLE_BG = [8, 8];
+const SURFACE_RED = [255, 0, 0, 255];
+const SURFACE_GREEN = [0, 255, 0, 255];
+const SURFACE_BLUE = [0, 0, 255, 255];
+const SURFACE_BLACK = [0, 0, 0, 255];
+const SURFACE_CARDS = [
+  {
+    id: "group-card",
+    surfaceId: "group-surface",
+    kind: "group",
+    a: SURFACE_GROUP_A,
+    b: SURFACE_GROUP_B,
+    sampleA: SURFACE_SAMPLE_GROUP_A,
+    sampleB: SURFACE_SAMPLE_GROUP_B,
+    rgba: SURFACE_RED,
+  },
+  {
+    id: "world-card",
+    surfaceId: "composition-surface",
+    kind: "composition",
+    a: SURFACE_WORLD_A,
+    b: SURFACE_WORLD_B,
+    sampleA: SURFACE_SAMPLE_WORLD_A,
+    sampleB: SURFACE_SAMPLE_WORLD_B,
+    rgba: SURFACE_GREEN,
+  },
+  {
+    id: "overlay-card",
+    surfaceId: "composition-surface",
+    kind: "composition",
+    a: SURFACE_OVERLAY,
+    b: SURFACE_OVERLAY,
+    sampleA: SURFACE_SAMPLE_OVERLAY,
+    sampleB: SURFACE_SAMPLE_OVERLAY,
+    rgba: SURFACE_BLUE,
+  },
+];
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cli = process.env.CLI_BINARY
@@ -337,6 +392,7 @@ const videoConsumer = join(artifacts, "consumer-video");
 const sourceMp4 = join(artifacts, "source.mp4");
 const clipConsumer = join(artifacts, "consumer-clip");
 const maskConsumer = join(artifacts, "consumer-mask");
+const surfaceConsumer = join(artifacts, "consumer-surface");
 const maskHalfPng = join(artifacts, "mask-half.png");
 const maskClearPng = join(artifacts, "mask-clear.png");
 
@@ -661,6 +717,7 @@ async function captureFlatSequence({
           id: node.id,
           kind: node.kind,
           inspectionId: node.inspectionId ?? null,
+          space: node.space ?? null,
         });
       for (const child of node.children ?? []) walk(child);
     };
@@ -671,6 +728,16 @@ async function captureFlatSequence({
       sceneId: scene?.id ?? null,
       unavailable: scene?.unavailable ?? null,
       nodes,
+      commands: (frame?.commands ?? []).map((command) => ({
+        kind: command.kind ?? null,
+        inspection: command.inspection
+          ? {
+              id: command.inspection.id,
+              nodeId: command.inspection.nodeId,
+              role: command.inspection.role,
+            }
+          : null,
+      })),
       records: (frame?.paintRecords ?? []).map((record) => ({
         kind: record.kind,
         provenance: record.provenance ?? null,
@@ -3006,7 +3073,9 @@ async function proveRectClip() {
       reason:
         "G7 requires engine instrumentation. This script does not estimate passes or texture reuse.",
     },
+    g3: "not-claimed",
   };
+  evidence.selfCheck = assertClipIdIsolation();
   let browser;
   let vite;
   try {
@@ -3103,80 +3172,15 @@ async function proveRectClip() {
       assertBoxRecord(leafRecord, projected.nested, "content");
       assert.equal(backgroundRecord.surfaceProjection, undefined, label);
       assert.equal(Object.hasOwn(backgroundRecord, "clipProjection"), false, label);
-      const viewCommand = (scene.commands ?? []).find(
-        (command) => command.inspection?.nodeId === view.inspectionId,
-      );
-      const outerCommand = (scene.commands ?? []).find(
-        (command) => command.inspection?.nodeId === outer.inspectionId,
-      );
-      const innerCommand = (scene.commands ?? []).find(
-        (command) => command.inspection?.nodeId === inner.inspectionId,
-      );
-      assert.ok(viewCommand && outerCommand, `${label} clip commands`);
-      const rectProjection = {
-        boundaries: [{
-          occurrenceId: viewCommand.inspection.id,
-          kind: "clip",
-          shape: "rect",
-        }],
-        coverage: "rect-clipped-draw-quad",
-      };
-      assert.deepEqual(redRecord.surfaceProjection, rectProjection);
-      assert.deepEqual(blueRecord.surfaceProjection, redRecord.surfaceProjection);
+      const viewOccurrenceId = assertViewportClipPair(scene, label);
       assert.equal(Object.hasOwn(redRecord, "clipProjection"), false, label);
       assert.equal(Object.hasOwn(blueRecord, "clipProjection"), false, label);
       const nested = leafRecord.surfaceProjection;
-      const nestedIds = nested.boundaries.map((boundary) => boundary.occurrenceId);
       assert.equal(nested.coverage, "rect-clipped-draw-quad");
       assert.deepEqual(Object.keys(nested).sort(), ["boundaries", "coverage"]);
-      assert.equal(nested.boundaries.length, 2);
-      for (const boundary of nested.boundaries) {
-        assert.equal(boundary.kind, "clip", label);
-        assert.equal(boundary.shape, "rect", label);
-      }
+      const clipIds = assertNestedClipBoundaries(scene, nested.boundaries, label);
       for (const key of ["shape", "scissor", "clipProjection"])
         assert.equal(Object.hasOwn(leafRecord, key), false, key);
-      assert.equal(nestedIds.length, 2);
-      assert.notEqual(nestedIds[0], nestedIds[1]);
-      for (const id of nestedIds) {
-        assert.equal(Number.isSafeInteger(id), true);
-        assert.ok(id >= 0);
-      }
-      const owners = new Set();
-      walk(scene.tree, (node) => {
-        if (node.inspectionId !== undefined) owners.add(node.inspectionId);
-      });
-      for (const id of nestedIds) assert.equal(owners.has(id), false, label);
-      if (innerCommand)
-        assert.deepEqual(nested.boundaries, [
-          {
-            occurrenceId: innerCommand.inspection.id,
-            kind: "clip",
-            shape: "rect",
-          },
-          {
-            occurrenceId: outerCommand.inspection.id,
-            kind: "clip",
-            shape: "rect",
-          },
-        ]);
-      else {
-        assert.deepEqual(nested.boundaries[1], {
-          occurrenceId: outerCommand.inspection.id,
-          kind: "clip",
-          shape: "rect",
-        });
-        assert.equal(nested.boundaries[0].kind, "clip");
-        assert.equal(nested.boundaries[0].shape, "rect");
-        assert.equal(
-          (scene.commands ?? []).some(
-            (command) => command.inspection?.id === nestedIds[0],
-          ),
-          false,
-          "inner occurrence must not be replaced with another command id",
-        );
-      }
-      assert.notEqual(nestedIds[0], viewCommand.inspection.id);
       for (const record of records) {
         assert.equal(record.space, "scene-target-pixels");
         assert.deepEqual([...record.resolution], [...OUTPUT]);
@@ -3185,10 +3189,10 @@ async function proveRectClip() {
         red: redRecord.bounds,
         blue: blueRecord.bounds,
         nested: leafRecord.bounds,
-        viewOccurrenceId: viewCommand.inspection.id,
-        outerOccurrenceId: outerCommand.inspection.id,
-        innerOccurrenceId: innerCommand?.inspection.id ?? nestedIds[0],
-        innerCommandPublished: Boolean(innerCommand),
+        viewOccurrenceId,
+        outerOccurrenceId: clipIds.outerOccurrenceId,
+        innerOccurrenceId: clipIds.innerOccurrenceId,
+        innerCommandPublished: clipIds.innerCommandPublished,
         boundaries: nested.boundaries.map((boundary) => ({
           occurrenceId: boundary.occurrenceId,
           kind: boundary.kind,
@@ -3201,7 +3205,8 @@ async function proveRectClip() {
     const stateB = await inspectAt(CLIP_TIME_B);
     evidence.stateA = readState(stateA, "A", projected.a);
     evidence.stateB = readState(stateB, "B", projected.b);
-    assert.deepEqual(evidence.stateA.boundaries, evidence.stateB.boundaries);
+    evidence.occurrenceNote =
+      "Evaluation-local. CLI A/B, target, and browser ids are not required to match.";
     const targeted = await inspectAt(CLIP_TIME_A, [
       "--target",
       `${CLIP_SCOPE}#${CLIP_LEAF_ID}`,
@@ -3226,32 +3231,26 @@ async function proveRectClip() {
     ];
     for (const id of droppedIds) assert.equal(nodeById(keptScene.tree, id), undefined, id);
     const keptLeaf = nodeById(keptScene.tree, CLIP_LEAF_ID);
-    const keptOuter = nodeById(keptScene.tree, CLIP_OUTER_ID);
     const keptInner = nodeById(keptScene.tree, CLIP_INNER_ID);
     const keptRecords = keptScene.paintRecords ?? [];
     assert.equal(keptRecords.length, 1);
     assert.equal(keptRecords[0].inspection.nodeId, keptLeaf.inspectionId);
     assert.deepEqual(keptRecords[0].bounds, projected.nested);
-    assert.deepEqual(keptRecords[0].surfaceProjection, {
-      boundaries: evidence.stateA.boundaries,
-      coverage: "rect-clipped-draw-quad",
-    });
-    assert.equal(Object.hasOwn(keptRecords[0], "clipProjection"), false);
-    const keptOuterCommand = (keptScene.commands ?? []).find(
-      (command) => command.inspection?.nodeId === keptOuter.inspectionId,
+    assert.equal(keptRecords[0].surfaceProjection.coverage, "rect-clipped-draw-quad");
+    const targetClip = assertNestedClipBoundaries(
+      keptScene,
+      keptRecords[0].surfaceProjection.boundaries,
+      "target",
     );
-    assert.ok(keptOuterCommand, "targeted subtree keeps the outer clip command");
-    assert.deepEqual(keptRecords[0].surfaceProjection.boundaries[1], {
-      occurrenceId: keptOuterCommand.inspection.id,
-      kind: "clip",
-      shape: "rect",
-    });
+    assert.equal(Object.hasOwn(keptRecords[0], "clipProjection"), false);
+    const keptNodeIds = ownerIdSet(keptScene);
     assert.equal(
       (keptScene.commands ?? []).some(
         (command) =>
           command.sharedId === CLIP_VIEW_ID ||
           command.matchId === CLIP_BG_ID ||
-          command.inspection?.nodeId === nodeById(stateA.document.scenes[0].tree, CLIP_VIEW_ID).inspectionId,
+          (typeof command.inspection?.nodeId === "number" &&
+            !keptNodeIds.has(command.inspection.nodeId)),
       ),
       false,
     );
@@ -3266,7 +3265,7 @@ async function proveRectClip() {
       keptRecords: 1,
       ownerId: keptLeaf.inspectionId,
       innerOwnerId: keptInner.inspectionId,
-      outerOccurrenceId: keptOuterCommand.inspection.id,
+      outerOccurrenceId: targetClip.outerOccurrenceId,
     };
 
     vite = await createProofServer({ port: CLIP_PORT, title: "Lane B rect clip" });
@@ -3338,20 +3337,9 @@ async function proveRectClip() {
       assertBoxRecord(blue, expected.blue, "content");
       assertBoxRecord(leaf, projected.nested, "content");
       assert.equal(background.surfaceProjection, null, label);
-      assert.deepEqual(red.surfaceProjection, {
-        boundaries: [{
-          occurrenceId: evidence.stateA.viewOccurrenceId,
-          kind: "clip",
-          shape: "rect",
-        }],
-        coverage: "rect-clipped-draw-quad",
-      });
-      assert.deepEqual(blue.surfaceProjection, red.surfaceProjection);
-      assert.deepEqual(leaf.surfaceProjection, {
-        boundaries: evidence.stateA.boundaries,
-        coverage: "rect-clipped-draw-quad",
-      });
-      assert.equal(leaf.surfaceProjection.boundaries.length, 2, label);
+      assertViewportClipPair(frame.report, label);
+      assert.equal(leaf.surfaceProjection.coverage, "rect-clipped-draw-quad", label);
+      assertNestedClipBoundaries(frame.report, leaf.surfaceProjection.boundaries, label);
       for (const record of frame.report.records)
         assert.equal(Object.hasOwn(record, "clipProjection"), false, label);
       assert.deepEqual(red.bounds, label.endsWith("B") ? evidence.stateB.red : evidence.stateA.red);
@@ -3451,6 +3439,220 @@ function inactiveMaskBounds(viewport, activeId) {
   };
 }
 
+function ownerIdSet(source) {
+  const owners = new Set();
+  if (source?.tree) {
+    walk(source.tree, (node) => {
+      if (typeof node.inspectionId === "number") owners.add(node.inspectionId);
+    });
+  } else {
+    for (const node of source?.nodes ?? [])
+      if (typeof node.inspectionId === "number") owners.add(node.inspectionId);
+  }
+  return owners;
+}
+
+function ownClipCommand(commands, node, label) {
+  const matches = (commands ?? []).filter(
+    (command) => command.inspection?.nodeId === node?.inspectionId,
+  );
+  assert.equal(matches.length, 1, label);
+  assert.equal(Number.isSafeInteger(matches[0].inspection?.id), true, label);
+  assert.notEqual(matches[0].inspection.id, node.inspectionId, label);
+  return matches[0];
+}
+
+/** Outer command is this report's. Unpublished inner is not borrowed from another report. */
+function assertNestedClipBoundaries(source, boundaries, label) {
+  const { nodes, commands } = surfaceView(source);
+  assert.equal(boundaries?.length, 2, label);
+  const ids = boundaries.map((boundary) => boundary.occurrenceId);
+  assert.notEqual(ids[0], ids[1], label);
+  for (const boundary of boundaries) {
+    assert.equal(boundary.kind, "clip", label);
+    assert.equal(boundary.shape, "rect", label);
+    assert.equal(
+      Number.isSafeInteger(boundary.occurrenceId) && boundary.occurrenceId >= 0,
+      true,
+      label,
+    );
+  }
+  const owners = ownerIdSet(source);
+  for (const id of ids) assert.equal(owners.has(id), false, label);
+  const outer = nodes.find((node) => node.id === CLIP_OUTER_ID);
+  const outerCommand = ownClipCommand(commands, outer, `${label} outer`);
+  assert.deepEqual(boundaries[1], {
+    occurrenceId: outerCommand.inspection.id,
+    kind: "clip",
+    shape: "rect",
+  }, label);
+  const inner = nodes.find((node) => node.id === CLIP_INNER_ID);
+  const innerMatches = commands.filter(
+    (command) => command.inspection?.nodeId === inner?.inspectionId,
+  );
+  assert.ok(innerMatches.length <= 1, label);
+  if (innerMatches.length === 1)
+    assert.deepEqual(boundaries[0], {
+      occurrenceId: innerMatches[0].inspection.id,
+      kind: "clip",
+      shape: "rect",
+    }, label);
+  else
+    assert.equal(
+      commands.some((command) => command.inspection?.id === ids[0]),
+      false,
+      label,
+    );
+  const view = nodes.find((node) => node.id === CLIP_VIEW_ID);
+  const viewCommand = commands.find(
+    (command) => command.inspection?.nodeId === view?.inspectionId,
+  );
+  if (viewCommand) assert.notEqual(ids[0], viewCommand.inspection.id, label);
+  return {
+    outerOccurrenceId: outerCommand.inspection.id,
+    innerOccurrenceId: ids[0],
+    innerCommandPublished: innerMatches.length === 1,
+  };
+}
+
+function assertViewportClipPair(source, label) {
+  const { nodes, records, commands } = surfaceView(source);
+  const view = nodes.find((node) => node.id === CLIP_VIEW_ID);
+  const red = nodes.find((node) => node.id === CLIP_RED_ID);
+  const blue = nodes.find((node) => node.id === CLIP_BLUE_ID);
+  const viewCommand = ownClipCommand(commands, view, `${label} view`);
+  const redRecord = recordOwnedBy(records, red);
+  const blueRecord = recordOwnedBy(records, blue);
+  assert.ok(redRecord && blueRecord, label);
+  assert.equal(redRecord.inspection.nodeId, red.inspectionId, label);
+  assert.equal(blueRecord.inspection.nodeId, blue.inspectionId, label);
+  const projection = {
+    boundaries: [{
+      occurrenceId: viewCommand.inspection.id,
+      kind: "clip",
+      shape: "rect",
+    }],
+    coverage: "rect-clipped-draw-quad",
+  };
+  assert.deepEqual(redRecord.surfaceProjection, projection, label);
+  assert.deepEqual(blueRecord.surfaceProjection, redRecord.surfaceProjection, label);
+  return viewCommand.inspection.id;
+}
+
+function syntheticClipReport(nodeSeed, occurrenceSeed, publishInner) {
+  const ids = {
+    view: nodeSeed + 1,
+    outer: nodeSeed + 2,
+    inner: nodeSeed + 3,
+    red: nodeSeed + 4,
+    blue: nodeSeed + 5,
+    leaf: nodeSeed + 6,
+    viewOccurrence: occurrenceSeed + 1,
+    outerOccurrence: occurrenceSeed + 2,
+    innerOccurrence: occurrenceSeed + 3,
+  };
+  const boundary = (occurrenceId) => ({
+    occurrenceId,
+    kind: "clip",
+    shape: "rect",
+  });
+  const commands = [
+    { inspection: { id: ids.viewOccurrence, nodeId: ids.view, role: "surface" } },
+    { inspection: { id: ids.outerOccurrence, nodeId: ids.outer, role: "surface" } },
+  ];
+  if (publishInner)
+    commands.push({
+      inspection: { id: ids.innerOccurrence, nodeId: ids.inner, role: "surface" },
+    });
+  return {
+    ids,
+    nodes: [
+      { id: CLIP_VIEW_ID, inspectionId: ids.view },
+      { id: CLIP_OUTER_ID, inspectionId: ids.outer },
+      { id: CLIP_INNER_ID, inspectionId: ids.inner },
+      { id: CLIP_RED_ID, inspectionId: ids.red },
+      { id: CLIP_BLUE_ID, inspectionId: ids.blue },
+      { id: CLIP_LEAF_ID, inspectionId: ids.leaf },
+    ],
+    commands,
+    records: [
+      {
+        inspection: { nodeId: ids.red, role: "content" },
+        surfaceProjection: {
+          boundaries: [boundary(ids.viewOccurrence)],
+          coverage: "rect-clipped-draw-quad",
+        },
+      },
+      {
+        inspection: { nodeId: ids.blue, role: "content" },
+        surfaceProjection: {
+          boundaries: [boundary(ids.viewOccurrence)],
+          coverage: "rect-clipped-draw-quad",
+        },
+      },
+      {
+        inspection: { nodeId: ids.leaf, role: "content" },
+        surfaceProjection: {
+          boundaries: [boundary(ids.innerOccurrence), boundary(ids.outerOccurrence)],
+          coverage: "rect-clipped-draw-quad",
+        },
+      },
+    ],
+  };
+}
+
+/** Fresh node and occurrence ids pass. A foreign published boundary or owner does not. */
+function assertClipIdIsolation() {
+  const reports = [
+    syntheticClipReport(100, 1000, true),
+    syntheticClipReport(200, 2000, true),
+    syntheticClipReport(300, 3000, false),
+  ];
+  const seen = [];
+  for (const [index, report] of reports.entries()) {
+    const label = `clip synthetic ${index}`;
+    const leaf = recordOwnedBy(
+      report.records,
+      report.nodes.find((node) => node.id === CLIP_LEAF_ID),
+    );
+    seen.push({
+      viewOccurrenceId: assertViewportClipPair(report, label),
+      ...assertNestedClipBoundaries(report, leaf.surfaceProjection.boundaries, label),
+      red: report.ids.red,
+      leaf: report.ids.leaf,
+    });
+  }
+  assert.notDeepEqual(seen[0], seen[1]);
+  assert.notEqual(seen[0].red, seen[1].red);
+  assert.notEqual(seen[0].leaf, seen[2].leaf);
+  assert.equal(seen[2].innerCommandPublished, false);
+  const boundaryMix = syntheticClipReport(400, 4000, true);
+  boundaryMix.records[2].surfaceProjection.boundaries[1] = {
+    occurrenceId: reports[0].ids.outerOccurrence,
+    kind: "clip",
+    shape: "rect",
+  };
+  assert.throws(
+    () =>
+      assertNestedClipBoundaries(
+        boundaryMix,
+        boundaryMix.records[2].surfaceProjection.boundaries,
+        "clip boundary mix",
+      ),
+    /clip boundary mix/,
+  );
+  const ownerMix = syntheticClipReport(500, 5000, true);
+  ownerMix.records[0] = {
+    ...ownerMix.records[0],
+    inspection: { nodeId: reports[0].ids.red, role: "content" },
+  };
+  assert.throws(
+    () => assertViewportClipPair(ownerMix, "clip owner mix"),
+    /clip owner mix/,
+  );
+  return { renumbered: seen.length, unpublishedInner: true, mixedRejected: true };
+}
+
 function assertMaskLeaf(record, bounds, shape, occurrenceId, label) {
   assert.equal(record.kind, "box", label);
   assert.equal(record.provenance, "projected-box-draw-quad", label);
@@ -3475,6 +3677,156 @@ function assertMaskLeaf(record, bounds, shape, occurrenceId, label) {
     assert.equal(Object.hasOwn(record, key), false, `${label}.${key}`);
     assert.equal(Object.hasOwn(record.surfaceProjection, key), false, `${label}.surface.${key}`);
   }
+}
+
+/** Occurrence and owner come from this report's viewport command and leaf node. */
+function ownMaskLeaf(source, viewport, activeId, label) {
+  const { nodes, records, commands } = surfaceView(source);
+  const view = nodes.find((node) => node.id === viewport.viewId);
+  const red = nodes.find((node) => node.id === viewport.redId);
+  const blue = nodes.find((node) => node.id === viewport.blueId);
+  assert.equal(typeof view?.inspectionId, "number", label);
+  assert.equal(typeof red?.inspectionId, "number", label);
+  assert.equal(typeof blue?.inspectionId, "number", label);
+  const matches = commands.filter(
+    (command) => command.inspection?.nodeId === view.inspectionId,
+  );
+  assert.equal(matches.length, 1, `${label} ${viewport.viewId}`);
+  const occurrenceId = matches[0].inspection.id;
+  assert.notEqual(occurrenceId, view.inspectionId, label);
+  const active = activeId === "red" ? red : blue;
+  const inactive = activeId === "red" ? blue : red;
+  const activeRecord = recordOwnedBy(records, active);
+  const inactiveRecord = recordOwnedBy(records, inactive);
+  assert.ok(activeRecord && inactiveRecord, `${label} ${viewport.viewId}`);
+  assertMaskLeaf(
+    activeRecord,
+    maskViewport(viewport),
+    viewport.shape,
+    occurrenceId,
+    `${label} ${viewport.viewId} active`,
+  );
+  assertMaskLeaf(
+    inactiveRecord,
+    inactiveMaskBounds(viewport, activeId),
+    viewport.shape,
+    occurrenceId,
+    `${label} ${viewport.viewId} inactive`,
+  );
+  assert.equal(activeRecord.inspection.nodeId, active.inspectionId, label);
+  assert.equal(inactiveRecord.inspection.nodeId, inactive.inspectionId, label);
+  assert.deepEqual(inactiveRecord.surfaceProjection, activeRecord.surfaceProjection, label);
+  return {
+    shape: viewport.shape,
+    viewId: viewport.viewId,
+    activeId: active.id,
+    activeBounds: activeRecord.bounds,
+    inactiveBounds: inactiveRecord.bounds,
+    geometryVisible: activeRecord.geometryVisible,
+    inactiveVisible: inactiveRecord.geometryVisible,
+    occurrenceId,
+    ownerId: active.inspectionId,
+    viewCommand: matches[0],
+  };
+}
+
+function syntheticMaskReport(nodeSeed, occurrenceSeed, activeId) {
+  const nodes = [];
+  const commands = [];
+  const records = [];
+  const ids = [];
+  for (const [index, viewport] of MASK_VIEWPORTS.entries()) {
+    const view = nodeSeed + index * 3 + 1;
+    const red = nodeSeed + index * 3 + 2;
+    const blue = nodeSeed + index * 3 + 3;
+    const occurrenceId = occurrenceSeed + index + 1;
+    nodes.push(
+      { id: viewport.viewId, inspectionId: view },
+      { id: viewport.redId, inspectionId: red },
+      { id: viewport.blueId, inspectionId: blue },
+    );
+    commands.push({
+      inspection: { id: occurrenceId, nodeId: view, role: "surface" },
+    });
+    const projection = {
+      boundaries: [{ occurrenceId, kind: "clip", shape: viewport.shape }],
+      coverage: "outer-clipped-draw-quad",
+    };
+    const record = (nodeId, bounds, geometryVisible) => ({
+      kind: "box",
+      provenance: "projected-box-draw-quad",
+      accuracy: "conservative",
+      space: "scene-target-pixels",
+      resolution: [...OUTPUT],
+      geometryVisible,
+      paintRole: "content",
+      inspection: { nodeId, role: "content" },
+      bounds,
+      surfaceProjection: projection,
+    });
+    records.push(
+      record(
+        activeId === "red" ? red : blue,
+        maskViewport(viewport),
+        true,
+      ),
+      record(
+        activeId === "red" ? blue : red,
+        inactiveMaskBounds(viewport, activeId),
+        false,
+      ),
+    );
+    ids.push({ view, red, blue, occurrenceId });
+  }
+  return { nodes, commands, records, ids };
+}
+
+/** Fresh node and occurrence ids pass. A foreign boundary or owner does not. */
+function assertMaskIdIsolation() {
+  const reports = [
+    syntheticMaskReport(100, 1000, "red"),
+    syntheticMaskReport(200, 2000, "blue"),
+    syntheticMaskReport(300, 3000, "red"),
+  ];
+  const seen = [];
+  for (const [index, report] of reports.entries()) {
+    const activeId = index === 1 ? "blue" : "red";
+    seen.push(
+      MASK_VIEWPORTS.map((viewport) => {
+        const leaf = ownMaskLeaf(report, viewport, activeId, `mask synthetic ${index}`);
+        return { occurrenceId: leaf.occurrenceId, ownerId: leaf.ownerId };
+      }),
+    );
+  }
+  assert.notDeepEqual(seen[0], seen[1]);
+  assert.notDeepEqual(seen[0], seen[2]);
+  assert.notEqual(seen[0][0].ownerId, seen[2][0].ownerId);
+  const boundaryMix = syntheticMaskReport(400, 4000, "red");
+  boundaryMix.records[0] = {
+    ...boundaryMix.records[0],
+    surfaceProjection: {
+      coverage: "outer-clipped-draw-quad",
+      boundaries: [{
+        occurrenceId: reports[0].ids[0].occurrenceId,
+        kind: "clip",
+        shape: "rounded",
+      }],
+    },
+  };
+  assert.throws(
+    () => ownMaskLeaf(boundaryMix, MASK_VIEWPORTS[0], "red", "mask boundary mix"),
+    /mask boundary mix/,
+  );
+  const ownerMix = syntheticMaskReport(500, 5000, "red");
+  ownerMix.records[0] = {
+    ...ownerMix.records[0],
+    inspection: { nodeId: reports[1].ids[0].red, role: "content" },
+  };
+  assert.throws(
+    () => ownMaskLeaf(ownerMix, MASK_VIEWPORTS[0], "red", "mask owner mix"),
+    /mask owner mix/,
+  );
+  return { renumbered: seen.length, mixedRejected: true };
 }
 
 /**
@@ -3521,6 +3873,7 @@ async function proveMaskFamilies() {
       alpha: "samples compare RGBA, including alpha; opaque coverage is not assumed",
     },
   };
+  evidence.selfCheck = assertMaskIdIsolation();
   let browser;
   let vite;
   try {
@@ -3654,53 +4007,11 @@ async function proveMaskFamilies() {
       });
       const leaves = [];
       for (const viewport of MASK_VIEWPORTS) {
-        const bounds = maskViewport(viewport);
-        const red = nodeById(scene.tree, viewport.redId);
-        const blue = nodeById(scene.tree, viewport.blueId);
-        const view = nodeById(scene.tree, viewport.viewId);
-        assert.ok(red?.inspectionId !== undefined, viewport.redId);
-        assert.ok(blue?.inspectionId !== undefined, viewport.blueId);
-        assert.ok(view?.inspectionId !== undefined, viewport.viewId);
-        const redRecord = recordOwnedBy(records, red);
-        const blueRecord = recordOwnedBy(records, blue);
-        const active = activeId === "red" ? red : blue;
-        const activeRecord = activeId === "red" ? redRecord : blueRecord;
-        const inactiveRecord = activeId === "red" ? blueRecord : redRecord;
-        const viewCommand = (scene.commands ?? []).find(
-          (command) => command.inspection?.nodeId === view.inspectionId,
-        );
-        assert.ok(viewCommand, `${label} ${viewport.viewId} command`);
-        assert.equal(Object.hasOwn(viewCommand, "url"), false, label);
-        assert.equal(Object.hasOwn(viewCommand, "imageMask"), false, label);
-        const occurrenceId = viewCommand.inspection.id;
-        assertMaskLeaf(
-          activeRecord,
-          bounds,
-          viewport.shape,
-          occurrenceId,
-          `${label} ${viewport.viewId} active`,
-        );
-        assertMaskLeaf(
-          inactiveRecord,
-          inactiveMaskBounds(viewport, activeId),
-          viewport.shape,
-          occurrenceId,
-          `${label} ${viewport.viewId} inactive`,
-        );
-        assert.equal(activeRecord.inspection.nodeId, active.inspectionId, label);
-        assert.deepEqual(inactiveRecord.surfaceProjection, activeRecord.surfaceProjection);
-        assert.notEqual(occurrenceId, view.inspectionId);
-        leaves.push({
-          shape: viewport.shape,
-          viewId: viewport.viewId,
-          activeId: active.id,
-          activeBounds: activeRecord.bounds,
-          inactiveBounds: inactiveRecord.bounds,
-          geometryVisible: activeRecord.geometryVisible,
-          inactiveVisible: inactiveRecord.geometryVisible,
-          occurrenceId,
-          ownerId: active.inspectionId,
-        });
+        const leaf = ownMaskLeaf(scene, viewport, activeId, label);
+        assert.equal(Object.hasOwn(leaf.viewCommand, "url"), false, label);
+        assert.equal(Object.hasOwn(leaf.viewCommand, "imageMask"), false, label);
+        delete leaf.viewCommand;
+        leaves.push(leaf);
       }
       return leaves;
     };
@@ -3708,10 +4019,8 @@ async function proveMaskFamilies() {
     const stateB = await inspectAt(MASK_TIME_B);
     evidence.stateA = readState(stateA, "A", "red");
     evidence.stateB = readState(stateB, "B", "blue");
-    assert.deepEqual(
-      evidence.stateA.map((leaf) => leaf.occurrenceId),
-      evidence.stateB.map((leaf) => leaf.occurrenceId),
-    );
+    evidence.occurrenceNote =
+      "Evaluation-local. CLI A/B, target, and browser ids are not required to match.";
     assert.deepEqual(
       evidence.stateA.map((leaf) => leaf.activeId),
       MASK_VIEWPORTS.map((viewport) => viewport.redId),
@@ -3844,36 +4153,15 @@ async function proveMaskFamilies() {
         (record) => record.inspection?.nodeId === node?.inspectionId,
       );
     };
-    for (const [frame, label, activeId, cliLeaves] of [
-      [seqA, "browser A", "red", evidence.stateA],
-      [seqB, "browser B", "blue", evidence.stateB],
-      [seqA2, "browser A2", "red", evidence.stateA],
+    for (const [frame, label, activeId] of [
+      [seqA, "browser A", "red"],
+      [seqB, "browser B", "blue"],
+      [seqA2, "browser A2", "red"],
     ]) {
       assert.equal(frame.report.sceneId, "mask", label);
       assert.equal(frame.report.records.length, 1 + MASK_VIEWPORTS.length * 2, label);
-      for (const [index, viewport] of MASK_VIEWPORTS.entries()) {
-        const red = owned(frame, viewport.redId);
-        const blue = owned(frame, viewport.blueId);
-        const active = activeId === "red" ? red : blue;
-        const inactive = activeId === "red" ? blue : red;
-        const occurrenceId = cliLeaves[index].occurrenceId;
-        assertMaskLeaf(
-          active,
-          maskViewport(viewport),
-          viewport.shape,
-          occurrenceId,
-          `${label} ${viewport.viewId}`,
-        );
-        assertMaskLeaf(
-          inactive,
-          inactiveMaskBounds(viewport, activeId),
-          viewport.shape,
-          occurrenceId,
-          `${label} ${viewport.viewId} inactive`,
-        );
-        assert.equal(active.inspection.nodeId, cliLeaves[index].ownerId);
-        assert.equal(inactive.surfaceProjection.boundaries[0].occurrenceId, occurrenceId);
-      }
+      for (const viewport of MASK_VIEWPORTS)
+        ownMaskLeaf(frame.report, viewport, activeId, label);
       assert.equal(owned(frame, MASK_BG_ID).surfaceProjection, null, label);
       for (const record of frame.report.records)
         assert.equal(Object.hasOwn(record, "clipProjection"), false, label);
@@ -3941,6 +4229,655 @@ async function proveMaskFamilies() {
     );
   }
   return evidence;
+}
+
+function assertSurfaceLeaf(record, bounds, kind, occurrenceId, label) {
+  assert.equal(record.kind, "box", label);
+  assert.equal(record.provenance, "projected-box-draw-quad", label);
+  assert.equal(record.accuracy, "exact-rectangle", label);
+  assert.equal(record.space, "scene-target-pixels", label);
+  assert.deepEqual([...record.resolution], [320, 180], label);
+  assert.equal(record.geometryVisible, true, label);
+  assert.equal(record.paintRole, "content", label);
+  assert.equal(record.inspection?.role, "content", label);
+  assertQuadEqual(record.bounds, bounds, label);
+  const projection = record.surfaceProjection;
+  assert.equal(projection?.coverage, "rect-clipped-draw-quad", label);
+  assert.equal(projection.boundaries.length, 1, label);
+  assert.deepEqual(projection.boundaries[0], { occurrenceId, kind }, label);
+  assert.equal(Object.hasOwn(projection.boundaries[0], "shape"), false, label);
+  assert.deepEqual(Object.keys(projection).sort(), ["boundaries", "coverage"], label);
+  for (const key of ["clipProjection", "shape", "url", "imageMask", "mask"])
+    assert.equal(Object.hasOwn(record, key), false, `${label}.${key}`);
+}
+
+/** Nodes, paint records, and commands of one evaluation. IDs are not taken from another report. */
+function surfaceView(source) {
+  const nodes = [];
+  if (Array.isArray(source.nodes)) {
+    for (const node of source.nodes)
+      nodes.push({
+        id: node.id,
+        inspectionId: node.inspectionId,
+        space: node.space,
+      });
+  } else {
+    walk(source.tree, (node) => {
+      if (node.id)
+        nodes.push({
+          id: node.id,
+          inspectionId: node.inspectionId,
+          space: node.space,
+        });
+    });
+  }
+  return {
+    nodes,
+    records: source.records ?? source.paintRecords ?? [],
+    commands: source.commands ?? [],
+  };
+}
+
+function ownSurfaceCommand(commands, surfaceNode, kind, label) {
+  const matches = commands.filter(
+    (command) =>
+      command.kind === kind &&
+      command.inspection?.role === "surface" &&
+      command.inspection?.nodeId === surfaceNode?.inspectionId,
+  );
+  assert.equal(matches.length, 1, `${label} ${kind} command`);
+  assert.equal(typeof matches[0].inspection.id, "number", label);
+  assert.notEqual(matches[0].inspection.id, surfaceNode.inspectionId, label);
+  return matches[0];
+}
+
+/** Boundaries, kinds, owners, and the shared composition occurrence of this report only. */
+function assertFullSurfaceReport(source, atB, label) {
+  const { nodes, records, commands } = surfaceView(source);
+  assert.equal(records.length, SURFACE_CARDS.length, label);
+  assert.equal(
+    records.some((record) => record.kind === "group" || record.kind === "composition"),
+    false,
+    `${label} placeholder`,
+  );
+  assert.equal(
+    new Set(records.map((record) => record.inspection?.nodeId)).size,
+    records.length,
+    label,
+  );
+  const groupNode = nodes.find((node) => node.id === "group-surface");
+  const compositionNode = nodes.find((node) => node.id === "composition-surface");
+  const groupCommand = ownSurfaceCommand(commands, groupNode, "group", label);
+  const compositionCommand = ownSurfaceCommand(
+    commands,
+    compositionNode,
+    "composition",
+    label,
+  );
+  assert.equal(commands.filter((command) => command.kind === "group").length, 1, label);
+  assert.equal(
+    commands.filter((command) => command.kind === "composition").length,
+    1,
+    label,
+  );
+  const world = nodes.find((node) => node.id === "world-card");
+  const overlay = nodes.find((node) => node.id === "overlay-card");
+  assert.notEqual(world?.space, overlay?.space, label);
+  assert.match(world.space, /\/world$/, label);
+  assert.match(overlay.space, /\/overlay$/, label);
+  const leaves = [];
+  for (const card of SURFACE_CARDS) {
+    const node = nodes.find((entry) => entry.id === card.id);
+    const surface = nodes.find((entry) => entry.id === card.surfaceId);
+    const record = recordOwnedBy(records, node);
+    const occurrenceId = (
+      card.kind === "group" ? groupCommand : compositionCommand
+    ).inspection.id;
+    assert.equal(
+      surface?.inspectionId,
+      (card.kind === "group" ? groupNode : compositionNode).inspectionId,
+      label,
+    );
+    assertSurfaceLeaf(record, atB ? card.b : card.a, card.kind, occurrenceId, `${label} ${card.id}`);
+    assert.equal(record.inspection.nodeId, node.inspectionId, label);
+    assert.equal(record.inspection.role, "content", label);
+    assert.notEqual(occurrenceId, node.inspectionId, label);
+    assert.equal(recordOwnedBy(records, surface), undefined, `${label} ${card.surfaceId}`);
+    leaves.push({
+      id: card.id,
+      bounds: { ...record.bounds },
+      occurrenceId,
+      ownerId: node.inspectionId,
+      role: record.inspection.role,
+      space: node.space ?? "layout",
+    });
+  }
+  assert.equal(leaves[1].occurrenceId, leaves[2].occurrenceId, label);
+  assert.notEqual(leaves[0].occurrenceId, leaves[1].occurrenceId, label);
+  return leaves;
+}
+
+/** One targeted card. The occurrence id is that target report's surface command, not a sibling render. */
+function assertTargetedSurfaceReport(source, card, bounds, label) {
+  const { nodes, records, commands } = surfaceView(source);
+  assert.equal(records.length, 1, label);
+  const owner = nodes.find((node) => node.id === card.id);
+  const surface = nodes.find((node) => node.id === card.surfaceId);
+  const command = ownSurfaceCommand(commands, surface, card.kind, label);
+  const record = recordOwnedBy(records, owner);
+  assertSurfaceLeaf(record, bounds, card.kind, command.inspection.id, label);
+  assert.equal(record.inspection.nodeId, owner.inspectionId, label);
+  assert.equal(command.inspection.role, "surface", label);
+  assert.equal(recordOwnedBy(records, surface), undefined, label);
+  return {
+    occurrenceId: command.inspection.id,
+    ownerId: owner.inspectionId,
+    role: command.inspection.role,
+  };
+}
+
+function syntheticSurfaceRecord(nodeId, occurrenceId, kind, bounds) {
+  return {
+    kind: "box",
+    provenance: "projected-box-draw-quad",
+    accuracy: "exact-rectangle",
+    space: "scene-target-pixels",
+    resolution: [320, 180],
+    geometryVisible: true,
+    paintRole: "content",
+    inspection: { id: nodeId + 7, nodeId, role: "content" },
+    bounds: { ...bounds },
+    surfaceProjection: {
+      boundaries: [{ occurrenceId, kind }],
+      coverage: "rect-clipped-draw-quad",
+    },
+  };
+}
+
+function syntheticSurfaceReport(seed, atB) {
+  const groupSurface = seed + 1;
+  const compositionSurface = seed + 2;
+  const owners = {
+    "group-card": seed + 3,
+    "world-card": seed + 4,
+    "overlay-card": seed + 5,
+  };
+  const groupOccurrence = seed + 10;
+  const compositionOccurrence = seed + 20;
+  const nodes = [
+    { id: "group-surface", inspectionId: groupSurface, space: "layout" },
+    { id: "group-card", inspectionId: owners["group-card"], space: "layout" },
+    { id: "composition-surface", inspectionId: compositionSurface, space: "layout" },
+    {
+      id: "world-card",
+      inspectionId: owners["world-card"],
+      space: "composition-surface/world",
+    },
+    {
+      id: "overlay-card",
+      inspectionId: owners["overlay-card"],
+      space: "composition-surface/overlay",
+    },
+  ];
+  const commands = [
+    {
+      kind: "group",
+      inspection: { id: groupOccurrence, nodeId: groupSurface, role: "surface" },
+    },
+    {
+      kind: "composition",
+      inspection: {
+        id: compositionOccurrence,
+        nodeId: compositionSurface,
+        role: "surface",
+      },
+    },
+  ];
+  const records = SURFACE_CARDS.map((card) =>
+    syntheticSurfaceRecord(
+      owners[card.id],
+      card.kind === "group" ? groupOccurrence : compositionOccurrence,
+      card.kind,
+      atB ? card.b : card.a,
+    ),
+  );
+  return { nodes, commands, records };
+}
+
+function syntheticTarget(report, card) {
+  const owner = report.nodes.find((node) => node.id === card.id);
+  const surface = report.nodes.find((node) => node.id === card.surfaceId);
+  return {
+    nodes: [owner, surface],
+    records: [report.records.find((record) => record.inspection.nodeId === owner.inspectionId)],
+    commands: [
+      report.commands.find((command) => command.inspection.nodeId === surface.inspectionId),
+    ],
+  };
+}
+
+/** Renumbered renders must pass independently. A boundary stamped with another render's id must not. */
+function assertSurfaceOccurrenceIsolation() {
+  const renders = [1, 2, 3].map((n) => syntheticSurfaceReport(n * 1000, n === 2));
+  const ids = [];
+  for (const [index, report] of renders.entries()) {
+    const atB = index === 1;
+    const leaves = assertFullSurfaceReport(report, atB, `synthetic ${index}`);
+    ids.push(leaves.map((leaf) => leaf.occurrenceId));
+    for (const card of SURFACE_CARDS)
+      assertTargetedSurfaceReport(
+        syntheticTarget(report, card),
+        card,
+        atB ? card.b : card.a,
+        `synthetic target ${index} ${card.id}`,
+      );
+  }
+  assert.notDeepEqual(ids[0], ids[1]);
+  assert.notDeepEqual(ids[1], ids[2]);
+  assert.notDeepEqual(ids[0], ids[2]);
+  const mixed = syntheticSurfaceReport(4000, false);
+  mixed.records[0] = {
+    ...mixed.records[0],
+    surfaceProjection: {
+      coverage: "rect-clipped-draw-quad",
+      boundaries: [{ occurrenceId: ids[0][0], kind: "group" }],
+    },
+  };
+  assert.throws(
+    () => assertFullSurfaceReport(mixed, false, "cross-report mix"),
+    /cross-report mix/,
+  );
+  const targetMix = syntheticTarget(renders[1], SURFACE_CARDS[0]);
+  targetMix.records[0] = {
+    ...targetMix.records[0],
+    surfaceProjection: {
+      coverage: "rect-clipped-draw-quad",
+      boundaries: [{ occurrenceId: ids[0][0], kind: "group" }],
+    },
+  };
+  assert.throws(
+    () =>
+      assertTargetedSurfaceReport(
+        targetMix,
+        SURFACE_CARDS[0],
+        SURFACE_CARDS[0].b,
+        "target mix",
+      ),
+    /target mix/,
+  );
+  return { ids, mixedRejected: true };
+}
+
+/**
+ * One Group and one Composition, not nested. Expected quads are the recipe table.
+ * Named samples are not coverage, and a Group command is not a second leaf.
+ */
+async function proveNativeSurfaces() {
+  const startedAt = new Date().toISOString();
+  assert.deepEqual(SURFACE_GROUP_A, {
+    x: 5 + 20,
+    y: 5 + 20,
+    width: 20,
+    height: 10,
+  });
+  assert.deepEqual(SURFACE_GROUP_B, {
+    x: 5 + 30,
+    y: 5 + 20,
+    width: 20,
+    height: 10,
+  });
+  assert.deepEqual(SURFACE_WORLD_A, {
+    x: 20 - 10 + 100,
+    y: 20 + 0 + 30,
+    width: 10,
+    height: 10,
+  });
+  assert.deepEqual(SURFACE_WORLD_B, {
+    x: 30 - 10 + 100,
+    y: 20 + 0 + 30,
+    width: 10,
+    height: 10,
+  });
+  assert.deepEqual(SURFACE_OVERLAY, {
+    x: 45 + 100,
+    y: 10 + 30,
+    width: 10,
+    height: 10,
+  });
+  assert.equal(SURFACE_WORLD_B.x - SURFACE_WORLD_A.x, 10);
+  assert.equal(SURFACE_GROUP_B.x - SURFACE_GROUP_A.x, 10);
+  assert.deepEqual(SURFACE_OVERLAY, SURFACE_CARDS[2].b);
+  assert.notEqual(SURFACE_WORLD_A.x, SURFACE_OVERLAY.x);
+  assert.notEqual(SURFACE_WORLD_A.y, SURFACE_OVERLAY.y);
+  for (const card of SURFACE_CARDS) {
+    assert.ok(insideMargin(card.a, card.sampleA) >= 4, card.id);
+    assert.ok(insideMargin(card.b, card.sampleB) >= 4, `${card.id} B`);
+    assert.ok(outsideMargin(card.b, SURFACE_SAMPLE_BG) >= 8, card.id);
+  }
+  assert.ok(outsideMargin(SURFACE_GROUP_B, SURFACE_SAMPLE_GROUP_A) >= 4);
+  assert.ok(outsideMargin(SURFACE_WORLD_B, SURFACE_SAMPLE_WORLD_A) >= 4);
+  const evidence = {
+    fixture: "scripts/inspect-fixture/manifest-surface.mjs",
+    startedAt,
+    port: SURFACE_PORT,
+    schema: "surfaceProjection",
+    output: [320, 180],
+    recipe: {
+      groupA: SURFACE_GROUP_A,
+      groupB: SURFACE_GROUP_B,
+      worldA: SURFACE_WORLD_A,
+      worldB: SURFACE_WORLD_B,
+      overlay: SURFACE_OVERLAY,
+      note: "Table from the surface contract. Not derived from a report.",
+    },
+    assets: "n/a",
+    g3: "not-claimed",
+    g7: {
+      productionCounters: "unavailable",
+      renderPassReuse: "not-measured",
+      textureReuse: "not-measured",
+      reason:
+        "G7 requires engine instrumentation. This script does not estimate passes or texture reuse.",
+    },
+    limits: {
+      quad: "ideal draw quad, not fragment coverage or a background fill",
+      samples: "named interiors and vacated points only; not edge or coverage proof",
+      occurrenceIds:
+        "Evaluation-local. Not compared across CLI A/B, targets, browser frames, or processes.",
+    },
+    occurrenceIds: {
+      note: "Each list is that report's own command ids. Equality across lists is not a contract.",
+      cliA: null,
+      cliB: null,
+      targets: [],
+      browser: {},
+    },
+  };
+  evidence.selfCheck = assertSurfaceOccurrenceIsolation();
+  let browser;
+  let vite;
+  try {
+    const fixtureSource = await readFile(
+      join(template, "manifest-surface.mjs"),
+      "utf8",
+    );
+    for (const needle of [
+      '.padding(5)',
+      "width: 20, height: 10",
+      "#ff0000",
+      "localTime >= 0.5 ? 30 : 20, 20",
+      "size: [80, 60]",
+      "Camera({ x: 10, y: 0, anchor: [0, 0] })",
+      ".offset(45, 10)",
+      ".offset(100, 30)",
+      'id: "surface"',
+      "#000000",
+      "#00ff00",
+      "#0000ff",
+      "[320, 180]",
+      "TIME_A = 0",
+      "TIME_B = 1",
+      'id("world-card")',
+      'id("overlay-card")',
+      'id("group-card")',
+      'id("group-surface")',
+      'id("composition-surface")',
+      "duration: 2",
+      "aspectRatio: [16, 9]",
+    ])
+      assert.ok(fixtureSource.includes(needle), `manifest-surface.mjs missing ${needle}`);
+    assert.equal(fixtureSource.includes("--space"), false);
+    await createConsumer(surfaceConsumer, "manifest-surface.mjs");
+    const inspectAt = (time, extra = []) =>
+      inspectJson([
+        "inspect",
+        "--project",
+        surfaceConsumer,
+        "--time",
+        String(time),
+        ...extra,
+      ]);
+    const readState = (result, label, atB) => {
+      assert.equal(result.raw.includes("clipProjection"), false, label);
+      assert.equal(result.args.includes("--space"), false, label);
+      const { document } = result;
+      assert.equal(document.capability.geometry.paint, "partial", label);
+      assert.equal(document.capability.transitions.projection, "unavailable", label);
+      assert.match(document.capability.transitions.reason, /G3/, label);
+      assert.equal(document.scenes.length, 1, label);
+      const scene = document.scenes[0];
+      assert.equal(scene.scope, SURFACE_SCOPE, label);
+      assert.equal(scene.clock.time, atB ? SURFACE_TIME_B : SURFACE_TIME_A, label);
+      assert.equal(scene.clock.localTime, scene.clock.time, label);
+      assert.equal(scene.clock.progress, atB ? 0.5 : 0, label);
+      const records = scene.paintRecords ?? [];
+      assert.equal(records.length, SURFACE_CARDS.length, label);
+      const world = nodeById(scene.tree, "world-card");
+      const overlay = nodeById(scene.tree, "overlay-card");
+      assert.ok(scene.spaces.includes(world.space), label);
+      assert.ok(scene.spaces.includes(overlay.space), label);
+      const leaves = assertFullSurfaceReport(scene, atB, label);
+      return {
+        clock: scene.clock,
+        spaces: [...scene.spaces],
+        leaves,
+      };
+    };
+    const stateA = await inspectAt(SURFACE_TIME_A);
+    const stateB = await inspectAt(SURFACE_TIME_B);
+    evidence.stateA = readState(stateA, "A", false);
+    evidence.stateB = readState(stateB, "B", true);
+    evidence.occurrenceIds.cliA = evidence.stateA.leaves.map((leaf) => ({
+      id: leaf.id,
+      occurrenceId: leaf.occurrenceId,
+      ownerId: leaf.ownerId,
+    }));
+    evidence.occurrenceIds.cliB = evidence.stateB.leaves.map((leaf) => ({
+      id: leaf.id,
+      occurrenceId: leaf.occurrenceId,
+      ownerId: leaf.ownerId,
+    }));
+    assertFloat32Close(
+      evidence.stateB.leaves[1].bounds.x - evidence.stateA.leaves[1].bounds.x,
+      10,
+      "world camera shift",
+    );
+    assertFloat32Close(
+      evidence.stateB.leaves[2].bounds.x - evidence.stateA.leaves[2].bounds.x,
+      0,
+      "overlay ignores world camera",
+    );
+    const spaceTarget = await run([
+      "inspect",
+      "--project",
+      surfaceConsumer,
+      "--time",
+      String(SURFACE_TIME_A),
+      "--target",
+      "scene:surface/world#world-card",
+    ]);
+    assert.equal(spaceTarget.code, 1, spaceTarget.stderr);
+    assert.equal(spaceTarget.stdout, "");
+    evidence.targets = [];
+    for (const card of SURFACE_CARDS) {
+      const targeted = await inspectAt(SURFACE_TIME_A, [
+        "--target",
+        `${SURFACE_SCOPE}#${card.id}`,
+      ]);
+      assert.equal(targeted.args.includes("--space"), false);
+      assert.deepEqual(Object.keys(targeted.document.target).sort(), [
+        "id",
+        "matches",
+        "path",
+        "scope",
+      ]);
+      assert.equal(targeted.document.target.scope, SURFACE_SCOPE);
+      assert.equal(targeted.document.target.id, card.id);
+      assert.equal(targeted.document.target.matches, 1);
+      const kept = targeted.document.scenes[0];
+      const keptIds = idsOf(kept.tree).sort();
+      assert.deepEqual(keptIds, [card.id, card.surfaceId].sort());
+      for (const other of SURFACE_CARDS)
+        if (other.id !== card.id)
+          assert.equal(nodeById(kept.tree, other.id), undefined, other.id);
+      const keptRecords = kept.paintRecords ?? [];
+      assert.equal(keptRecords.length, 1);
+      const owned = assertTargetedSurfaceReport(kept, card, card.a, card.id);
+      evidence.targets.push({
+        ...targeted.document.target,
+        keptIds,
+        ownerId: owned.ownerId,
+        occurrenceId: owned.occurrenceId,
+        role: owned.role,
+      });
+      evidence.occurrenceIds.targets.push({
+        id: card.id,
+        occurrenceId: owned.occurrenceId,
+        ownerId: owned.ownerId,
+      });
+    }
+
+    vite = await createProofServer({
+      port: SURFACE_PORT,
+      title: "Lane B native surfaces",
+    });
+    browser = await launchProofBrowser();
+    const page = await openProofPage(browser, vite);
+    const browserErrors = page.proofErrors;
+    const captured = await page.evaluate(captureFlatSequence, {
+      modulePath: "/scripts/inspect-fixture/manifest-surface.mjs",
+      inspect: true,
+    });
+    assert.deepEqual(captured.steps, [
+      "calibrate-a",
+      "calibrate-a-repeat",
+      "tolerance-recorded",
+      "sequence-a",
+      "sequence-b",
+      "sequence-a",
+    ]);
+    const { cal1, cal2, seqA, seqB, seqA2 } = captured.frames;
+    for (const frame of [cal1, cal2, seqA, seqB, seqA2])
+      assert.deepEqual([frame.width, frame.height], [320, 180]);
+    const tolerance = maxChannelDelta(cal1.pixels, cal2.pixels);
+    assert.equal(tolerance, captured.tolerance);
+    const gap = Math.min(
+      maxChannelDelta(SURFACE_RED, SURFACE_BLACK),
+      maxChannelDelta(SURFACE_GREEN, SURFACE_BLACK),
+      maxChannelDelta(SURFACE_BLUE, SURFACE_BLACK),
+      maxChannelDelta(SURFACE_RED, SURFACE_GREEN),
+      maxChannelDelta(SURFACE_GREEN, SURFACE_BLUE),
+    );
+    assert.ok(tolerance < gap, `tolerance ${tolerance} gap ${gap}`);
+    const deltas = {
+      calibration: tolerance,
+      sequenceAToCalibration: maxChannelDelta(seqA.pixels, cal1.pixels),
+      sequenceARepeatToCalibration: maxChannelDelta(seqA2.pixels, cal1.pixels),
+      sequenceAToSequenceA: maxChannelDelta(seqA.pixels, seqA2.pixels),
+      sequenceAToSequenceB: maxChannelDelta(seqA.pixels, seqB.pixels),
+    };
+    assert.ok(deltas.sequenceAToCalibration <= tolerance);
+    assert.ok(deltas.sequenceARepeatToCalibration <= tolerance);
+    assert.ok(deltas.sequenceAToSequenceA <= tolerance);
+    assert.ok(deltas.sequenceAToSequenceB > tolerance);
+    for (const [frame, label, atB] of [
+      [cal1, "cal1", false],
+      [cal2, "cal2", false],
+      [seqA, "seqA", false],
+      [seqB, "seqB", true],
+      [seqA2, "seqA2", false],
+    ]) {
+      assert.equal(frame.report.sceneId, "surface", label);
+      const leaves = assertFullSurfaceReport(frame.report, atB, label);
+      evidence.occurrenceIds.browser[label] = leaves.map((leaf) => ({
+        id: leaf.id,
+        occurrenceId: leaf.occurrenceId,
+        ownerId: leaf.ownerId,
+      }));
+    }
+    const sample = (pixels, point, expected, label) =>
+      assertNear(samplePixel(pixels, point), expected, tolerance, label);
+    for (const [pixels, label] of [
+      [cal1.pixels, "cal1"],
+      [seqA.pixels, "seqA"],
+      [seqA2.pixels, "seqA2"],
+    ]) {
+      sample(pixels, SURFACE_SAMPLE_GROUP_A, SURFACE_RED, `${label} group`);
+      sample(pixels, SURFACE_SAMPLE_WORLD_A, SURFACE_GREEN, `${label} world`);
+      sample(pixels, SURFACE_SAMPLE_OVERLAY, SURFACE_BLUE, `${label} overlay`);
+      sample(pixels, SURFACE_SAMPLE_BG, SURFACE_BLACK, `${label} background`);
+    }
+    sample(seqB.pixels, SURFACE_SAMPLE_GROUP_B, SURFACE_RED, "seqB group");
+    sample(seqB.pixels, SURFACE_SAMPLE_GROUP_A, SURFACE_BLACK, "seqB vacated group");
+    sample(seqB.pixels, SURFACE_SAMPLE_WORLD_B, SURFACE_GREEN, "seqB world");
+    sample(seqB.pixels, SURFACE_SAMPLE_WORLD_A, SURFACE_BLACK, "seqB vacated world");
+    sample(seqB.pixels, SURFACE_SAMPLE_OVERLAY, SURFACE_BLUE, "seqB overlay");
+    sample(seqB.pixels, SURFACE_SAMPLE_BG, SURFACE_BLACK, "seqB background");
+    assert.deepEqual(browserErrors, []);
+    assert.deepEqual(captured.renderErrors, []);
+    evidence.pixels = {
+      tolerance,
+      gap,
+      deltas,
+      samples: {
+        groupA: SURFACE_SAMPLE_GROUP_A,
+        groupB: SURFACE_SAMPLE_GROUP_B,
+        worldA: SURFACE_SAMPLE_WORLD_A,
+        worldB: SURFACE_SAMPLE_WORLD_B,
+        overlay: SURFACE_SAMPLE_OVERLAY,
+        background: SURFACE_SAMPLE_BG,
+      },
+      note: "Named interiors only. Not background coverage and not an edge claim.",
+    };
+    evidence.gpu = captured.gpu;
+    evidence.gpuError = captured.gpuError;
+    evidence.userAgent = captured.userAgent;
+    await mkdir(reports, { recursive: true });
+    await writeFile(join(reports, "surface-a.png"), Buffer.from(seqA.png, "base64"));
+    await writeFile(join(reports, "surface-b.png"), Buffer.from(seqB.png, "base64"));
+    evidence.artifacts = {
+      a: "artifacts/g1b/reports/surface-a.png",
+      b: "artifacts/g1b/reports/surface-b.png",
+      report: "artifacts/g1b/reports/surface-pixel-proof.json",
+      nativeAssetSha256: "n/a",
+    };
+  } catch (error) {
+    evidence.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    evidence.finishedAt = new Date().toISOString();
+    await browser?.close();
+    await vite?.close();
+    await mkdir(reports, { recursive: true });
+    await writeFile(
+      join(reports, "surface-pixel-proof.json"),
+      JSON.stringify(evidence, null, 2),
+    );
+  }
+  return evidence;
+}
+
+// shortcut: surface-only entry so this lane can rerun without the transition GPU suite; remove if the suite grows a real selector.
+if (process.env.RITWEEN_SURFACE_PROOF === "1") {
+  try {
+    const evidence = await proveNativeSurfaces();
+    console.log(
+      JSON.stringify({
+        ok: true,
+        occurrenceIds: evidence.occurrenceIds,
+        limits: evidence.limits,
+        selfCheck: evidence.selfCheck,
+        pixels: evidence.pixels && {
+          tolerance: evidence.pixels.tolerance,
+          deltas: evidence.pixels.deltas,
+        },
+        gpuError: evidence.gpuError,
+      }),
+    );
+  } finally {
+    handshakeServer.close();
+  }
+  process.exit(0);
 }
 
 const findings = {};
@@ -4500,6 +5437,7 @@ try {
   findings.videoProof = await proveFlatVideo();
   findings.clipProof = await proveRectClip();
   findings.maskProof = await proveMaskFamilies();
+  findings.surfaceProof = await proveNativeSurfaces();
 
   const report = {
     command: "inspect",
@@ -4551,20 +5489,27 @@ try {
       "export artifact records returned H.264 settings; encoder implementation left unknown",
       "video G7 counters left unavailable; G3 not claimed",
       "rect clip CLI: each leaf owned by inspection.nodeId, scene-target-pixels, 320x180",
-      "surface boundaries are clip command ids, inner first, shape rect, coverage rect-clipped-draw-quad",
+      "surface boundaries are that report's clip command ids, inner first, shape rect, coverage rect-clipped-draw-quad",
       "target literal leaf/a%b keeps ancestors and drops the sibling viewport",
       "percent-encoded target is not decoded",
       "one FrameSource A-repeat and A\u2192B\u2192A within calibrated tolerance",
       "inset samples only; ideal bounds are not GPU edge coverage",
       "clip G7 counters left unavailable; G3 not claimed",
       "mask families CLI: active leaf outer quad, conservative, outer-clipped-draw-quad",
-      "mask boundaries are one clip each: rounded, circle, path, image, and image",
+      "mask boundaries are one clip each — rounded, circle, path, image, and image — matched to that report's command and leaf owner",
       "inactive leaf bounds are the zero-width edge, not only a zero area product; active identity swaps between A and B",
       "target scene:mask#rounded-red keeps that leaf and its clip command",
       "mask URL and imageMask are not serialized",
       "consumer public and proof-server mask PNG bytes share one sha256",
       "one FrameSource A-repeat and A\u2192B\u2192A; clear-image interior stays background while geometryVisible is true",
       "mask G7 counters left unavailable; G3 not claimed",
+      "native Group and Composition CLI: one boundary each, shared composition occurrence within that report, scene-target-pixels",
+      "clip, mask, Group, and Composition occurrence ids stay inside the report that allocated them; CLI, target, and browser ids are not required to match",
+      "recipe table bounds, not values derived from the report; world moves 10 and overlay does not",
+      "target scene:surface#id keeps the surface ancestor; a space-shaped target is rejected",
+      "no Group or Composition placeholder paint record",
+      "one FrameSource A-repeat and A\u2192B\u2192A; interiors only, not coverage",
+      "surface assets n/a; G7 unavailable; G3 not claimed",
     ],
   };
   await writeFile(

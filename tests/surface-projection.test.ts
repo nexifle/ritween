@@ -785,11 +785,12 @@ test("a failed render publishes no snapshot and flat records stay on the top-lev
       assert.ok(inspected?.paintRecords);
       assert.deepEqual(
         inspected.paintRecords.map((record) => record.kind),
-        ["box", "text", "composition"],
+        ["box", "text", "box"],
       );
       assert.equal(
-        inspected.paintRecords.some((record) => record.path.includes("/clip")),
+        inspected.paintRecords.some((record) => record.kind === "composition"),
         false,
+        "a rect clip must not publish a placeholder beside its projected leaf",
       );
       const documentFrame: FrameInspection = {
         requestedTime: 0,
@@ -829,7 +830,13 @@ test("a failed render publishes no snapshot and flat records stay on the top-lev
       );
       assert.deepEqual(
         built.scenes[0].paintRecords?.map((record) => record.kind),
-        ["composition"],
+        ["box"],
+      );
+      assert.equal(
+        built.scenes[0].paintRecords?.[0].accuracy === "unavailable"
+          ? undefined
+          : built.scenes[0].paintRecords?.[0].clipProjection?.coverage,
+        "rect-clipped-draw-quad",
       );
       assert.equal(
         JSON.stringify(built.scenes[0]).includes("inspectionSurface"),
@@ -919,10 +926,15 @@ test("nonfinite packed uniforms are unavailable and do not publish a matrix", as
     if (trace.projection.status !== "unavailable") return;
     assert.match(trace.projection.reason, /not finite/);
     assert.equal("childPixelsToParent" in trace.projection, false);
-    assert.equal(rendered.records[0].kind, "composition");
+    assert.equal(rendered.records[0].kind, "box");
     assert.equal(rendered.records[0].accuracy, "unavailable");
     if (rendered.records[0].accuracy !== "unavailable") return;
-    assert.match(rendered.records[0].unsupported, /not collected/);
+    assert.match(rendered.records[0].unsupported, /not finite/);
+    assert.equal("bounds" in rendered.records[0], false);
+    assert.equal(
+      rendered.records.some((record) => record.kind === "composition"),
+      false,
+    );
   });
 });
 
@@ -1025,5 +1037,142 @@ test("a successful root snapshot is dropped on not-ready, draw failure, and coll
     dropped(beforeDispose);
     assert.throws(() => draw(good, true), /not ready/);
     dropped(beforeDispose);
+  });
+});
+
+/** Same pose the leaf collector uses to overflow the staged camera sum, not the products. */
+const CANCELLING_CAMERA = [6e36, 0, 6e36, 1, -3.4e38, 0] as const;
+
+function uploadedBlock(
+  uniforms: readonly (readonly Float32Array[])[],
+  trace: SurfaceTrace,
+) {
+  const block = uniforms.flat().find(
+    (entry) =>
+      entry[0] === trace.uniform.rect[0] &&
+      entry[2] === trace.uniform.rect[2] &&
+      entry[4] === trace.uniform.transform[0] &&
+      entry[6] === trace.uniform.transform[2] &&
+      entry[24] === trace.uniform.cameraX[0] &&
+      entry[25] === trace.uniform.cameraX[1] &&
+      entry[26] === trace.uniform.cameraX[2] &&
+      entry[28] === trace.uniform.cameraY[0] &&
+      entry[30] === trace.uniform.cameraY[2],
+  );
+  assert.ok(block, trace.path);
+  return block;
+}
+
+function unavailableReason(trace: SurfaceTrace) {
+  assert.equal(trace.projection.status, "unavailable", trace.path);
+  if (trace.projection.status !== "unavailable") throw Error(trace.path);
+  assert.equal("childPixelsToParent" in trace.projection, false);
+  return trace.projection.reason;
+}
+
+test("finite rounded clip uniforms that overflow a float32 vertex stage do not publish a matrix", async () => {
+  await withGpuGlobals(async () => {
+    const sharedTransforms = new Map<string, readonly number[]>([
+      ["hero", CANCELLING_CAMERA],
+    ]);
+    const leaf = await renderOnce(
+      Box({ width: 50, height: 50, fill: "#123456" }).id("hero"),
+      { sharedTransforms },
+    );
+    assert.equal(leaf.records[0].accuracy, "unavailable");
+    if (leaf.records[0].accuracy !== "unavailable") return;
+    const leafStage = leaf.records[0].unsupported.split(": ").slice(1).join(": ");
+    assert.match(leafStage, /camera X overflows float32/);
+
+    const parent = await renderOnce(
+      Box({ width: 50, height: 50, fill: "#123456" }).clip().id("hero"),
+      { sharedTransforms },
+    );
+    const parentTrace = parent.traces[0];
+    const parentBlock = uploadedBlock(parent.uniforms, parentTrace);
+    for (const field of [0, 1, 2, 3, 4, 5, 6, 7, 24, 25, 26, 28, 29, 30]) {
+      assert.equal(parentBlock[field], Math.fround(parentBlock[field]));
+      assert.ok(Number.isFinite(parentBlock[field]), `field ${field}`);
+    }
+    assert.notEqual(parentBlock[24], CANCELLING_CAMERA[0]);
+    assert.notEqual(parentBlock[26], CANCELLING_CAMERA[4]);
+    const binary64 = mappingFromUpload(
+      parentBlock,
+      parentTrace.childResolution[0],
+      parentTrace.childResolution[1],
+    );
+    assert.ok(binary64.every(Number.isFinite));
+    const worldX = Math.fround(
+      Math.fround(
+        Math.fround(parentBlock[0] + parentBlock[2]) * parentBlock[4],
+      ) + parentBlock[6],
+    );
+    const worldY = Math.fround(
+      Math.fround(
+        Math.fround(parentBlock[1] + parentBlock[3]) * parentBlock[5],
+      ) + parentBlock[7],
+    );
+    const productX = Math.fround(parentBlock[24] * worldX);
+    const productY = Math.fround(parentBlock[25] * worldY);
+    assert.ok(Number.isFinite(productX) && Number.isFinite(productY));
+    assert.equal(Number.isFinite(Math.fround(productX + productY)), false);
+    assert.ok(
+      Number.isFinite(
+        parentBlock[24] * worldX +
+          parentBlock[25] * worldY +
+          parentBlock[26],
+      ),
+    );
+    const reason = unavailableReason(parentTrace);
+    assert.equal(reason.split(": ").slice(1).join(": "), leafStage);
+    const box = parent.records.find((record) => record.kind === "box");
+    assert.equal(box?.accuracy, "unavailable");
+    if (box?.accuracy !== "unavailable") return;
+    assert.equal(box.unsupported, reason);
+    assert.equal("bounds" in box, false);
+    assert.equal(
+      parent.records.some((record) => record.accuracy !== "unavailable"),
+      false,
+    );
+
+    const nested = await renderOnce(
+      Box({ width: 50, height: 50, fill: "#123456" })
+        .clip()
+        .id("inner")
+        .clip()
+        .id("outer"),
+      {
+        sharedTransforms: new Map([["outer", CANCELLING_CAMERA]]),
+      },
+    );
+    const outer = nested.traces.find((trace) => trace.path.endsWith("outer"));
+    const inner = nested.traces.find((trace) => trace.path.endsWith("inner"));
+    assert.ok(outer && inner);
+    const outerBlock = uploadedBlock(nested.uniforms, outer);
+    const innerBlock = uploadedBlock(nested.uniforms, inner);
+    assert.ok(
+      mappingFromUpload(
+        outerBlock,
+        outer.childResolution[0],
+        outer.childResolution[1],
+      ).every(Number.isFinite),
+    );
+    assert.ok(
+      mappingFromUpload(
+        innerBlock,
+        inner.childResolution[0],
+        inner.childResolution[1],
+      ).every(Number.isFinite),
+    );
+    assert.ok(innerBlock[24] < 1e6, "inner camera is not the overflowing ancestor");
+    const ancestor = unavailableReason(outer);
+    assert.match(ancestor, /overflows float32 vertex stages/);
+    assert.equal(unavailableReason(inner), ancestor);
+    const nestedBox = nested.records.find((record) => record.kind === "box");
+    assert.equal(nestedBox?.accuracy, "unavailable");
+    if (nestedBox?.accuracy !== "unavailable") return;
+    assert.equal(nestedBox.unsupported, ancestor);
+    assert.equal("bounds" in nestedBox, false);
+    assert.equal("clipProjection" in nestedBox, false);
   });
 });

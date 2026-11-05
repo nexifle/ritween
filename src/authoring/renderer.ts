@@ -14,13 +14,22 @@ import type {
 import { computeFrameTransform } from "./frame-transform";
 import { projectRect } from "./project-rect";
 import { planSurface } from "./surface-plan";
+import { checkVertexFloat32 } from "./vertex-float32";
 import {
+  childPixelsToParent,
   ClipSurfaceTraces,
+  clipMaskUnprojectedReason,
   copySurfaceUniform,
   EMPTY_SURFACE_TRACES,
   NON_CLIP_PARENT_REASON,
+  projectRectClipChain,
+  type CapturedPaint,
   type ClipTracePass,
+  type CopiedSurfaceUniform,
+  type PixelRect,
+  type RectClipLevel,
   type SurfaceTrace,
+  type TargetWindow,
 } from "./surface-projection";
 
 const shader = `
@@ -100,8 +109,15 @@ const MAX_TEXT_ENTRIES = 128;
  * target, not final transition output.
  * `accuracy` is the discriminant: `unavailable` means no rectangle this collector can honestly
  * record, so coverage stays partial instead of claiming the paint is out of frame. Nested
- * Group/Composition paint is not forwarded. This is not a completed G3 projection.
+ * Group/Composition paint is not forwarded. A rect Clip chain projects its Box, Text, and Media
+ * leaves into this space; non-rect masks stay unavailable. This is not a completed G3 projection.
  */
+/** Draw-quad provenance after a rect Clip chain. Not a pixel-coverage claim. */
+export interface ClipProjection {
+  /** Covering clip occurrences, leaf target first. */
+  readonly clipOccurrenceIds: readonly number[];
+  readonly coverage: "rect-clipped-draw-quad";
+}
 export type PaintRecord = {
   readonly path: string;
   /** Present only when the frame was evaluated with inspection enabled. */
@@ -125,6 +141,8 @@ export type PaintRecord = {
        * never proof that a fragment was visible.
        */
       readonly geometryVisible: boolean;
+      /** Present only when this draw was projected through a rect Clip chain. */
+      readonly clipProjection?: ClipProjection;
       readonly unsupported?: never;
     }
   | {
@@ -134,6 +152,7 @@ export type PaintRecord = {
       readonly bounds: Bounds;
       readonly provenance: "projected-text-draw-quad";
       readonly geometryVisible: boolean;
+      readonly clipProjection?: ClipProjection;
       readonly unsupported?: never;
     }
   | {
@@ -145,6 +164,7 @@ export type PaintRecord = {
       readonly provenance:
         "projected-image-draw-quad" | "projected-video-draw-quad";
       readonly geometryVisible: boolean;
+      readonly clipProjection?: ClipProjection;
       readonly unsupported?: never;
     }
   | {
@@ -154,54 +174,6 @@ export type PaintRecord = {
       readonly bounds?: never;
     }
 );
-
-/** One float32 vertex stage; a stage leaving the finite range makes the quad unavailable below. */
-function stage32(value: number, label: string): number {
-  const rounded = Math.fround(value);
-  if (!Number.isFinite(rounded))
-    throw new RangeError(`${label} overflows float32.`);
-  return rounded;
-}
-
-/**
- * Rejects vertex stages that leave float32 while every uniform stays finite:
- * `(rect.xy + uv * rect.zw) * transform.xy + transform.zw` through both camera rows. Real GPUs
- * may fuse or widen these steps, so this is a safety check, never a rounding model.
- */
-function checkVertexFloat32(
-  rect: readonly [number, number, number, number],
-  transform: readonly [number, number, number, number],
-  cameraX: readonly [number, number, number],
-  cameraY: readonly [number, number, number],
-) {
-  const [x, y, width, height] = rect;
-  const [sx, sy, tx, ty] = transform;
-  for (const u of [0, 1])
-    for (const v of [0, 1]) {
-      const worldX = stage32(
-        stage32(stage32(x + u * width, "rect x") * sx, "transform x") + tx,
-        "transform x",
-      );
-      const worldY = stage32(
-        stage32(stage32(y + v * height, "rect y") * sy, "transform y") + ty,
-        "transform y",
-      );
-      // The product sum is staged before the constant: two float32 products can overflow while
-      // a cancelling constant brings the unstaged total back into range. Neither order is proven
-      // GPU behaviour, so this stays a conservative check.
-      for (const [row, label] of [
-        [cameraX, "camera X"],
-        [cameraY, "camera Y"],
-      ] as const)
-        stage32(
-          stage32(
-            stage32(row[0] * worldX, label) + stage32(row[1] * worldY, label),
-            label,
-          ) + row[2],
-          label,
-        );
-    }
-}
 
 /**
  * Builds one record from the uniform block this draw uploaded; see {@link PaintRecord}.
@@ -337,6 +309,331 @@ function paintRecord(
     kind: "box" as const,
     provenance: "projected-box-draw-quad" as const,
   };
+}
+
+function copiedIdentity(command: DrawCommand): {
+  readonly path: string;
+  readonly inspection?: InspectionIdentity;
+  readonly paintRole: "content" | "background";
+} {
+  return {
+    path: command.path,
+    ...(command.inspection
+      ? {
+          inspection: {
+            id: command.inspection.id,
+            nodeId: command.inspection.nodeId,
+            role: command.inspection.role,
+          },
+        }
+      : {}),
+    paintRole: command.paintRole ?? "content",
+  };
+}
+
+/** Four boundary corners of the uploaded quad, in that draw's target pixels. Not an AABB. */
+function captureLeaf(
+  command: DrawCommand,
+  uniforms: Float32Array,
+  offset: number,
+): CapturedPaint {
+  const at = (index: number) => uniforms[offset + index];
+  const identity = copiedIdentity(command);
+  const provenance =
+    command.kind === "text"
+      ? ("projected-text-draw-quad" as const)
+      : command.kind === "media"
+        ? command.source.kind === "video"
+          ? ("projected-video-draw-quad" as const)
+          : ("projected-image-draw-quad" as const)
+        : ("projected-box-draw-quad" as const);
+  const commandKind =
+    command.kind === "text" || command.kind === "media" ? command.kind : "box";
+  const failed = (failure: string): CapturedPaint => ({
+    kind: "leaf",
+    commandKind,
+    ...identity,
+    provenance,
+    opacity: at(20),
+    failure,
+  });
+  const fields: readonly (readonly [string, number])[] = [
+    ["rect x", at(0)],
+    ["rect y", at(1)],
+    ["rect width", at(2)],
+    ["rect height", at(3)],
+    ["transform scale x", at(4)],
+    ["transform scale y", at(5)],
+    ["transform translate x", at(6)],
+    ["transform translate y", at(7)],
+    ["resolution x", at(8)],
+    ["resolution y", at(9)],
+    ["opacity", at(20)],
+    ["camera X x", at(24)],
+    ["camera X y", at(25)],
+    ["camera X constant", at(26)],
+    ["camera Y x", at(28)],
+    ["camera Y y", at(29)],
+    ["camera Y constant", at(30)],
+  ];
+  const notFinite = fields
+    .filter(([, value]) => !Number.isFinite(value))
+    .map(([name]) => name);
+  if (notFinite.length)
+    return failed(`draw quad is not finite: ${notFinite.join(", ")}.`);
+  if (at(8) <= 0 || at(9) <= 0)
+    return failed(
+      `draw quad is not finite: resolution ${at(8)}x${at(9)} is not positive.`,
+    );
+  const rect = [at(0), at(1), at(2), at(3)] as const;
+  const transform = [at(4), at(5), at(6), at(7)] as const;
+  const cameraX = [at(24), at(25), at(26)] as const;
+  const cameraY = [at(28), at(29), at(30)] as const;
+  try {
+    checkVertexFloat32(rect, transform, cameraX, cameraY);
+  } catch (error) {
+    return failed(
+      `draw quad overflows float32 vertex stages: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const [x, y, width, height] = rect;
+  const [sx, sy, tx, ty] = transform;
+  const uvs = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+  ] as const;
+  const corners = uvs.map(([u, v]) => {
+    const worldX = (x + u * width) * sx + tx;
+    const worldY = (y + v * height) * sy + ty;
+    return [
+      cameraX[0] * worldX + cameraX[1] * worldY + cameraX[2],
+      cameraY[0] * worldX + cameraY[1] * worldY + cameraY[2],
+    ] as const;
+  }) as unknown as readonly [
+    readonly [number, number],
+    readonly [number, number],
+    readonly [number, number],
+    readonly [number, number],
+  ];
+  if (corners.some((point) => !point.every(Number.isFinite)))
+    return failed("draw quad is not finite: projected corner.");
+  return {
+    kind: "leaf",
+    commandKind,
+    ...identity,
+    provenance,
+    opacity: at(20),
+    corners,
+  };
+}
+
+function captureBoundary(command: DrawCommand): CapturedPaint {
+  return {
+    kind: "boundary",
+    commandKind: command.kind,
+    ...copiedIdentity(command),
+    unsupported: `${command.kind} paint is not collected; only top-level Box, Text, and Media draw quads are.`,
+  };
+}
+
+interface ClipSlot {
+  readonly occurrenceId: number;
+  readonly shape: SurfaceTrace["shape"];
+  readonly path: string;
+  readonly inspection?: InspectionIdentity;
+  readonly paintRole: "content" | "background";
+}
+
+type PublishSlot =
+  | { readonly kind: "record"; readonly record: PaintRecord }
+  | { readonly kind: "clip"; readonly clip: ClipSlot };
+
+function unavailableRecord(
+  identity: {
+    readonly kind: string;
+    readonly path: string;
+    readonly inspection?: InspectionIdentity;
+    readonly paintRole: "content" | "background";
+  },
+  resolution: readonly [number, number],
+  unsupported: string,
+): PaintRecord {
+  return {
+    kind: identity.kind as DrawCommand["kind"],
+    path: identity.path,
+    ...(identity.inspection ? { inspection: identity.inspection } : {}),
+    paintRole: identity.paintRole,
+    space: "scene-target-pixels",
+    resolution,
+    accuracy: "unavailable",
+    unsupported,
+  };
+}
+
+function levelWindow(
+  resolution: readonly [number, number],
+  scissor: PixelRect | undefined,
+): TargetWindow | undefined {
+  if (!scissor) return undefined;
+  if (!(resolution[0] > 0) || !(resolution[1] > 0)) return undefined;
+  return { resolution: [resolution[0], resolution[1]], scissor };
+}
+
+interface ClipNode {
+  readonly occurrenceId: number;
+  readonly shape: SurfaceTrace["shape"];
+  readonly childResolution: readonly [number, number];
+  readonly uniform: CopiedSurfaceUniform;
+  readonly paints: CapturedPaint[];
+  readonly nested: readonly ClipNode[];
+  readonly childScissor?: PixelRect;
+}
+
+function projectNode(
+  clip: ClipNode,
+  suffix: readonly RectClipLevel[],
+  inherited: string | undefined,
+  root: TargetWindow,
+  rootResolution: readonly [number, number],
+  out: PaintRecord[],
+) {
+  const child = levelWindow(clip.childResolution, clip.childScissor);
+  const mapped = child
+    ? importChildMatrix(clip)
+    : {
+        status: "unavailable" as const,
+        reason: "clip child scissor was not recorded.",
+      };
+  const ownMask =
+    clip.shape !== "rect" ? clipMaskUnprojectedReason(clip.shape) : undefined;
+  const blocked =
+    ownMask ??
+    inherited ??
+    (mapped.status === "unavailable" ? mapped.reason : undefined);
+  const level: RectClipLevel | undefined =
+    child && mapped.status === "mapped"
+      ? {
+          occurrenceId: clip.occurrenceId,
+          opacity: clip.uniform.opacity,
+          matrix: mapped.matrix,
+          child,
+        }
+      : undefined;
+  const chain = level ? [level, ...suffix] : suffix;
+  for (const paint of clip.paints) {
+    if (paint.kind === "nested") {
+      const childClip = clip.nested.find(
+        (entry) => entry.occurrenceId === paint.occurrenceId,
+      );
+      if (childClip)
+        projectNode(childClip, chain, blocked, root, rootResolution, out);
+      continue;
+    }
+    if (paint.kind === "boundary") {
+      out.push(
+        unavailableRecord(
+          {
+            kind: paint.commandKind,
+            path: paint.path,
+            ...(paint.inspection ? { inspection: paint.inspection } : {}),
+            paintRole: paint.paintRole,
+          },
+          rootResolution,
+          paint.unsupported,
+        ),
+      );
+      continue;
+    }
+    if (paint.failure || blocked || !paint.corners || !level) {
+      out.push(
+        unavailableRecord(
+          {
+            kind: paint.commandKind,
+            path: paint.path,
+            ...(paint.inspection ? { inspection: paint.inspection } : {}),
+            paintRole: paint.paintRole,
+          },
+          rootResolution,
+          paint.failure ??
+            blocked ??
+            "clip child scissor was not recorded.",
+        ),
+      );
+      continue;
+    }
+    const projected = projectRectClipChain(
+      paint.corners,
+      paint.opacity,
+      chain,
+      root,
+    );
+    if (projected.status === "unavailable") {
+      out.push(
+        unavailableRecord(
+          {
+            kind: paint.commandKind,
+            path: paint.path,
+            ...(paint.inspection ? { inspection: paint.inspection } : {}),
+            paintRole: paint.paintRole,
+          },
+          rootResolution,
+          projected.reason,
+        ),
+      );
+      continue;
+    }
+    const accuracy =
+      paint.commandKind === "media" || !projected.axisAligned
+        ? "conservative"
+        : "exact-rectangle";
+    const clipProjection: ClipProjection = {
+      clipOccurrenceIds: chain.map((entry) => entry.occurrenceId),
+      coverage: "rect-clipped-draw-quad",
+    };
+    const shared = {
+      path: paint.path,
+      ...(paint.inspection ? { inspection: paint.inspection } : {}),
+      paintRole: paint.paintRole,
+      space: "scene-target-pixels" as const,
+      resolution: rootResolution,
+      bounds: projected.bounds,
+      geometryVisible: projected.geometryVisible,
+      clipProjection,
+    };
+    if (paint.commandKind === "text")
+      out.push({
+        ...shared,
+        kind: "text",
+        accuracy,
+        provenance: "projected-text-draw-quad",
+      });
+    else if (paint.commandKind === "media")
+      out.push({
+        ...shared,
+        kind: "media",
+        accuracy: "conservative",
+        provenance: paint.provenance as
+          | "projected-image-draw-quad"
+          | "projected-video-draw-quad",
+      });
+    else
+      out.push({
+        ...shared,
+        kind: "box",
+        accuracy,
+        provenance: "projected-box-draw-quad",
+      });
+  }
+}
+
+function importChildMatrix(clip: ClipNode) {
+  return childPixelsToParent(
+    clip.uniform,
+    clip.childResolution[0],
+    clip.childResolution[1],
+  );
 }
 
 /** WebGPU owns paint/compositing; Canvas 2D is only the text rasterizer. */
@@ -584,6 +881,24 @@ export class ViewRenderer {
         oy,
         matrix: frameMatrix,
       } = computeFrameTransform(size, context.resolution, frame.camera?.matrix);
+      const scissorX = Math.ceil(ox);
+      const scissorY = Math.ceil(oy);
+      const scissorW = Math.max(
+        0,
+        Math.floor(context.resolution[0] - ox) - scissorX,
+      );
+      const scissorH = Math.max(
+        0,
+        Math.floor(context.resolution[1] - oy) - scissorY,
+      );
+      if (incoming?.occurrenceId !== undefined)
+        incoming.book.noteChildScissor(incoming.occurrenceId, {
+          x: scissorX,
+          y: scissorY,
+          width: scissorW,
+          height: scissorH,
+        });
+      const slots: PublishSlot[] | undefined = collector ? [] : undefined;
       const rasterScale = scale * textResolution;
       const activeSurfaces = new Set(
         frame.commands
@@ -670,15 +985,18 @@ export class ViewRenderer {
               c.inspection
             ) {
               const active = ensureBook();
+              const opened = active.open(
+                c.inspection.id,
+                c.inspection.nodeId,
+                c.path,
+                c.inspectionSurface.shape,
+                [width, height],
+              );
               childPass = {
                 book: active,
-                sink: active.open(
-                  c.inspection.id,
-                  c.inspection.nodeId,
-                  c.path,
-                  c.inspectionSurface.shape,
-                  [width, height],
-                ),
+                sink: opened.nested,
+                paints: opened.paints,
+                occurrenceId: c.inspection.id,
               };
             } else if (
               frameHasClip(c.frame) ||
@@ -956,8 +1274,48 @@ export class ViewRenderer {
             );
             if (raw) (blocked ? book.blocked : (sink ?? book.roots)).push(raw);
           }
-          if (collector && i < frame.commands.length)
-            collector(paintRecord(c, values, (i * stride) / 4));
+          if (incoming?.paints && i < frame.commands.length) {
+            if (
+              c.kind === "composition" &&
+              c.inspectionSurface &&
+              c.inspection
+            )
+              incoming.paints.push({
+                kind: "nested",
+                occurrenceId: c.inspection.id,
+              });
+            else if (
+              c.kind === "box" ||
+              c.kind === "text" ||
+              c.kind === "media"
+            )
+              incoming.paints.push(
+                captureLeaf(c, values, (i * stride) / 4),
+              );
+            else incoming.paints.push(captureBoundary(c));
+          }
+          if (slots && i < frame.commands.length) {
+            if (
+              c.kind === "composition" &&
+              c.inspectionSurface &&
+              c.inspection
+            )
+              slots.push({
+                kind: "clip",
+                clip: {
+                  occurrenceId: c.inspection.id,
+                  shape: c.inspectionSurface.shape,
+                  path: c.path,
+                  ...(c.inspection ? { inspection: { ...c.inspection } } : {}),
+                  paintRole: c.paintRole ?? "content",
+                },
+              });
+            else
+              slots.push({
+                kind: "record",
+                record: paintRecord(c, values, (i * stride) / 4),
+              });
+          }
           bindings.push(
             context.device.createBindGroup({
               layout: this.pipeline!.getBindGroupLayout(0),
@@ -1021,20 +1379,72 @@ export class ViewRenderer {
           },
         ],
       });
-      pass.setScissorRect(
-        Math.ceil(ox),
-        Math.ceil(oy),
-        Math.max(0, Math.floor(context.resolution[0] - ox) - Math.ceil(ox)),
-        Math.max(0, Math.floor(context.resolution[1] - oy) - Math.ceil(oy)),
-      );
+      pass.setScissorRect(scissorX, scissorY, scissorW, scissorH);
       pass.setPipeline(this.pipeline);
       bindings.forEach((bind) => {
         pass.setBindGroup(0, bind);
         pass.draw(6);
       });
       pass.end();
-      if (!incoming)
+      if (!incoming) {
         this.surfaceProjection = book?.finish() ?? EMPTY_SURFACE_TRACES;
+        if (collector && slots) {
+          const rootResolution: readonly [number, number] = [
+            context.resolution[0],
+            context.resolution[1],
+          ];
+          const rootWindow: TargetWindow = {
+            resolution: rootResolution,
+            scissor: {
+              x: scissorX,
+              y: scissorY,
+              width: scissorW,
+              height: scissorH,
+            },
+          };
+          const projected = new Map<number, PaintRecord[]>();
+          for (const clip of book?.roots ?? []) {
+            const records: PaintRecord[] = [];
+            projectNode(
+              clip,
+              [],
+              undefined,
+              rootWindow,
+              rootResolution,
+              records,
+            );
+            projected.set(clip.occurrenceId, records);
+          }
+          for (const slot of slots) {
+            if (slot.kind === "record") {
+              collector(slot.record);
+              continue;
+            }
+            const records = projected.get(slot.clip.occurrenceId) ?? [];
+            const namesMask = records.some(
+              (record) =>
+                record.accuracy === "unavailable" &&
+                record.unsupported.includes("is not projected"),
+            );
+            if (slot.clip.shape !== "rect" && !namesMask)
+              collector(
+                unavailableRecord(
+                  {
+                    kind: "composition",
+                    path: slot.clip.path,
+                    ...(slot.clip.inspection
+                      ? { inspection: slot.clip.inspection }
+                      : {}),
+                    paintRole: slot.clip.paintRole,
+                  },
+                  rootResolution,
+                  clipMaskUnprojectedReason(slot.clip.shape),
+                ),
+              );
+            for (const record of records) collector(record);
+          }
+        }
+      }
     } catch (error) {
       if (!incoming) this.surfaceProjection = EMPTY_SURFACE_TRACES;
       throw error;

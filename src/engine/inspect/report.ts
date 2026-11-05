@@ -166,8 +166,9 @@ export interface InspectionScene {
    * nothing. Records are ideal projected top-level Box, Text, and Media draw quads in
    * `scene-target-pixels` before transition projection. A Text quad is the texture/line box,
    * not glyph ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or ink
-   * coverage. Nothing here is final output, fragment visibility, or a GPU rounding
-   * guarantee. Nested Group/Composition paint stays unrecorded. This is not completed G3.
+   * coverage. A rect Clip chain adds `clipProjection` for those quads; that is still not
+   * fragment visibility or a GPU rounding guarantee. Non-rect masks and nested
+   * Group/Composition paint stay unavailable. This is not completed G3.
    */
   readonly paintRecords?: readonly InspectionPaintRecord[];
   /** Legacy `EvaluatedFrame.warnings` strings, preserved verbatim and in order. */
@@ -1113,6 +1114,7 @@ export type InspectionPaintRecord = {
       readonly bounds: InspectionBounds;
       readonly provenance: "projected-box-draw-quad";
       readonly geometryVisible: boolean;
+      readonly clipProjection?: InspectionClipProjection;
     }
   | {
       readonly kind: "text";
@@ -1120,6 +1122,7 @@ export type InspectionPaintRecord = {
       readonly bounds: InspectionBounds;
       readonly provenance: "projected-text-draw-quad";
       readonly geometryVisible: boolean;
+      readonly clipProjection?: InspectionClipProjection;
     }
   | {
       readonly kind: "media";
@@ -1129,6 +1132,7 @@ export type InspectionPaintRecord = {
         | "projected-image-draw-quad"
         | "projected-video-draw-quad";
       readonly geometryVisible: boolean;
+      readonly clipProjection?: InspectionClipProjection;
     }
   | {
       readonly kind: string;
@@ -1146,7 +1150,48 @@ const PAINT_IDENTITY_STRUCTURE = 25;
 const PAINT_GEOMETRY_STRUCTURE = 43;
 /** `,"unsupported":`, excluding its value. */
 const PAINT_UNAVAILABLE_STRUCTURE = 15;
+/** `,"clipProjection":` on a geometry record, charged only when the field is present. */
+const CLIP_PROJECTION_KEY = 19;
+/**
+ * `{"clipOccurrenceIds":,"coverage":"rect-clipped-draw-quad"}` excluding id digits.
+ * Brackets are included; a separator is charged before every id after the first.
+ */
+const CLIP_PROJECTION_BODY = 59;
+export interface InspectionClipProjection {
+  /** Covering clip occurrences, leaf target first. */
+  readonly clipOccurrenceIds: readonly number[];
+  readonly coverage: "rect-clipped-draw-quad";
+}
 /** Opt-in inspection identity of one paint record: counter IDs only, never the owner node. */
+function clipProjection(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): InspectionClipProjection {
+  budget?.charge(CLIP_PROJECTION_KEY + CLIP_PROJECTION_BODY);
+  const ids = list(
+    read(value, "clipOccurrenceIds", where),
+    `${where}.clipOccurrenceIds`,
+  );
+  const count = size(ids, `${where}.clipOccurrenceIds`);
+  const clipOccurrenceIds: number[] = [];
+  for (let index = 0; index < count; index++) {
+    if (index > 0) budget?.charge(1);
+    clipOccurrenceIds.push(
+      safeId(
+        reading(() => ids[index]),
+        `${where}.clipOccurrenceIds[${index}]`,
+        budget,
+      ),
+    );
+  }
+  const coverage = oneOf(
+    read(value, "coverage", where),
+    ["rect-clipped-draw-quad"] as const,
+    `${where}.coverage`,
+  );
+  return { clipOccurrenceIds, coverage };
+}
 function paintIdentity(
   value: unknown,
   where: string,
@@ -1253,6 +1298,15 @@ export function paintRecord(
     accuracy: accuracyVal,
     geometryVisible: geometryVisibleVal,
   };
+  const rawClip = read(value, "clipProjection", where);
+  const clipProjectionVal =
+    rawClip === undefined
+      ? undefined
+      : clipProjection(rawClip, `${where}.clipProjection`, budget);
+  const clipped =
+    clipProjectionVal === undefined
+      ? {}
+      : { clipProjection: clipProjectionVal };
   if (kindVal === "media") {
     if (accuracyVal !== "conservative")
       throw new InspectionSerializationError(
@@ -1270,6 +1324,7 @@ export function paintRecord(
       accuracy: "conservative",
       provenance: provenanceVal,
       bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+      ...clipped,
     };
   }
   if (kindVal === "text") {
@@ -1284,6 +1339,7 @@ export function paintRecord(
       kind: "text",
       provenance: provenanceVal,
       bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+      ...clipped,
     };
   }
   const provenanceVal = oneOf(
@@ -1297,6 +1353,7 @@ export function paintRecord(
     kind: "box",
     provenance: provenanceVal,
     bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+    ...clipped,
   };
 }
 /**

@@ -1,5 +1,6 @@
 import type { ClipShape } from "./clip";
 import { multiply } from "../engine/render/shared-elements";
+import { checkVertexFloat32 } from "./vertex-float32";
 
 /** Clip mask family taken from the clip spec, not from the emitted mask outline. */
 export type ClipSurfaceShape = "rect" | "rounded" | "circle" | "path" | "image";
@@ -160,6 +161,20 @@ export function childPixelsToParent(
       status: "unavailable",
       reason: `clip surface mapping is not finite: child resolution ${childWidth}x${childHeight} is not positive.`,
     };
+  // Same uploaded fields and staged guard as a leaf quad. A finite binary64 matrix is not enough.
+  try {
+    checkVertexFloat32(
+      uniform.rect,
+      uniform.transform,
+      uniform.cameraX,
+      uniform.cameraY,
+    );
+  } catch (error) {
+    return {
+      status: "unavailable",
+      reason: `clip surface mapping overflows float32 vertex stages: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   const scaleX = uniform.rect[2] / childWidth;
   const scaleY = uniform.rect[3] / childHeight;
   if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY))
@@ -227,6 +242,8 @@ interface PendingClip {
   readonly parentResolution: readonly [number, number];
   readonly uniform: CopiedSurfaceUniform;
   readonly nested: PendingClip[];
+  readonly paints: CapturedPaint[];
+  readonly childScissor?: PixelRect;
   readonly sceneBlocked?: string;
 }
 
@@ -237,6 +254,8 @@ interface OpenClip {
   readonly shape: ClipSurfaceShape;
   readonly childResolution: readonly [number, number];
   readonly nested: PendingClip[];
+  readonly paints: CapturedPaint[];
+  childScissor?: PixelRect;
 }
 
 /**
@@ -254,8 +273,9 @@ export class ClipSurfaceTraces {
     path: string,
     shape: ClipSurfaceShape,
     childResolution: readonly [number, number],
-  ): PendingClip[] {
+  ): { readonly nested: PendingClip[]; readonly paints: CapturedPaint[] } {
     const nested: PendingClip[] = [];
+    const paints: CapturedPaint[] = [];
     this.opens.set(occurrenceId, {
       occurrenceId,
       ownerNodeId,
@@ -263,8 +283,21 @@ export class ClipSurfaceTraces {
       shape,
       childResolution: [childResolution[0], childResolution[1]],
       nested,
+      paints,
     });
-    return nested;
+    return { nested, paints };
+  }
+
+  /** Child render records the scissor it is about to set, before the parent uniform exists. */
+  noteChildScissor(occurrenceId: number, scissor: PixelRect) {
+    const open = this.opens.get(occurrenceId);
+    if (!open) return;
+    open.childScissor = {
+      x: scissor.x,
+      y: scissor.y,
+      width: scissor.width,
+      height: scissor.height,
+    };
   }
 
   close(
@@ -284,6 +317,8 @@ export class ClipSurfaceTraces {
       parentResolution: [uniform.resolution[0], uniform.resolution[1]],
       uniform,
       nested: open.nested,
+      paints: open.paints,
+      ...(open.childScissor ? { childScissor: open.childScissor } : {}),
       ...(sceneBlocked ? { sceneBlocked } : {}),
     };
   }
@@ -300,9 +335,68 @@ export class ClipSurfaceTraces {
   }
 }
 
+/** Integer scissor the renderer actually set, in that target's pixel space. */
+export interface PixelRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** One render target's pixel bounds plus the scissor that render set. */
+export interface TargetWindow {
+  readonly resolution: readonly [number, number];
+  readonly scissor: PixelRect;
+}
+
+export type Point2 = readonly [number, number];
+
+/** Leaf or unsupported draw accepted before the covering clip uniform exists. */
+export type CapturedPaint =
+  | {
+      readonly kind: "leaf";
+      readonly commandKind: "box" | "text" | "media";
+      readonly path: string;
+      readonly inspection?: {
+        readonly id: number;
+        readonly nodeId: number;
+        readonly role: "content" | "background" | "surface";
+      };
+      readonly paintRole: "content" | "background";
+      readonly provenance:
+        | "projected-box-draw-quad"
+        | "projected-text-draw-quad"
+        | "projected-image-draw-quad"
+        | "projected-video-draw-quad";
+      readonly opacity: number;
+      readonly corners?: readonly [Point2, Point2, Point2, Point2];
+      readonly failure?: string;
+    }
+  | {
+      readonly kind: "boundary";
+      readonly commandKind: string;
+      readonly path: string;
+      readonly inspection?: {
+        readonly id: number;
+        readonly nodeId: number;
+        readonly role: "content" | "background" | "surface";
+      };
+      readonly paintRole: "content" | "background";
+      readonly unsupported: string;
+    }
+  | { readonly kind: "nested"; readonly occurrenceId: number };
+
+/** Mask shapes this unit does not project. Not a conservative extent. */
+export function clipMaskUnprojectedReason(shape: ClipSurfaceShape): string {
+  return `clip mask shape "${shape}" is not projected.`;
+}
+
 export interface ClipTracePass {
   readonly book: ClipSurfaceTraces;
   readonly sink: PendingClip[];
+  /** Present only for a clip child render that is collecting paint. */
+  readonly paints?: CapturedPaint[];
+  readonly occurrenceId?: number;
   readonly blocked?: string;
 }
 
@@ -361,4 +455,310 @@ function emit(
     projection.status === "mapped" ? projection.childPixelsToScene : undefined;
   for (const child of clip.nested)
     emit(child, nextParent, clip.occurrenceId, nextBlocked, traces);
+}
+
+export interface RectClipLevel {
+  readonly occurrenceId: number;
+  readonly opacity: number;
+  readonly matrix: Matrix6;
+  /** Child target this level's polygon is clipped in, before `matrix`. */
+  readonly child: TargetWindow;
+}
+
+export type RectClipProjection =
+  | {
+      readonly status: "bounds";
+      readonly bounds: {
+        readonly x: number;
+        readonly y: number;
+        readonly width: number;
+        readonly height: number;
+      };
+      readonly geometryVisible: boolean;
+      /** Leaf and every clip matrix stay axis-aligned in root, and the result is a rectangle. */
+      readonly axisAligned: boolean;
+    }
+  | { readonly status: "unavailable"; readonly reason: string };
+
+function finitePoint(
+  x: number,
+  y: number,
+): { readonly status: "ok"; readonly point: Point2 } | { readonly status: "unavailable"; readonly reason: string } {
+  if (!Number.isFinite(x) || !Number.isFinite(y))
+    return {
+      status: "unavailable",
+      reason: "clip paint projection is not finite.",
+    };
+  return { status: "ok", point: [x, y] };
+}
+
+function applyPoint(
+  matrix: Matrix6,
+  point: Point2,
+): { readonly status: "ok"; readonly point: Point2 } | { readonly status: "unavailable"; readonly reason: string } {
+  return finitePoint(
+    matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
+    matrix[1] * point[0] + matrix[3] * point[1] + matrix[5],
+  );
+}
+
+/** `b === 0 && c === 0`, or a quarter-turn `a === 0 && d === 0`. Shear is neither. */
+export function axisAlignedMatrix(matrix: Matrix6): boolean {
+  const [a, b, c, d] = matrix;
+  return (b === 0 && c === 0) || (a === 0 && d === 0);
+}
+
+function axisAlignedPolygon(points: readonly Point2[]): boolean {
+  if (points.length <= 2) return true;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    if (a[0] !== b[0] && a[1] !== b[1]) return false;
+  }
+  return true;
+}
+
+function polygonArea(points: readonly Point2[]): number {
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const cross = a[0] * b[1] - b[0] * a[1];
+    if (!Number.isFinite(cross)) return Number.NaN;
+    sum += cross;
+  }
+  return Math.abs(sum) / 2;
+}
+
+function intersectRects(scissor: PixelRect, bounds: PixelRect): PixelRect {
+  const x = Math.max(scissor.x, bounds.x);
+  const y = Math.max(scissor.y, bounds.y);
+  const right = Math.min(scissor.x + scissor.width, bounds.x + bounds.width);
+  const bottom = Math.min(scissor.y + scissor.height, bounds.y + bounds.height);
+  return {
+    x,
+    y,
+    width: Math.max(0, right - x),
+    height: Math.max(0, bottom - y),
+  };
+}
+
+function clampPoint(point: Point2, rect: PixelRect): Point2 {
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  return [
+    Math.min(Math.max(point[0], rect.x), right),
+    Math.min(Math.max(point[1], rect.y), bottom),
+  ];
+}
+
+function intersectVertical(
+  a: Point2,
+  b: Point2,
+  x: number,
+): Point2 | undefined {
+  const dx = b[0] - a[0];
+  if (dx === 0) return undefined;
+  const t = (x - a[0]) / dx;
+  return finitePoint(x, a[1] + t * (b[1] - a[1])).status === "ok"
+    ? [x, a[1] + t * (b[1] - a[1])]
+    : undefined;
+}
+
+function intersectHorizontal(
+  a: Point2,
+  b: Point2,
+  y: number,
+): Point2 | undefined {
+  const dy = b[1] - a[1];
+  if (dy === 0) return undefined;
+  const t = (y - a[1]) / dy;
+  const x = a[0] + t * (b[0] - a[0]);
+  return Number.isFinite(x) ? [x, y] : undefined;
+}
+
+function clipEdge(
+  points: readonly Point2[],
+  inside: (point: Point2) => boolean,
+  cross: (a: Point2, b: Point2) => Point2 | undefined,
+): Point2[] | undefined {
+  if (points.length === 0) return [];
+  const out: Point2[] = [];
+  let previous = points[points.length - 1];
+  let previousIn = inside(previous);
+  for (const point of points) {
+    const pointIn = inside(point);
+    if (pointIn !== previousIn) {
+      const hit = cross(previous, point);
+      if (!hit) return undefined;
+      out.push(hit);
+    }
+    if (pointIn) out.push(point);
+    previous = point;
+    previousIn = pointIn;
+  }
+  return out;
+}
+
+/** Sutherland–Hodgman against an axis-aligned pixel rect. Empty means no overlap. */
+function clipPolygon(
+  points: readonly Point2[],
+  rect: PixelRect,
+): Point2[] | undefined {
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  let poly = points.slice();
+  const edges: readonly [
+    (point: Point2) => boolean,
+    (a: Point2, b: Point2) => Point2 | undefined,
+  ][] = [
+    [(point) => point[0] >= rect.x, (a, b) => intersectVertical(a, b, rect.x)],
+    [(point) => point[0] <= right, (a, b) => intersectVertical(a, b, right)],
+    [(point) => point[1] >= rect.y, (a, b) => intersectHorizontal(a, b, rect.y)],
+    [(point) => point[1] <= bottom, (a, b) => intersectHorizontal(a, b, bottom)],
+  ];
+  for (const [inside, cross] of edges) {
+    const next = clipEdge(poly, inside, cross);
+    if (!next) return undefined;
+    poly = next;
+  }
+  return poly;
+}
+
+function windowRect(window: TargetWindow): PixelRect {
+  return intersectRects(window.scissor, {
+    x: 0,
+    y: 0,
+    width: window.resolution[0],
+    height: window.resolution[1],
+  });
+}
+
+function zeroBounds(
+  point: Point2,
+): RectClipProjection {
+  if (!Number.isFinite(point[0]) || !Number.isFinite(point[1]))
+    return {
+      status: "unavailable",
+      reason: "clip paint projection is not finite.",
+    };
+  return {
+    status: "bounds",
+    bounds: { x: point[0], y: point[1], width: 0, height: 0 },
+    geometryVisible: false,
+    axisAligned: true,
+  };
+}
+
+function notFinite(reason: string): RectClipProjection {
+  return { status: "unavailable", reason };
+}
+
+/** Map an eliminated point through the clips not yet applied, clamping at each later window. */
+function emptyCoverage(
+  seed: Point2,
+  rect: PixelRect,
+  rest: readonly RectClipLevel[],
+  root: TargetWindow,
+  axisAligned: boolean,
+): RectClipProjection {
+  let point = clampPoint(seed, rect);
+  if (!Number.isFinite(point[0]) || !Number.isFinite(point[1]))
+    return notFinite("clip paint projection is not finite: empty coverage.");
+  for (let index = 0; index < rest.length; index++) {
+    const mapped = applyPoint(rest[index].matrix, point);
+    if (mapped.status === "unavailable") return mapped;
+    const next =
+      index + 1 < rest.length
+        ? windowRect(rest[index + 1].child)
+        : windowRect(root);
+    if (![next.x, next.y, next.width, next.height].every(Number.isFinite))
+      return notFinite("clip paint projection is not finite: empty coverage.");
+    point = clampPoint(mapped.point, next);
+  }
+  if (rest.length === 0) point = clampPoint(point, windowRect(root));
+  const zero = zeroBounds(point);
+  const aligned =
+    axisAligned && rest.every((level) => axisAlignedMatrix(level.matrix));
+  return zero.status === "bounds" ? { ...zero, axisAligned: aligned } : zero;
+}
+
+/**
+ * Clip the leaf quad at each child target, then map by that clip's `childPixelsToParent`.
+ * Shared correction is already in those matrices. AABB is taken only after the root clip.
+ */
+export function projectRectClipChain(
+  corners: readonly [Point2, Point2, Point2, Point2],
+  leafOpacity: number,
+  chain: readonly RectClipLevel[],
+  root: TargetWindow,
+): RectClipProjection {
+  if (!Number.isFinite(leafOpacity))
+    return notFinite("clip paint projection is not finite: leaf opacity.");
+  if (
+    !chain.length ||
+    !root.resolution.every((value) => Number.isFinite(value) && value > 0)
+  )
+    return notFinite("clip paint projection is not finite: root resolution.");
+  let polygon: Point2[] = [corners[0], corners[1], corners[2], corners[3]];
+  let axisAligned = axisAlignedPolygon(polygon);
+  for (let index = 0; index < chain.length; index++) {
+    const level = chain[index];
+    if (!axisAlignedMatrix(level.matrix)) axisAligned = false;
+    const rect = windowRect(level.child);
+    if (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite))
+      return notFinite("clip paint projection is not finite: child scissor.");
+    const seed = polygon[0];
+    const clipped =
+      rect.width > 0 && rect.height > 0 ? clipPolygon(polygon, rect) : [];
+    if (!clipped)
+      return notFinite("clip paint projection is not finite: polygon clip.");
+    if (!seed || clipped.length === 0)
+      return seed
+        ? emptyCoverage(seed, rect, chain.slice(index), root, axisAligned)
+        : notFinite("clip paint projection is not finite: empty coverage.");
+    const mapped: Point2[] = [];
+    for (const point of clipped) {
+      const next = applyPoint(level.matrix, point);
+      if (next.status === "unavailable") return next;
+      mapped.push(next.point);
+    }
+    polygon = mapped;
+  }
+  const rootRect = windowRect(root);
+  if (![rootRect.x, rootRect.y, rootRect.width, rootRect.height].every(Number.isFinite))
+    return notFinite("clip paint projection is not finite: root scissor.");
+  const seed = polygon[0];
+  const clipped =
+    rootRect.width > 0 && rootRect.height > 0
+      ? clipPolygon(polygon, rootRect)
+      : [];
+  if (!clipped)
+    return notFinite("clip paint projection is not finite: polygon clip.");
+  if (!seed || clipped.length === 0)
+    return seed
+      ? emptyCoverage(seed, rootRect, [], root, axisAligned)
+      : notFinite("clip paint projection is not finite: empty coverage.");
+  if (!axisAlignedPolygon(clipped)) axisAligned = false;
+  const xs = clipped.map((point) => point[0]);
+  const ys = clipped.map((point) => point[1]);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const width = maxX - minX;
+  const height = maxY - minY;
+  if (![minX, minY, width, height].every(Number.isFinite))
+    return notFinite("clip paint projection is not finite: projected bounds.");
+  const area = polygonArea(clipped);
+  if (!Number.isFinite(area))
+    return notFinite("clip paint projection is not finite: polygon area.");
+  const opacityVisible =
+    leafOpacity !== 0 && chain.every((level) => level.opacity !== 0);
+  return {
+    status: "bounds",
+    bounds: { x: minX, y: minY, width, height },
+    geometryVisible: area > 0 && opacityVisible,
+    axisAligned,
+  };
 }

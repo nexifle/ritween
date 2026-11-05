@@ -3,8 +3,9 @@
  * Each pair is two seconds: outgoing at base, incoming at base+1, overlap 1.
  * The next pair starts at base+3 with a cut. No triple overlap.
  * Shared reuses id "hero" across the two scene scopes. Incoming is type shared, duration 1.
+ * Persistent project overlay: one green rect outside the transition box.
  */
-import { Box, FrameSource, StageEntry, ZStack } from "ritween";
+import { Box, FrameSource, Overlay, StageEntry, ZStack } from "ritween";
 
 export { FrameSource };
 
@@ -12,6 +13,9 @@ export const OUTPUT = Object.freeze([100, 80]);
 export const PAIR_SPAN = 3;
 export const SOURCE_BOX = Object.freeze({ x: 10, y: 20, width: 30, height: 20 });
 export const HERO = Object.freeze({ width: 20, height: 20, y: 20 });
+export const OVERLAY_ID = "project-badge";
+export const OVERLAY_GREEN = "#00ff00";
+export const OVERLAY_RECT = Object.freeze({ x: 70, y: 5, width: 20, height: 10 });
 /** Incoming-only crossfade interior. Not an overlap sample. */
 export const TIME_A = 2.25;
 /** Incoming-only shared interior. Not an overlap sample. */
@@ -87,6 +91,18 @@ export const project = {
   resolution: OUTPUT,
   aspectRatio: [5, 4],
   duration: PAIRS.length * PAIR_SPAN,
+  overlay: () =>
+    Overlay(
+      () =>
+        Box({
+          width: OVERLAY_RECT.width,
+          height: OVERLAY_RECT.height,
+          fill: OVERLAY_GREEN,
+        })
+          .id(OVERLAY_ID)
+          .offset(OVERLAY_RECT.x, OVERLAY_RECT.y),
+      { designSize: OUTPUT },
+    ),
   scenes: PAIRS.flatMap((pair, index) => [
     entry(pair.key, "out", index, { type: "cut" }),
     entry(pair.key, "in", index, pair.transition),

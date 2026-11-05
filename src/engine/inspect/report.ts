@@ -158,7 +158,10 @@ export interface InspectionScene {
   readonly inspection: "available" | "unavailable";
   /** Why inspection is unavailable. A raw Scene is never published as an empty tree. */
   readonly unavailable?: string;
-  /** Named coordinate spaces this scope measures; only layout exists before G3. */
+  /**
+   * Tree space names this scope uses (`layout`, clip, `<path>/world`, `<path>/overlay`).
+   * A string list, not parent mappings. A composition overlay prefix is not the project overlay scope.
+   */
   readonly spaces: readonly string[];
   readonly tree?: InspectionLayoutNode;
   readonly commands?: readonly InspectionCommand[];
@@ -171,8 +174,9 @@ export interface InspectionScene {
    * `surfaceProjection` for those quads: rect-only, Group-only, and Composition-only chains
    * keep `rect-clipped-draw-quad`, and any non-rect Clip publishes `outer-clipped-draw-quad`.
    * Composition adds no mask shape. That is still not mask pixels, fragment visibility,
-   * occlusion, or a GPU rounding guarantee. Output projection for this unit is
-   * `finalPaintRecords`. Stage overlay stays unrecorded. This is not completed G3.
+   * occlusion, clamp-to-edge sampling, or a GPU rounding guarantee. Output projection for this
+   * unit is `finalPaintRecords`. Project overlay uses the same pre-transition records in its own
+   * scope when the provider recorded paint. This is not completed G3.
    */
   readonly paintRecords?: readonly InspectionPaintRecord[];
   /**
@@ -255,15 +259,16 @@ export interface InspectionCapability {
      * `partial`: top-level Box, Text, and Media draw quads are recorded, as their ideal projection
      * in `scene-target-pixels` before transition. A Text quad is the texture/line box, not glyph
      * ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or pixel coverage.
-     * Nothing here is final visual coverage, fragment visibility, or a GPU rounding guarantee.
-     * Clip, Group, and nested authoring Composition leaves record an outer draw quad, not
-     * mask pixels. Composition is not a World or Overlay boundary. Stage overlay, project
-     * overlay, and transition output stay unrecorded. G3 is not complete.
+     * Nothing here is fragment coverage, occlusion, clamp-to-edge sampling, or a GPU rounding
+     * guarantee. Clip, Group, and nested authoring Composition leaves record an outer draw quad,
+     * not mask pixels. Composition is not a World or Overlay boundary. Project overlay is its own
+     * scope when recorded; that is not a composition overlay. Built-in output is `finalPaintRecords`.
+     * Custom transition output stays unavailable. G3 is not complete. This is not a G4 API.
      */
     readonly paint: "partial";
   };
   readonly transitions: {
-    /** `partial` is recorded-leaf output only. All built-ins are covered there; not full visibility, not custom, and not a GPU rounding guarantee. */
+    /** `partial` is recorded-leaf output quads, including project-overlay identity. Not coverage, occlusion, or clamp-to-edge. Custom scene output stays unavailable. Not G3-complete and not G4. */
     readonly projection: "partial" | "unavailable";
     readonly reason: string;
   };

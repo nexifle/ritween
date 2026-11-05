@@ -15,6 +15,9 @@
  *   A→B→A pixel seek. G7 production counters are not measured here.
  * - a flat Text fixture through the same CLI and one FrameSource. Bounds are the
  *   texture/line-box draw quad, not glyph ink. G7 is not measured there either.
+ * - a flat Image fixture through the same CLI and one FrameSource per fit variant.
+ *   Bounds are the fitted texture quad, not UV, alpha, or pixel coverage. Video and
+ *   G7 are not part of that unit.
  *
  * Run after `npm run build`:
  *   node scripts/validate-inspect.mjs
@@ -26,6 +29,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   copyFile,
   mkdir,
@@ -77,6 +81,23 @@ const TEXT_BACKGROUND = "#112233";
 const TEXT_INK = "#F7F4EC";
 const TEXT_BACKGROUND_RGBA = [0x11, 0x22, 0x33, 255];
 const TEXT_INK_RGBA = [0xf7, 0xf4, 0xec, 255];
+/** Must match `scripts/inspect-fixture/manifest-media.mjs`. */
+const IMAGE_ID = "still";
+const IMAGE_BACKGROUND_ID = "bg-still";
+const IMAGE_STAGE_ID = "flat-stage";
+const IMAGE_TIME_CROP = 1.75;
+const IMAGE_ALLOC = { x: 40, y: 30, width: 100, height: 80 };
+const IMAGE_CONTAIN = { x: 40, y: 45, width: 100, height: 50 };
+const IMAGE_COVER = { x: 40, y: 30, width: 100, height: 80 };
+const IMAGE_ASSET = { width: 160, height: 80 };
+const IMAGE_LEFT_RGBA = [0xe2, 0x3d, 0x3d, 255];
+const IMAGE_RIGHT_RGBA = [0x2e, 0x6b, 0xff, 255];
+const IMAGE_SAMPLE_BG = [16, 16];
+const IMAGE_SAMPLE_LETTERBOX_LEFT = [60, 42];
+const IMAGE_SAMPLE_LETTERBOX_RIGHT = [120, 42];
+const IMAGE_SAMPLE_LEFT = [60, 70];
+const IMAGE_SAMPLE_RIGHT = [120, 70];
+const IMAGE_PORT = 5177;
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cli = process.env.CLI_BINARY
@@ -140,7 +161,7 @@ const handshakePort = handshakeServer.address().port;
  * Write a consumer project from repository sources. Recreated every run so a stale
  * or half-deleted `artifacts/` tree cannot make the gate pass or fail.
  */
-async function createConsumer(directory, manifest) {
+async function createConsumer(directory, manifest, extras = {}) {
   await rm(directory, { recursive: true, force: true });
   await mkdir(join(directory, "src/project"), { recursive: true });
   await mkdir(join(directory, "public/fonts"), { recursive: true });
@@ -167,11 +188,17 @@ async function createConsumer(directory, manifest) {
     join(directory, "package.json"),
     `${JSON.stringify({ name: "g1b-inspection-consumer", private: true, type: "module" }, null, 2)}\n`,
   );
+  if (extras.stillPng) {
+    await mkdir(join(directory, "public/media"), { recursive: true });
+    await copyFile(extras.stillPng, join(directory, "public/media/still.png"));
+  }
 }
 // The proof itself is recorded by the page; this is the shape the run asserted.
 const expectedFontWeights = ["400", "700"];
 const boxConsumer = join(artifacts, "consumer-box");
 const textConsumer = join(artifacts, "consumer-text");
+const imageConsumer = join(artifacts, "consumer-image");
+const stillPng = join(artifacts, "still.png");
 
 function walk(node, visit) {
   visit(node);
@@ -271,6 +298,20 @@ function assertNear(actual, expected, tolerance, label) {
     );
 }
 
+function assertMediaRecord(record, bounds, label) {
+  assert.equal(record.kind, "media", label);
+  assert.equal(record.provenance, "projected-image-draw-quad", label);
+  assert.equal(record.accuracy, "conservative", label);
+  assert.equal(record.space, "scene-target-pixels", label);
+  assert.deepEqual([...record.resolution], [...OUTPUT], label);
+  assert.equal(record.geometryVisible, true, label);
+  assert.equal(record.paintRole, "content", label);
+  assert.equal(record.inspection?.role, "content", label);
+  for (const key of ["x", "y", "width", "height"])
+    assert.equal(Number.isFinite(record.bounds[key]), true, `${label}.${key}`);
+  assertQuadEqual(record.bounds, bounds, label);
+}
+
 function assertBoxRecord(record, bounds, role) {
   assert.equal(record.kind, "box");
   assert.equal(record.provenance, "projected-box-draw-quad");
@@ -349,6 +390,24 @@ async function createProofServer({ port, title }) {
     plugins: [
       fixtureFontsPlugin(),
       {
+        name: "lane-b-fixture-still",
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            if (req.url?.split("?")[0] !== "/media/still.png") return next();
+            readFile(stillPng)
+              .then((body) => {
+                res.setHeader("Content-Type", "image/png");
+                res.setHeader("Content-Length", String(body.length));
+                res.end(body);
+              })
+              .catch(() => {
+                res.statusCode = 404;
+                res.end();
+              });
+          });
+        },
+      },
+      {
         name: "lane-b-proof-page",
         configureServer(server) {
           server.middlewares.use((req, res, next) => {
@@ -387,9 +446,11 @@ async function openProofPage(browser, vite) {
   return page;
 }
 
-/** Shared A-repeat then A→B→A capture. Fonts, when the fixture exports them, load before create. */
-async function captureFlatSequence({ modulePath, inspect }) {
+/** Shared A-repeat then A→B→A capture. Optional times reuse this for the crop seek pair. */
+async function captureFlatSequence({ modulePath, inspect, timeA, timeB }) {
   const fixture = await import(modulePath);
+  const sampleA = timeA ?? fixture.TIME_A;
+  const sampleB = timeB ?? fixture.TIME_B;
   const errors = [];
   let fontsReadyBeforeCreate = false;
   let documentFacesBeforeCreate = null;
@@ -495,8 +556,8 @@ async function captureFlatSequence({ modulePath, inspect }) {
   let calibration;
   let sequence;
   try {
-    const first = await decode(fixture.TIME_A);
-    const repeat = await decode(fixture.TIME_A);
+    const first = await decode(sampleA);
+    const repeat = await decode(sampleA);
     steps.push("calibrate-a", "calibrate-a-repeat");
     let tolerance = 0;
     for (let i = 0; i < first.pixels.length; i++)
@@ -506,9 +567,9 @@ async function captureFlatSequence({ modulePath, inspect }) {
       );
     steps.push("tolerance-recorded");
     calibration = { first, repeat, tolerance };
-    const seqA = await decode(fixture.TIME_A);
-    const seqB = await decode(fixture.TIME_B);
-    const seqA2 = await decode(fixture.TIME_A);
+    const seqA = await decode(sampleA);
+    const seqB = await decode(sampleB);
+    const seqA2 = await decode(sampleA);
     steps.push("sequence-a", "sequence-b", "sequence-a");
     sequence = { seqA, seqB, seqA2 };
   } finally {
@@ -1306,6 +1367,469 @@ async function proveFlatText() {
   return evidence;
 }
 
+function pngSize(bytes) {
+  assert.equal(bytes[0], 0x89, "PNG signature");
+  assert.equal(bytes.subarray(12, 16).toString("ascii"), "IHDR");
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
+/** Cover UV for a 160×80 asset in a 100×80 box: sx = 1.25/2, origin (1-sx)/2. */
+function coverSource(localX, localY) {
+  const u = 0.1875 + (localX / IMAGE_ALLOC.width) * 0.625;
+  const v = localY / IMAGE_ALLOC.height;
+  return { u, v, x: u * IMAGE_ASSET.width, y: v * IMAGE_ASSET.height };
+}
+
+/** Crop {x:0.2,y:0.5,zoom:2} shrinks that cover window and recenters on the focal point. */
+function cropSource(localX, localY) {
+  const uSpan = 0.625 / 2;
+  const vSpan = 1 / 2;
+  const u0 = Math.max(0, Math.min(1 - uSpan, 0.2 - uSpan / 2));
+  const v0 = Math.max(0, Math.min(1 - vSpan, 0.5 - vSpan / 2));
+  const u = u0 + (localX / IMAGE_ALLOC.width) * uSpan;
+  const v = v0 + (localY / IMAGE_ALLOC.height) * vSpan;
+  return { u, v, x: u * IMAGE_ASSET.width, y: v * IMAGE_ASSET.height };
+}
+
+function containSource(localX, localY) {
+  const u = localX / IMAGE_CONTAIN.width;
+  const v = localY / IMAGE_CONTAIN.height;
+  return { u, v, x: u * IMAGE_ASSET.width, y: v * IMAGE_ASSET.height };
+}
+
+function sourceField(source) {
+  assert.ok(source.x > 8 && source.x < IMAGE_ASSET.width - 8, source.x);
+  assert.ok(source.y > 8 && source.y < IMAGE_ASSET.height - 8, source.y);
+  assert.ok(Math.abs(source.x - IMAGE_ASSET.width / 2) > 8, source.x);
+  return source.x < IMAGE_ASSET.width / 2 ? IMAGE_LEFT_RGBA : IMAGE_RIGHT_RGBA;
+}
+
+function localOf(point, quad) {
+  return [point[0] - quad.x, point[1] - quad.y];
+}
+
+/**
+ * Public CLI inspect of the flat Image fixture, then one FrameSource per variant.
+ * Contain/cover is A→B→A. Crop is its own instance seeking crop→cover→crop.
+ */
+async function proveFlatImages() {
+  const startedAt = new Date().toISOString();
+  const evidence = {
+    startedAt,
+    fixture: "scripts/inspect-fixture/manifest-media.mjs",
+    output: [...OUTPUT],
+    allocation: IMAGE_ALLOC,
+    contain: IMAGE_CONTAIN,
+    cover: IMAGE_COVER,
+    crop: { x: 0.2, y: 0.5, zoom: 2, quad: IMAGE_COVER },
+    g7: {
+      productionCounters: "unavailable",
+      renderPassReuse: "not-measured",
+      textureReuse: "not-measured",
+      reason:
+        "G7 requires engine instrumentation. This script does not estimate passes or texture reuse.",
+    },
+    limits: {
+      video: "not part of this unit",
+      quad: "conservative projected draw quad, not alpha, ink, or pixel coverage",
+      samples: "named interiors only; a matching sample is not quad coverage",
+    },
+  };
+  let browser;
+  let vite;
+  try {
+    const fixtureSource = await readFile(
+      join(template, "manifest-media.mjs"),
+      "utf8",
+    );
+    for (const needle of [
+      "TIME_A = 0.25",
+      "TIME_B = 1.25",
+      "TIME_CROP = 1.75",
+      "[320, 180]",
+      "width: 100, height: 80",
+      "x: 40, y: 30",
+      "x: 40, y: 45, width: 100, height: 50",
+      "x: 40, y: 30, width: 100, height: 80",
+      "x: 0.2, y: 0.5, zoom: 2",
+      "width: 160, height: 80",
+      "#112233",
+      "#E23D3D",
+      "#2E6BFF",
+      "/media/still.png",
+      "[60, 42]",
+      "[120, 42]",
+      "[60, 70]",
+      "[120, 70]",
+      "[16, 16]",
+      'fit: "contain"',
+      'fit: "cover"',
+      "duration: 2",
+    ])
+      assert.ok(
+        fixtureSource.includes(needle),
+        `manifest-media.mjs drifted from the Lane B image contract: missing ${needle}`,
+      );
+
+    browser = await launchProofBrowser();
+    const painter = await browser.newPage();
+    const painted = await painter.evaluate(async () => {
+      const canvas = new OffscreenCanvas(160, 80);
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.fillStyle = "#E23D3D";
+      context.fillRect(0, 0, 80, 80);
+      context.fillStyle = "#2E6BFF";
+      context.fillRect(80, 0, 80, 80);
+      const data = context.getImageData(0, 0, 160, 80).data;
+      const at = (x, y) => {
+        const index = (y * 160 + x) * 4;
+        return [data[index], data[index + 1], data[index + 2], data[index + 3]];
+      };
+      const bytes = new Uint8Array(
+        await (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer(),
+      );
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 8192)
+        binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      return {
+        png: btoa(binary),
+        left: at(8, 40),
+        right: at(152, 40),
+        beforeSplit: at(79, 40),
+        afterSplit: at(80, 40),
+      };
+    });
+    await painter.close();
+    await browser.close();
+    browser = undefined;
+    const stillBytes = Buffer.from(painted.png, "base64");
+    assert.deepEqual(painted.left, IMAGE_LEFT_RGBA);
+    assert.deepEqual(painted.right, IMAGE_RIGHT_RGBA);
+    assert.deepEqual(painted.beforeSplit, IMAGE_LEFT_RGBA);
+    assert.deepEqual(painted.afterSplit, IMAGE_RIGHT_RGBA);
+    assert.deepEqual(pngSize(stillBytes), IMAGE_ASSET);
+    await mkdir(artifacts, { recursive: true });
+    await writeFile(stillPng, stillBytes);
+    const stillHash = createHash("sha256").update(stillBytes).digest("hex");
+    evidence.asset = {
+      path: "artifacts/g1b/still.png",
+      bytes: stillBytes.length,
+      sha256: stillHash,
+      size: pngSize(stillBytes),
+      halves: "opaque #E23D3D | #2E6BFF",
+    };
+
+    await createConsumer(imageConsumer, "manifest-media.mjs", { stillPng });
+    const copied = await readFile(join(imageConsumer, "public/media/still.png"));
+    assert.deepEqual(copied, stillBytes, "consumer still.png bytes drifted");
+
+    const inspectAt = (time, extra = []) =>
+      inspectJson([
+        "inspect",
+        "--project",
+        imageConsumer,
+        "--time",
+        String(time),
+        ...extra,
+      ]);
+    const cases = [
+      ["contain", TIME_A, IMAGE_CONTAIN],
+      ["cover", TIME_B, IMAGE_COVER],
+      ["crop", IMAGE_TIME_CROP, IMAGE_COVER],
+    ];
+    const cli = {};
+    for (const [label, time, bounds] of cases) {
+      const { document } = await inspectAt(time);
+      assert.equal(document.time.requested, time, label);
+      assert.equal(document.scenes.length, 1, label);
+      assert.deepEqual([...document.project.resolution], [...OUTPUT], label);
+      assert.equal(
+        document.diagnostics.some((entry) => entry.severity === "error"),
+        false,
+        label,
+      );
+      const scene = document.scenes[0];
+      assert.equal(scene.scope, "scene:flat", label);
+      const image = nodeById(scene.tree, IMAGE_ID);
+      const background = nodeById(scene.tree, IMAGE_BACKGROUND_ID);
+      assert.equal(image?.kind, "image", label);
+      assert.ok(image?.inspectionId !== undefined, label);
+      assert.ok(background?.inspectionId !== undefined, label);
+      const records = scene.paintRecords ?? [];
+      const imageRecord = recordOwnedBy(records, image);
+      const backgroundRecord = recordOwnedBy(records, background);
+      assert.ok(imageRecord, `${label} image record`);
+      assert.ok(backgroundRecord, `${label} background record`);
+      assert.equal(
+        records.filter((record) => record.kind === "media").length,
+        1,
+        label,
+      );
+      assertMediaRecord(imageRecord, bounds, label);
+      assert.equal(imageRecord.inspection.nodeId, image.inspectionId, label);
+      assert.equal(backgroundRecord.paintRole, "background", label);
+      cli[label] = {
+        bounds: imageRecord.bounds,
+        ownerId: image.inspectionId,
+        provenance: imageRecord.provenance,
+        accuracy: imageRecord.accuracy,
+      };
+    }
+    evidence.cli = cli;
+
+    const targeted = await inspectAt(TIME_A, [
+      "--target",
+      `scene:flat#${IMAGE_ID}`,
+    ]);
+    const keptScene = targeted.document.scenes[0];
+    const keptIds = idsOf(keptScene.tree).sort();
+    assert.deepEqual(keptIds, [IMAGE_ID, IMAGE_STAGE_ID].sort());
+    assert.equal(targeted.document.target.id, IMAGE_ID);
+    assert.equal(targeted.document.target.matches, 1);
+    assert.equal(targeted.document.target.scope, "scene:flat");
+    const keptImage = nodeById(keptScene.tree, IMAGE_ID);
+    const keptRecords = keptScene.paintRecords ?? [];
+    assert.equal(keptRecords.length, 1);
+    assertMediaRecord(keptRecords[0], IMAGE_CONTAIN, "target");
+    assert.equal(keptRecords[0].inspection.nodeId, keptImage.inspectionId);
+    assert.equal(
+      keptRecords.some((record) => record.paintRole === "background"),
+      false,
+      "targeting the image must drop the background sibling",
+    );
+    assert.equal(
+      (keptScene.commands ?? []).some(
+        (command) => command.matchId === IMAGE_BACKGROUND_ID,
+      ),
+      false,
+    );
+    evidence.target = {
+      ...targeted.document.target,
+      keptIds,
+      droppedSibling: IMAGE_BACKGROUND_ID,
+      ownerId: keptImage.inspectionId,
+    };
+    const quiet = await run([
+      "inspect",
+      "--project",
+      imageConsumer,
+      "--time",
+      String(TIME_A),
+      "--fail-on",
+      "error",
+    ]);
+    assert.equal(quiet.code, 0, quiet.stderr);
+
+    vite = await createProofServer({
+      port: IMAGE_PORT,
+      title: "Lane B image pixels",
+    });
+    const served = Buffer.from(
+      await (
+        await fetch(new URL("/media/still.png", vite.resolvedUrls.local[0]))
+      ).arrayBuffer(),
+    );
+    assert.deepEqual(served, stillBytes, "proof server still.png bytes drifted");
+    evidence.servedSha256 = createHash("sha256").update(served).digest("hex");
+
+    browser = await launchProofBrowser();
+    const page = await openProofPage(browser, vite);
+    const browserErrors = page.proofErrors;
+    const fit = await page.evaluate(captureFlatSequence, {
+      modulePath: "/scripts/inspect-fixture/manifest-media.mjs",
+      inspect: true,
+    });
+    const crop = await page.evaluate(captureFlatSequence, {
+      modulePath: "/scripts/inspect-fixture/manifest-media.mjs",
+      inspect: true,
+      timeA: IMAGE_TIME_CROP,
+      timeB: TIME_B,
+    });
+    const steps = [
+      "calibrate-a",
+      "calibrate-a-repeat",
+      "tolerance-recorded",
+      "sequence-a",
+      "sequence-b",
+      "sequence-a",
+    ];
+    assert.deepEqual(fit.steps, steps);
+    assert.deepEqual(crop.steps, steps);
+    const gap = Math.min(
+      maxChannelDelta(IMAGE_LEFT_RGBA, BACKGROUND_RGBA),
+      maxChannelDelta(IMAGE_RIGHT_RGBA, BACKGROUND_RGBA),
+      maxChannelDelta(IMAGE_LEFT_RGBA, IMAGE_RIGHT_RGBA),
+    );
+    const owned = (frame, bounds, label) => {
+      const node = frame.report.nodes.find((entry) => entry.id === IMAGE_ID);
+      const record = frame.report.records.find(
+        (entry) => entry.inspection?.nodeId === node?.inspectionId,
+      );
+      assert.equal(frame.report.sceneId, "flat", label);
+      assert.equal(
+        frame.report.records.filter((entry) => entry.kind === "media").length,
+        1,
+        label,
+      );
+      assert.ok(record, label);
+      assertMediaRecord(record, bounds, label);
+      assert.equal(record.inspection.nodeId, node.inspectionId, label);
+      return record;
+    };
+    const checkSequence = (captured, boundsA, boundsB, label) => {
+      const { cal1, cal2, seqA, seqB, seqA2 } = captured.frames;
+      for (const frame of [cal1, cal2, seqA, seqB, seqA2])
+        assert.deepEqual([frame.width, frame.height], [...OUTPUT], label);
+      const tolerance = maxChannelDelta(cal1.pixels, cal2.pixels);
+      assert.equal(tolerance, captured.tolerance, label);
+      assert.ok(tolerance < gap, `${label} tolerance ${tolerance} gap ${gap}`);
+      const deltas = {
+        calibration: tolerance,
+        sequenceAToCalibration: maxChannelDelta(seqA.pixels, cal1.pixels),
+        sequenceARepeatToCalibration: maxChannelDelta(seqA2.pixels, cal1.pixels),
+        sequenceAToSequenceB: maxChannelDelta(seqA.pixels, seqB.pixels),
+      };
+      assert.ok(deltas.sequenceAToCalibration <= tolerance, label);
+      assert.ok(deltas.sequenceARepeatToCalibration <= tolerance, label);
+      assert.ok(deltas.sequenceAToSequenceB > tolerance, label);
+      owned(seqA, boundsA, `${label} A`);
+      owned(seqB, boundsB, `${label} B`);
+      owned(seqA2, boundsA, `${label} A2`);
+      assertQuadEqual(seqA.report.records.find((entry) => entry.kind === "media").bounds, cli[label === "fit" ? "contain" : "crop"].bounds, `${label} browser/CLI A`);
+      assertQuadEqual(
+        seqB.report.records.find((entry) => entry.kind === "media").bounds,
+        cli.cover.bounds,
+        `${label} browser/CLI B`,
+      );
+      return { tolerance, deltas, frames: captured.frames };
+    };
+    const fitProof = checkSequence(fit, IMAGE_CONTAIN, IMAGE_COVER, "fit");
+    const cropProof = checkSequence(crop, IMAGE_COVER, IMAGE_COVER, "crop");
+    assert.equal(fit.frames.seqA.report.requestedTime, TIME_A);
+    assert.equal(fit.frames.seqB.report.requestedTime, TIME_B);
+    assert.equal(fit.frames.seqA2.report.requestedTime, TIME_A);
+    assert.equal(crop.frames.seqA.report.requestedTime, IMAGE_TIME_CROP);
+    assert.equal(crop.frames.seqB.report.requestedTime, TIME_B);
+    assert.equal(crop.frames.seqA2.report.requestedTime, IMAGE_TIME_CROP);
+    const sample = (pixels, point, expected, label) =>
+      assertNear(samplePixel(pixels, point), expected, Math.max(fitProof.tolerance, cropProof.tolerance), label);
+    const [letterLeftX, letterLeftY] = localOf(
+      IMAGE_SAMPLE_LETTERBOX_LEFT,
+      IMAGE_COVER,
+    );
+    const [letterRightX, letterRightY] = localOf(
+      IMAGE_SAMPLE_LETTERBOX_RIGHT,
+      IMAGE_COVER,
+    );
+    const [leftX, leftY] = localOf(IMAGE_SAMPLE_LEFT, IMAGE_CONTAIN);
+    const [rightX, rightY] = localOf(IMAGE_SAMPLE_RIGHT, IMAGE_CONTAIN);
+    const [coverLeftX, coverLeftY] = localOf(IMAGE_SAMPLE_LEFT, IMAGE_COVER);
+    const [coverRightX, coverRightY] = localOf(IMAGE_SAMPLE_RIGHT, IMAGE_COVER);
+    const containLeft = sourceField(containSource(leftX, leftY));
+    const containRight = sourceField(containSource(rightX, rightY));
+    const coverLetterLeft = sourceField(coverSource(letterLeftX, letterLeftY));
+    const coverLetterRight = sourceField(
+      coverSource(letterRightX, letterRightY),
+    );
+    const coverLeft = sourceField(coverSource(coverLeftX, coverLeftY));
+    const coverRight = sourceField(coverSource(coverRightX, coverRightY));
+    const cropRight = sourceField(cropSource(coverRightX, coverRightY));
+    const cropLeft = sourceField(cropSource(coverLeftX, coverLeftY));
+    assert.deepEqual(containLeft, IMAGE_LEFT_RGBA);
+    assert.deepEqual(containRight, IMAGE_RIGHT_RGBA);
+    assert.deepEqual(coverLetterLeft, IMAGE_LEFT_RGBA);
+    assert.deepEqual(coverLetterRight, IMAGE_RIGHT_RGBA);
+    assert.deepEqual(coverLeft, IMAGE_LEFT_RGBA);
+    assert.deepEqual(coverRight, IMAGE_RIGHT_RGBA);
+    assert.deepEqual(cropLeft, IMAGE_LEFT_RGBA);
+    assert.notDeepEqual(cropRight, coverRight);
+    assert.deepEqual(cropRight, IMAGE_LEFT_RGBA);
+    const fitA = fitProof.frames.seqA.pixels;
+    const fitB = fitProof.frames.seqB.pixels;
+    const cropA = cropProof.frames.seqA.pixels;
+    const cropB = cropProof.frames.seqB.pixels;
+    sample(fitA, IMAGE_SAMPLE_BG, BACKGROUND_RGBA, "contain background");
+    sample(fitA, IMAGE_SAMPLE_LETTERBOX_LEFT, BACKGROUND_RGBA, "contain letterbox left");
+    sample(fitA, IMAGE_SAMPLE_LETTERBOX_RIGHT, BACKGROUND_RGBA, "contain letterbox right");
+    sample(fitA, IMAGE_SAMPLE_LEFT, containLeft, "contain left field");
+    sample(fitA, IMAGE_SAMPLE_RIGHT, containRight, "contain right field");
+    sample(fitB, IMAGE_SAMPLE_LETTERBOX_LEFT, coverLetterLeft, "cover letterbox left");
+    sample(fitB, IMAGE_SAMPLE_LETTERBOX_RIGHT, coverLetterRight, "cover letterbox right");
+    sample(fitB, IMAGE_SAMPLE_LEFT, coverLeft, "cover left field");
+    sample(fitB, IMAGE_SAMPLE_RIGHT, coverRight, "cover right field");
+    sample(cropA, IMAGE_SAMPLE_RIGHT, cropRight, "crop right field");
+    sample(cropA, IMAGE_SAMPLE_LEFT, cropLeft, "crop left field");
+    sample(cropB, IMAGE_SAMPLE_RIGHT, coverRight, "crop-variant cover right field");
+    assert.ok(
+      maxChannelDelta(
+        samplePixel(fitA, IMAGE_SAMPLE_LETTERBOX_LEFT),
+        samplePixel(fitB, IMAGE_SAMPLE_LETTERBOX_LEFT),
+      ) > fitProof.tolerance,
+      "letterbox must separate contain from cover",
+    );
+    assert.ok(
+      maxChannelDelta(
+        samplePixel(cropA, IMAGE_SAMPLE_RIGHT),
+        samplePixel(cropB, IMAGE_SAMPLE_RIGHT),
+      ) > cropProof.tolerance,
+      "right interior must separate crop from cover",
+    );
+    await writeFile(join(reports, "image-a.png"), Buffer.from(fitProof.frames.seqA.png, "base64"));
+    await writeFile(join(reports, "image-b.png"), Buffer.from(fitProof.frames.seqB.png, "base64"));
+    await writeFile(join(reports, "image-crop.png"), Buffer.from(cropProof.frames.seqA.png, "base64"));
+    evidence.pixels = {
+      browser: { version: browser.version(), userAgent: fit.userAgent },
+      gpu: fit.gpu,
+      gpuError: fit.gpuError,
+      cropGpu: crop.gpu,
+      renderErrors: [...fit.renderErrors, ...crop.renderErrors],
+      pageErrors: browserErrors,
+      resolution: [...OUTPUT],
+      colorGap: gap,
+      fit: { tolerance: fitProof.tolerance, deltas: fitProof.deltas },
+      crop: { tolerance: cropProof.tolerance, deltas: cropProof.deltas },
+      samples: {
+        background: IMAGE_SAMPLE_BG,
+        letterboxLeft: IMAGE_SAMPLE_LETTERBOX_LEFT,
+        letterboxRight: IMAGE_SAMPLE_LETTERBOX_RIGHT,
+        left: IMAGE_SAMPLE_LEFT,
+        right: IMAGE_SAMPLE_RIGHT,
+        contain: { left: containLeft, right: containRight },
+        cover: {
+          letterboxLeft: coverLetterLeft,
+          letterboxRight: coverLetterRight,
+          left: coverLeft,
+          right: coverRight,
+        },
+        crop: { left: cropLeft, right: cropRight },
+      },
+      captures: [
+        "artifacts/g1b/reports/image-a.png",
+        "artifacts/g1b/reports/image-b.png",
+        "artifacts/g1b/reports/image-crop.png",
+      ],
+      instance:
+        "one FrameSource per variant; calibrate A twice, then A → B → A. Crop variant seeks crop → cover → crop.",
+    };
+    assert.deepEqual(fit.renderErrors, []);
+    assert.deepEqual(crop.renderErrors, []);
+    assert.deepEqual(browserErrors, []);
+  } catch (error) {
+    evidence.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    evidence.finishedAt = new Date().toISOString();
+    await browser?.close();
+    await vite?.close();
+    await mkdir(reports, { recursive: true });
+    await writeFile(
+      join(reports, "image-pixel-proof.json"),
+      JSON.stringify(evidence, null, 2),
+    );
+  }
+  return evidence;
+}
+
 const findings = {};
 await mkdir(reports, { recursive: true });
 await createConsumer(consumer, "manifest.ts");
@@ -1480,6 +2004,7 @@ try {
   };
   findings.boxProof = await proveFlatBoxes();
   findings.textProof = await proveFlatText();
+  findings.imageProof = await proveFlatImages();
 
   // Legacy paths stay unqualified; the scope carries the qualification.
   for (const scene of document.scenes)
@@ -1895,6 +2420,11 @@ try {
       "FontFace 400 and 700 loaded and registered before FrameSource.create",
       "one FrameSource text A→B→A ink inside the reported quad, not a filled rect",
       "text G7 counters left unavailable",
+      "flat Image CLI: projected-image-draw-quad, conservative, scene-target-pixels, 320x180",
+      "contain, cover, and crop quads match the fitted rects within float32 tolerance",
+      "target keeps the image owner and drops the background sibling",
+      "one FrameSource per fit variant; contain/cover and crop pixels match the sampled UV fields",
+      "image G7 counters left unavailable; video is not part of this unit",
     ],
   };
   await writeFile(

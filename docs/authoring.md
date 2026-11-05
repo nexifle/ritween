@@ -69,20 +69,36 @@ import { Circle, Line, Group, ForEach, HStack, Box, Motion } from "ritween";
 
 const bars = HStack(
   ForEach(
-    [{ id: "sales", value: 80 }, { id: "cost", value: 45 }],
+    [
+      { id: "sales", value: 80 },
+      { id: "cost", value: 45 },
+    ],
     (item) => item.id,
     (item, index) =>
-      Box({ width: 24, height: item.value })
-        .scale(1, Motion.stagger(index, 0.08, Motion.fade()), [0.5, 1]),
+      Box({ width: 24, height: item.value }).scale(
+        1,
+        Motion.stagger(index, 0.08, Motion.fade()),
+        [0.5, 1],
+      ),
   ),
   { gap: 12, align: "end" },
 );
 const badge = Group([
   Circle({ radius: 40, fill: "#4268EC" }),
-  Circle({ radius: 40, stroke: "#FFFFFF", strokeWidth: 6, trim: [0, Motion.fade()] }),
-]).opacity(Motion.fade()).offset(0, Motion.slide());
+  Circle({
+    radius: 40,
+    stroke: "#FFFFFF",
+    strokeWidth: 6,
+    trim: [0, Motion.fade()],
+  }),
+])
+  .opacity(Motion.fade())
+  .offset(0, Motion.slide());
 const connector = Line({
-  from: [0, 0], to: [200, 60], width: 4, color: "#4268EC",
+  from: [0, 0],
+  to: [200, 60],
+  width: 4,
+  color: "#4268EC",
   progress: Motion.fade(),
 });
 ```
@@ -133,17 +149,34 @@ shifts a tween/keyframe track in scene-local seconds; `Motion.keyframes` and
 import { Group, Image, Video, World, Shot, videoResource } from "ritween";
 
 const footage = videoResource({
-  id: "interview", name: "Interview", url: "/media/interview.mp4",
-  start: 0, duration: 4, offset: 2, volume: 0.8,
+  id: "interview",
+  name: "Interview",
+  url: "/media/interview.mp4",
+  start: 0,
+  duration: 4,
+  offset: 2,
+  volume: 0.8,
 });
-const world = World(() => Group([
-  Video(footage, { width: 1920, height: 1080, fit: "cover" }),
-  Image({ url: "/media/logo.png", width: 160, height: 80, fit: "contain" })
-    .offset(80, 80),
-]), { size: [1920, 1080] });
+const world = World(
+  () =>
+    Group([
+      Video(footage, { width: 1920, height: 1080, fit: "cover" }),
+      Image({
+        url: "/media/logo.png",
+        width: 160,
+        height: 80,
+        fit: "contain",
+      }).offset(80, 80),
+    ]),
+  { size: [1920, 1080] },
+);
 const shot = Shot({
-  id: "interview-shot", source: "manifest.ts", start: 0, duration: 4,
-  world, mediaClips: [footage],
+  id: "interview-shot",
+  source: "manifest.ts",
+  start: 0,
+  duration: 4,
+  world,
+  mediaClips: [footage],
 });
 ```
 
@@ -168,11 +201,18 @@ footage audio resolver; no manual list forwarding is needed:
 import { StageEntry, Video, videoResource } from "ritween";
 
 const footage = videoResource({
-  id: "intro-video", name: "Intro video", url: "/media/intro.mp4",
-  start: 0, duration: 4, offset: 2,
+  id: "intro-video",
+  name: "Intro video",
+  url: "/media/intro.mp4",
+  start: 0,
+  duration: 4,
+  offset: 2,
 });
 const entry = StageEntry({
-  id: "intro", source: "manifest.ts", start: 0, duration: 4,
+  id: "intro",
+  source: "manifest.ts",
+  start: 0,
+  duration: 4,
   mediaClips: [footage],
   view: () => Video(footage, { width: 1920, height: 1080, fit: "cover" }),
 });
@@ -220,7 +260,8 @@ keeps the layout viewport fixed, and clamps sampling at source edges:
 
 ```ts
 Video(footage, {
-  width: 600, height: 600,
+  width: 600,
+  height: 600,
   crop: { x: 0.7, y: 0.5, zoom: { from: 1, to: 1.4, duration: 3 } },
 }).clip({ shape: "rect", radius: 32 });
 ```
@@ -305,20 +346,111 @@ A flexible child's own padding remains part of the space it consumes.
 
 Each modifier wraps its input and returns a new node:
 
-| Modifier                                | Semantics                                                                                                                                   |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.padding(x, y = x)`                    | Adds horizontal/vertical space to layout size.                                                                                              |
-| `.frame({ width, height, align })`      | Number fixes an axis, `"fill"` uses offered space, omission keeps intrinsic size. Alignment defaults to center on both axes. Does not clip. |
-| `.offset(x, y = 0)`                     | Translates paint without moving siblings or changing layout size.                                                                           |
-| `.scale(x, y = x, anchor = [0.5, 0.5])` | Scales paint around a normalized local anchor; does not reflow.                                                                             |
-| `.opacity(value)`                       | Fades a Group/Composition as one combined image; otherwise multiplies descendant primitive alpha.                                                                                               |
-| `.id(key)`                              | Names the resulting node for sibling identity and inspection.                                                                               |
+| Modifier                                             | Semantics                                                                                                                                   |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.padding(x, y = x)`                                 | Adds horizontal/vertical space to layout size.                                                                                              |
+| `.padding({ top, right, bottom, left })`             | Same, per edge. Omitted edges are zero; values must be finite and non-negative.                                                             |
+| `.frame({ width, height, align })`                   | Number fixes an axis, `"fill"` uses offered space, omission keeps intrinsic size. Alignment defaults to center on both axes. Does not clip. |
+| `.background({ fill, radius, stroke, strokeWidth })` | Paints the node's measured bounds behind it. Sets no size, clips nothing, adds no surface.                                                  |
+| `.flex(weight = 1)`                                  | Proportional main-axis slot inside HStack or VStack. Finite positive weight. Does not reflow outside stacks.                                |
+| `.offset(x, y = 0)`                                  | Translates paint without moving siblings or changing layout size.                                                                           |
+| `.scale(x, y = x, anchor = [0.5, 0.5])`              | Scales paint around a normalized local anchor; does not reflow.                                                                             |
+| `.opacity(value)`                                    | Fades a Group/Composition as one combined image; otherwise multiplies descendant primitive alpha.                                           |
+| `.id(key)`                                           | Names the resulting node for sibling identity and inspection.                                                                               |
 
 `Text("A").padding(20).frame({ width: 200 })` differs from
 `Text("A").frame({ width: 200 }).padding(20)`. Transform order also matters.
 Opacity on ordinary Stacks is **per primitive**: overlapping children are faded
 separately. Group and Composition are isolation boundaries: descendants are blended
 first, then the boundary's opacity is applied to their combined image.
+
+### Frame alignment axes
+
+`align` applies to both axes. `alignX` and `alignY` override it per axis; an axis
+with neither value is centered. Precedence is axis value, then legacy `align`, then
+center, so existing frames keep their geometry. Negative remaining space (content
+larger than the frame) still shifts the child past the frame edge, including on the
+axis-specific offsets. Stack `align` is unrelated: it stays cross-axis alignment for
+HStack/VStack.
+
+### Directional padding and content backgrounds
+
+Directional padding normalizes to four insets and behaves exactly like numeric
+padding per edge: the child proposal subtracts the insets with a floor of zero, and
+the wrapper's measured size adds them back. A child larger than the remaining space
+stays oversized and keeps its overflow diagnostic rather than being clipped.
+
+`.background()` paints a box on the wrapper's own measured bounds, before the child's
+paint. It changes no measurement, never clips or isolates, and adds no offscreen
+pass, so it is not an isolation boundary like Group. Stroke follows the Box
+convention: inside the bounds. Because modifiers are ordered, padding applied inside
+the background is painted while padding outside it is not:
+
+```ts
+const card = Text("Row", { size: 20 }).padding({
+  top: 8,
+  bottom: 8,
+  left: 12,
+  right: 12,
+});
+card.background({ fill: "#FFFFFF", radius: 8 }); // fills the padded card
+card.padding(4).background({ fill: "#FFFFFF" }); // padding 4 stays transparent
+```
+
+Modifier order also decides which ID owns the target. `.id()` on the draw leaf
+(`box().id("card").background(...)`) keeps the leaf's identity. `.id()` on the
+background wrapper (`box().background(...).id("card")`) is published on the
+background paint as `matchId`, so the declared ID still yields exactly one shared
+element — the wrapper's measured bounds — without duplicating the child's identity.
+An inner leaf ID and an outer wrapper ID are two different declared IDs and each
+keeps its own single target. Other modifier wrappers (`padding`, `frame`, `offset`,
+`scale`, `opacity`) still expose only layout-node identity, not shared-element
+targets.
+
+The background is published in inspection commands with `paintRole: "background"` so
+rules and targets can exclude decorative paint from content geometry.
+
+Matching identity and paint correction are separate. `sharedId`/`matchId` decide
+_whether_ a transition has a pose for a declared ID; `correctionIds` decides _which_
+paints receive it. Every paint in a declared modifier chain publishes the same
+ordered candidate list, innermost declaration first, so a background and the content
+it decorates travel together and cannot split mid-transition. Only the first
+candidate the transition actually supplies is applied — one pose per paint, never
+two — so an inner ID that this transition did not match falls back to a matched outer
+one instead of pinning the element. A clip or Group is corrected once as an isolated
+surface, and its contents are suppressed only when that surface actually resolves a
+pose: an unmatched wrapper ID never pins a matched descendant, and the pose is still
+never applied twice. A corrected descendant must stay inside the surface's layout
+bounds, so give an isolated container enough size for the travel it receives.
+
+### Weighted flexible slots
+
+`.flex(weight = 1)` assigns a proportional main-axis slot inside the nearest enclosing
+sequential `HStack` or `VStack`. Weight must be a finite, positive number. Flex
+participates at the stack boundary only and does not search into descendant stacks.
+
+Allocation contract:
+
+1. Fixed siblings and gaps reserve space first using standard measurement.
+2. Remaining non-negative main-axis space is divided among flexible slots by weight.
+3. Fixed siblings do not shrink. If fixed siblings exceed available space, flexible
+   slots receive zero and emit a structured `fixed-allocation-deficit` diagnostic.
+4. The assigned outer slot includes all boundary padding regardless of modifier order:
+   `.padding(10).flex(1)` and `.flex(1).padding(10)` produce identical outer bounds
+   without expanding the slot budget.
+5. Flexible cross-axis size is content-driven unless an explicit frame controls it.
+6. Content exceeding the slot remains visible unless clipped explicitly with `.clip()`,
+   and emits an `offered-size-overflow` diagnostic.
+7. Combinations:
+   - Flex plus main-axis fill frame: valid; explicit flex weight wins.
+   - Flex plus numeric main-axis frame: invalid combination; throws a path-specific error.
+   - Flex plus numeric cross-axis frame: valid; cross axis uses the frame, main axis stays flexible.
+   - Multiple flex wrappers on the same boundary chain: invalid; throws a path-specific error.
+   - `Spacer()` or `frame({ ...: "fill" })` without explicit flex: participates with weight 1 in mixed stacks; preserves legacy behavior when no explicit flex is present.
+   - Flex outside `HStack`/`VStack` (e.g. at root, in `ZStack`, or in `Group`): no allocation effect; emits an `unused-flex` diagnostic.
+   - Nested stack containing flex: the inner stack owns its descendants' allocation.
+8. Zero offered text width wraps graphemes without infinite loops or division by zero,
+   preserving line height and empty line boxes.
 
 ## Motion
 
@@ -755,7 +887,12 @@ Keep a reference to the Stage returned by a scene factory. After rendering,
 - `tree`: paths, kinds, layout bounds, cumulative transforms, and children.
 - `commands`: paint order, source paths, styles/text runs, and opacity. Group
   commands contain an isolated child frame and its combined opacity; Composition
-  commands contain their own evaluated World/overlay frames (and cameras).
+  commands contain their own evaluated World/overlay frames (and cameras). A
+  background modifier's own paint carries `paintRole: "background"` and, when the
+  wrapper declared an ID, `matchId`; every paint of a declared chain publishes
+  `correctionIds`. Content paints without a declared chain omit the field; contents of
+  a clip/Group keep their own list, and the renderer suppresses it only when that
+  surface resolves a pose.
 - `warnings`: content exceeding offered layout bounds, including local time.
 
 Bounds are before paint transforms; transform is `[scaleX, scaleY, translateX,
@@ -809,12 +946,25 @@ grid. Cells paint in input order, may overlap, and do not clip their contents.
 Oversized content produces the usual layout warning.
 
 ```ts
-Grid([
-  { id: "title", row: 0, column: 0, columnSpan: 2, view: Text("Sales") },
-  { id: "plot", row: 1, column: 0, columnSpan: 2,
-    view: BarChart([{ id: "north", value: 12 }, { id: "south", value: -3 }],
-      { width: 400, height: 180, progress: Motion.fade() }) },
-], { columns: 2, rows: 2, cellWidth: 200, cellHeight: 180, columnGap: 8 });
+Grid(
+  [
+    { id: "title", row: 0, column: 0, columnSpan: 2, view: Text("Sales") },
+    {
+      id: "plot",
+      row: 1,
+      column: 0,
+      columnSpan: 2,
+      view: BarChart(
+        [
+          { id: "north", value: 12 },
+          { id: "south", value: -3 },
+        ],
+        { width: 400, height: 180, progress: Motion.fade() },
+      ),
+    },
+  ],
+  { columns: 2, rows: 2, cellWidth: 200, cellHeight: 180, columnGap: 8 },
+);
 ```
 
 `BarChart`, `LineChart`, and `DonutChart` accept `{ id, value, color? }` data;

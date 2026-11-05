@@ -28,6 +28,8 @@ export function collectSharedElements(
   );
   const result: SharedElement[] = [];
   const sourcePaths = new Set<string>();
+  /** Emitted target path per ID, so one modifier chain never emits the same ID twice. */
+  const emitted = new Map<string, string>();
   for (const c of frame.commands) {
     const [sx, sy, tx, ty] = c.transform,
       b = c.bounds;
@@ -40,9 +42,19 @@ export function collectSharedElements(
       b.y * sy + ty,
     ]);
     // A filled/stroked shape emits multiple paint commands for one source node.
-    if (c.sharedId && !sourcePaths.has(c.path)) {
-      result.push({ id: c.sharedId, matrix });
-      sourcePaths.add(c.path);
+    // `matchId` is the wrapper-declared identity of a modifier's own paint, so a wrapper
+    // ID yields one target without borrowing the child's `sharedId`. Commands are in paint
+    // order (wrapper before its descendants), so an ancestor already owning the ID wins and
+    // repeating that ID further down the same chain (`id("a").background().id("a")`) stays
+    // one target instead of becoming a duplicate the matcher rejects.
+    const id = c.sharedId ?? c.matchId;
+    if (id && !sourcePaths.has(c.path)) {
+      const owner = emitted.get(id);
+      if (owner === undefined || !c.path.startsWith(`${owner}/`)) {
+        result.push({ id, matrix });
+        sourcePaths.add(c.path);
+        if (owner === undefined) emitted.set(id, c.path);
+      }
     }
     // A tagged composition is one flattened shared element; do not double-transform descendants.
     if ((c.kind === "composition" || c.kind === "group") && !c.sharedId) {

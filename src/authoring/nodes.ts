@@ -7,6 +7,21 @@ import type { MediaSpec } from "./media";
 
 export type Alignment = "start" | "center" | "end";
 export type Dimension = number | "fill";
+/** Per-edge insets; an omitted edge is zero. */
+export interface PaddingInsets {
+  readonly top?: number;
+  readonly right?: number;
+  readonly bottom?: number;
+  readonly left?: number;
+}
+export interface FrameOptions {
+  readonly width?: Dimension;
+  readonly height?: Dimension;
+  /** Both axes; `alignX`/`alignY` override it per axis. Defaults to center. */
+  readonly align?: Alignment;
+  readonly alignX?: Alignment;
+  readonly alignY?: Alignment;
+}
 export interface TextStyle {
   readonly font?: string;
   readonly size?: number;
@@ -26,6 +41,8 @@ export interface BoxStyle {
   readonly stroke?: string;
   readonly strokeWidth?: number;
 }
+/** Box paint without a size: a background fills the wrapped node's measured bounds. */
+export type BackgroundStyle = Omit<BoxStyle, "width" | "height">;
 export interface StackOptions {
   readonly gap?: number;
   readonly align?: Alignment;
@@ -50,8 +67,15 @@ export type NodeSpec =
     }
   | {
       readonly kind: "padding";
-      readonly x: number;
-      readonly y: number;
+      readonly top: number;
+      readonly right: number;
+      readonly bottom: number;
+      readonly left: number;
+      readonly child: ViewNode;
+    }
+  | {
+      readonly kind: "background";
+      readonly style: BackgroundStyle;
       readonly child: ViewNode;
     }
   | {
@@ -59,6 +83,13 @@ export type NodeSpec =
       readonly width?: Dimension;
       readonly height?: Dimension;
       readonly align: Alignment;
+      readonly alignX?: Alignment;
+      readonly alignY?: Alignment;
+      readonly child: ViewNode;
+    }
+  | {
+      readonly kind: "flex";
+      readonly weight: number;
       readonly child: ViewNode;
     }
   | {
@@ -83,6 +114,26 @@ export type NodeSpec =
 function animated(value: AnimatedNumber): AnimatedNumber {
   return snapshotNumber(value);
 }
+function backgroundStyle(style: BackgroundStyle): BackgroundStyle {
+  if (typeof style !== "object" || style === null)
+    throw Error("Background needs a style object.");
+  if ("width" in style || "height" in style)
+    throw Error(
+      "Background sets no size; wrap the content in an explicit frame instead.",
+    );
+  for (const [name, value] of [
+    ["radius", style.radius ?? 0],
+    ["strokeWidth", style.strokeWidth ?? 0],
+  ] as const)
+    if (!Number.isFinite(value) || value < 0)
+      throw Error(`Background ${name} must be finite and non-negative.`);
+  return Object.freeze({
+    fill: style.fill,
+    radius: style.radius,
+    stroke: style.stroke,
+    strokeWidth: style.strokeWidth,
+  });
+}
 
 /** Immutable wrappers preserve modifier order and allow nodes to be reused. */
 export class ViewNode {
@@ -105,18 +156,61 @@ export class ViewNode {
       child: this,
     });
   }
-  padding(x: number, y = x): ViewNode {
-    return new ViewNode({ kind: "padding", x, y, child: this });
+  padding(value: number, y?: number): ViewNode;
+  padding(value: PaddingInsets): ViewNode;
+  padding(value: number | PaddingInsets, y?: number): ViewNode {
+    if (typeof value === "number")
+      return new ViewNode({
+        kind: "padding",
+        top: y ?? value,
+        right: value,
+        bottom: y ?? value,
+        left: value,
+        child: this,
+      });
+    if (typeof value !== "object" || value === null)
+      throw Error("Padding needs a number or an inset object.");
+    // Silently ignoring an unknown key would drop the inset the author asked for.
+    for (const key of Object.keys(value))
+      if (!["top", "right", "bottom", "left"].includes(key))
+        throw Error(
+          `Padding inset "${key}" is not supported; use top, right, bottom, left.`,
+        );
+    return new ViewNode({
+      kind: "padding",
+      top: value.top ?? 0,
+      right: value.right ?? 0,
+      bottom: value.bottom ?? 0,
+      left: value.left ?? 0,
+      child: this,
+    });
   }
-  frame(options: {
-    width?: Dimension;
-    height?: Dimension;
-    align?: Alignment;
-  }): ViewNode {
+  frame(options: FrameOptions): ViewNode {
     return new ViewNode({
       kind: "frame",
       ...options,
       align: options.align ?? "center",
+      child: this,
+    });
+  }
+  /**
+   * Flexible main-axis slot inside HStack or VStack with proportional weight.
+   * Flex participates at the nearest enclosing sequential stack boundary only.
+   */
+  flex(weight: number = 1): ViewNode {
+    if (!Number.isFinite(weight) || weight <= 0)
+      throw Error("Flex weight must be finite and positive.");
+    return new ViewNode({
+      kind: "flex",
+      weight,
+      child: this,
+    });
+  }
+  /** Paints the child's measured bounds behind it; never changes size or clips. */
+  background(style: BackgroundStyle): ViewNode {
+    return new ViewNode({
+      kind: "background",
+      style: backgroundStyle(style),
       child: this,
     });
   }

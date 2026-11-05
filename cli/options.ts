@@ -8,6 +8,7 @@ Usage:
   ritween frame [project] --time 5.2 -o frame.png
   ritween frame [project] --frame 156 --fps 30 -o frame.png
   ritween export [project] -o video.mp4       Export composition to MP4
+  ritween inspect [project] --time 5.2       Structured layout inspection JSON
 
 Project is a directory or manifest module (default: current directory).
 Manifests export a named project or default Project; TS, TSX and JS work.
@@ -16,9 +17,14 @@ Options:
   --project PATH           Explicit project directory or manifest
   --demo                   Use bundled 45-second example
   --output, -o PATH        Override output path (default: frame.png for frame;
-                           manifest project name for MP4 export)
+                           manifest project name for MP4 export; stdout for
+                           inspect)
   --time SECONDS           Frame timestamp (default: 0)
   --frame INDEX            Zero-based frame index, divided by --fps
+  --target SCOPE#ID        inspect only: exact node in one scope, by its
+                           authored ViewNode.id(); keeps ancestors and space context
+  --fail-on error          inspect only: exit 1 when a diagnostic has severity
+                           error (plain diagnostics never change the exit code)
   --resolution PRESET      360p, 720p, 1080p or WIDTHxHEIGHT
                            360p, 720p, and 1080p are 16:9 only
                            (640x360, 1280x720, 1920x1080).
@@ -46,10 +52,14 @@ Options:
   --help, -h               Show help
   --version, -v            Show version
 
+Inspect writes JSON to stdout; logs go to stderr. Exit codes: 0 success,
+1 runtime or selected diagnostic failure, 2 malformed command input.
+
 Requires Chrome/Chromium with WebGPU; MP4 also requires native H.264 encoding.
 Ctrl+C stops the server or cancels rendering. Existing files are kept on failure.
 `;
 import type { ExportOverrides } from "../src/engine/export/project-settings";
+import { parseInspectionTarget } from "../src/engine/inspect/report";
 
 export function parseOptions(argv: string[]) {
   const { values, positionals } = parseArgs({
@@ -74,6 +84,8 @@ export function parseOptions(argv: string[]) {
       channel: { type: "string" },
       browser: { type: "string" },
       timeout: { type: "string" },
+      target: { type: "string" },
+      "fail-on": { type: "string" },
       force: { type: "boolean" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -89,7 +101,7 @@ export function parseOptions(argv: string[]) {
       command = "preview";
     else return { help: true, version: false } as const;
   }
-  if (!["preview", "frame", "export"].includes(command))
+  if (!["preview", "frame", "export", "inspect"].includes(command))
     throw Error(`Unknown command: ${command}. Use --help.`);
   if (extra.length || (positionalProject && values.project))
     throw Error("Pass only one project directory or manifest.");
@@ -113,6 +125,23 @@ export function parseOptions(argv: string[]) {
     throw Error("--open and --port apply to web preview only.");
   if (values.time !== undefined && values.frame !== undefined)
     throw Error("Pass --time or --frame, not both.");
+  // inspect has no rules input yet; --fail-on error is the only selected-failure mode.
+  if (values["fail-on"] !== undefined && command !== "inspect")
+    throw Error("--fail-on applies to inspect only.");
+  if (values["fail-on"] !== undefined && values["fail-on"] !== "error")
+    throw Error("--fail-on must be error.");
+  if (values.target !== undefined && command !== "inspect")
+    throw Error("--target applies to inspect only.");
+  const target =
+    values.target === undefined
+      ? undefined
+      : parseInspectionTarget(values.target);
+  if (command === "inspect") {
+    // Project discovery matches every other command (a directory, a manifest, or the
+    // current directory). A timestamp is still explicit: 0s by default is a guess.
+    if (values.time === undefined && values.frame === undefined)
+      throw Error("inspect requires --time SECONDS.");
+  }
   const requestedMediaLoading = values["media-loading"] ?? "full";
   if (requestedMediaLoading !== "full" && requestedMediaLoading !== "range")
     throw Error("--media-loading must be full or range.");
@@ -191,14 +220,14 @@ export function parseOptions(argv: string[]) {
   }
   const output =
     values.output ?? (command === "frame" ? "frame.png" : undefined);
+  const extension =
+    command === "inspect" ? ".json" : command === "frame" ? ".png" : ".mp4";
   if (
     command !== "preview" &&
     output !== undefined &&
-    !output.toLowerCase().endsWith(command === "frame" ? ".png" : ".mp4")
+    !output.toLowerCase().endsWith(extension)
   )
-    throw Error(
-      `Output must have a ${command === "frame" ? ".png" : ".mp4"} extension.`,
-    );
+    throw Error(`Output must have a ${extension} extension.`);
   return {
     ...values,
     command,
@@ -229,5 +258,7 @@ export function parseOptions(argv: string[]) {
     width,
     height,
     output,
+    target,
+    failOn: values["fail-on"] as "error" | undefined,
   };
 }

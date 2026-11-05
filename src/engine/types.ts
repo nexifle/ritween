@@ -15,12 +15,27 @@ export interface RenderContext extends SetupContext {
   sharedTransforms?: ReadonlyMap<string, readonly number[]>;
   /** Internal local-render-target to output mapping for nested shared elements. */
   sharedSpace?: readonly number[];
+  /** Whether the renderer has opted in to inspection layout metadata for this frame. */
+  readonly inspection?: boolean;
 }
 export interface FramePreparationContext {
   time: number;
   localTime: number;
   progress: number;
   signal?: AbortSignal;
+  /** Whether the renderer has opted in to inspection layout metadata for this frame. */
+  readonly inspection?: boolean;
+}
+/** Structural frame data for inspection; authoring frames satisfy it without engine imports.
+ * A provider must return a frame that is not mutated after submission: the renderer captures the
+ * returned object by reference, so in-place edits after submit would surface in the snapshot.
+ * Raw scene metadata is untrusted; G1b must sanitize it before publishing as trusted output.
+ */
+export interface SceneInspection {
+  readonly tree: unknown;
+  readonly commands: readonly unknown[];
+  readonly warnings: readonly string[];
+  readonly camera?: unknown;
 }
 export interface Scene {
   setup(context: SetupContext): void | Promise<void>;
@@ -29,6 +44,13 @@ export interface Scene {
   render(context: RenderContext): void;
   /** Optional deterministic screen-space element poses, evaluated before rendering. */
   sharedElements?(context: RenderContext): readonly SharedElement[];
+  /** Optional zero-argument inspection snapshot of the last rendered frame.
+   * Left untyped so scenes that already own a property named `inspect` keep
+   * compiling; the renderer calls it with this receiver and validates the result
+   * against {@link SceneInspection}, reporting anything else as unavailable.
+   * Return a frame that will not be mutated after submission.
+   */
+  inspect?: unknown;
   dispose(): void;
 }
 export interface MediaClip {

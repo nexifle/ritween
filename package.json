@@ -26,6 +26,7 @@
     "benchmark:export": "node scripts/benchmark-export.mjs",
     "cli": "node bin/ritween.mjs",
     "test:cli": "node scripts/validate-cli.mjs",
+    "test:inspect": "node scripts/validate-inspect.mjs",
     "test:export": "node --import tsx scripts/validate-export-pipeline.mjs",
     "test:compression": "node --import tsx scripts/validate-compressed-export.mjs"
   },

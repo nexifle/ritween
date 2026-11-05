@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { validateAuthoringPrimitives } from "./authoring-primitives-checks.mjs";
+import { validateLayoutPrimitives } from "./authoring-layout-primitives-checks.mjs";
 import { validateStageTwo } from "./authoring-stage-two-checks.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
@@ -769,6 +770,11 @@ try {
   });
   const primitives = await validateAuthoringPrimitives(page);
   console.log("Primitive pixel validation:", primitives.join(", "));
+  const layoutPrimitives = await validateLayoutPrimitives(page);
+  console.log(
+    "Layout primitive pixel validation:",
+    `${layoutPrimitives.cases.join(", ")} (passes ${layoutPrimitives.passes.plain} plain / ${layoutPrimitives.passes.background} background; transition parity ${layoutPrimitives.transitions.map((entry) => entry.order).join(", ")})`,
+  );
   const stageTwo = await validateStageTwo(page);
   assert.deepEqual(browserErrors, [], "Browser console and page errors");
   console.log("Stage two validation:", JSON.stringify(stageTwo));

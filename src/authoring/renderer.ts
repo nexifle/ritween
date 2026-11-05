@@ -4,7 +4,16 @@ import { fitMedia } from "./media";
 import { mediaKey } from "./media-runtime";
 import type { RenderContext, SetupContext } from "../engine/types";
 import { identity, inverse, multiply } from "../engine/render/shared-elements";
-import type { DrawCommand, EvaluatedFrame, TextRun } from "./layout";
+import type {
+  Bounds,
+  DrawCommand,
+  EvaluatedFrame,
+  InspectionIdentity,
+  TextRun,
+} from "./layout";
+import { computeFrameTransform } from "./frame-transform";
+import { projectRect } from "./project-rect";
+import { planSurface } from "./surface-plan";
 
 const shader = `
 struct Controls {
@@ -69,6 +78,195 @@ interface CachedText {
 // shortcut: cache whole text runs, use a glyph atlas when measured label workloads exceed these budgets.
 const MAX_TEXT_BYTES = 64 * 1024 * 1024;
 const MAX_TEXT_ENTRIES = 128;
+
+/**
+ * One paint record for an internal collector. `bounds` is the projected draw quad: the
+ * mathematical image of the float32 uniforms the renderer uploaded, computed here in binary64.
+ * It is not a pixel bound and not a model of GPU rounding, so it never proves which fragments
+ * the shader painted: radius, stroke width, color alpha, antialiasing, scissor, occlusion, and
+ * compositing all live inside that quad. Shared-element corrections are already part of the draw
+ * camera, so `space` stays the pre-transition scene target, not final transition output.
+ * `accuracy` is the discriminant: `unavailable` means no rectangle this collector can honestly
+ * record, so coverage stays partial instead of claiming the paint is out of frame.
+ */
+export type PaintRecord = {
+  readonly kind: DrawCommand["kind"];
+  readonly path: string;
+  /** Present only when the frame was evaluated with inspection enabled. */
+  readonly inspection?: InspectionIdentity;
+  readonly paintRole: "content" | "background";
+  readonly space: "scene-target-pixels";
+  readonly resolution: readonly [number, number];
+} & (
+  | {
+      /**
+       * `exact-rectangle` when the ideal projection keeps the quad axis-aligned; `conservative`
+       * carries its AABB. Neither encloses GPU rounding.
+       */
+      readonly accuracy: "exact-rectangle" | "conservative";
+      /** Ideal projected quad AABB in `space`, from the uploaded float32 uniforms. */
+      readonly bounds: Bounds;
+      readonly provenance: "projected-box-draw-quad";
+      /**
+       * Positive area, invertible matrix, and nonzero opacity of that ideal quad. Geometry only,
+       * never proof that a fragment was visible.
+       */
+      readonly geometryVisible: boolean;
+      readonly unsupported?: never;
+    }
+  | {
+      readonly accuracy: "unavailable";
+      readonly unsupported: string;
+      readonly bounds?: never;
+    }
+);
+
+/** One float32 vertex stage; a stage leaving the finite range makes the quad unavailable below. */
+function stage32(value: number, label: string): number {
+  const rounded = Math.fround(value);
+  if (!Number.isFinite(rounded))
+    throw new RangeError(`${label} overflows float32.`);
+  return rounded;
+}
+
+/**
+ * Rejects vertex stages that leave float32 while every uniform stays finite:
+ * `(rect.xy + uv * rect.zw) * transform.xy + transform.zw` through both camera rows. Real GPUs
+ * may fuse or widen these steps, so this is a safety check, never a rounding model.
+ */
+function checkVertexFloat32(
+  rect: readonly [number, number, number, number],
+  transform: readonly [number, number, number, number],
+  cameraX: readonly [number, number, number],
+  cameraY: readonly [number, number, number],
+) {
+  const [x, y, width, height] = rect;
+  const [sx, sy, tx, ty] = transform;
+  for (const u of [0, 1])
+    for (const v of [0, 1]) {
+      const worldX = stage32(
+        stage32(stage32(x + u * width, "rect x") * sx, "transform x") + tx,
+        "transform x",
+      );
+      const worldY = stage32(
+        stage32(stage32(y + v * height, "rect y") * sy, "transform y") + ty,
+        "transform y",
+      );
+      // The product sum is staged before the constant: two float32 products can overflow while
+      // a cancelling constant brings the unstaged total back into range. Neither order is proven
+      // GPU behaviour, so this stays a conservative check.
+      for (const [row, label] of [
+        [cameraX, "camera X"],
+        [cameraY, "camera Y"],
+      ] as const)
+        stage32(
+          stage32(
+            stage32(row[0] * worldX, label) + stage32(row[1] * worldY, label),
+            label,
+          ) + row[2],
+          label,
+        );
+    }
+}
+
+/**
+ * Builds one record from the uniform block this draw uploaded; see {@link PaintRecord}.
+ * Field offsets are the `Controls` struct floats the vertex shader reads.
+ */
+function paintRecord(
+  command: DrawCommand,
+  uniforms: Float32Array,
+  offset: number,
+): PaintRecord {
+  const at = (index: number) => uniforms[offset + index];
+  // A fresh resolution tuple keeps the record independent of the caller's array.
+  const resolution: readonly [number, number] = [at(8), at(9)];
+  const identity = {
+    kind: command.kind,
+    path: command.path,
+    ...(command.inspection ? { inspection: { ...command.inspection } } : {}),
+    paintRole: command.paintRole ?? "content",
+    space: "scene-target-pixels",
+    resolution,
+  } as const;
+  const unsupported = (reason: string): PaintRecord => ({
+    ...identity,
+    accuracy: "unavailable",
+    unsupported: reason,
+  });
+  if (command.kind !== "box")
+    return unsupported(
+      `${command.kind} paint is not collected; only top-level Box draw quads are.`,
+    );
+  // Only the fields quad projection and `geometryVisible` read: radius, stroke, colors, UV,
+  // padding, and texture flags never change either.
+  const fields: readonly (readonly [string, number])[] = [
+    ["rect x", at(0)],
+    ["rect y", at(1)],
+    ["rect width", at(2)],
+    ["rect height", at(3)],
+    ["transform scale x", at(4)],
+    ["transform scale y", at(5)],
+    ["transform translate x", at(6)],
+    ["transform translate y", at(7)],
+    ["resolution x", at(8)],
+    ["resolution y", at(9)],
+    ["opacity", at(20)],
+    ["camera X x", at(24)],
+    ["camera X y", at(25)],
+    ["camera X constant", at(26)],
+    ["camera Y x", at(28)],
+    ["camera Y y", at(29)],
+    ["camera Y constant", at(30)],
+  ];
+  const notFinite = fields
+    .filter(([, value]) => !Number.isFinite(value))
+    .map(([name]) => name);
+  if (notFinite.length)
+    return unsupported(`draw quad is not finite: ${notFinite.join(", ")}.`);
+  if (resolution[0] <= 0 || resolution[1] <= 0)
+    return unsupported(
+      `draw quad is not finite: resolution ${resolution[0]}x${resolution[1]} is not positive.`,
+    );
+  const rect = [at(0), at(1), at(2), at(3)] as const;
+  const transform = [at(4), at(5), at(6), at(7)] as const;
+  const cameraX = [at(24), at(25), at(26)] as const;
+  const cameraY = [at(28), at(29), at(30)] as const;
+  try {
+    checkVertexFloat32(rect, transform, cameraX, cameraY);
+  } catch (error) {
+    // Finite uniforms can still overflow a float32 vertex stage, so the collector conservatively
+    // marks the quad unavailable; that says nothing about GPU clipping or visibility.
+    return unsupported(
+      `draw quad overflows float32 vertex stages: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  // Camera rows then the command transform, as the vertex shader composes them.
+  const [a, b, c, d, e, f] = multiply(
+    [cameraX[0], cameraY[0], cameraX[1], cameraY[1], cameraX[2], cameraY[2]],
+    [transform[0], 0, 0, transform[1], transform[2], transform[3]],
+  );
+  let projected: ReturnType<typeof projectRect>;
+  try {
+    projected = projectRect(
+      { x: rect[0], y: rect[1], width: rect[2], height: rect[3] },
+      [a, b, c, d, e, f],
+      at(20),
+    );
+  } catch (error) {
+    return unsupported(
+      `draw quad is not finite: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return {
+    ...identity,
+    accuracy:
+      projected.accuracy === "exact" ? "exact-rectangle" : "conservative",
+    bounds: projected.bounds,
+    provenance: "projected-box-draw-quad",
+    geometryVisible: projected.visible,
+  };
+}
 
 /** WebGPU owns paint/compositing; Canvas 2D is only the text rasterizer. */
 export class ViewRenderer {
@@ -253,6 +451,25 @@ export class ViewRenderer {
       throw error;
     }
   }
+  /**
+   * First shared-transition correction this paint can follow, or undefined when the transition
+   * supplies none. `correctionIds` is ordered innermost-first, so an inner ID this transition
+   * did not match falls back to an enclosing one. Exactly one matrix is ever returned.
+   */
+  private resolveCorrection(
+    command: DrawCommand,
+    context: RenderContext,
+  ): readonly number[] | undefined {
+    const ids = command.correctionIds ?? [
+      ...(command.sharedId ? [command.sharedId] : []),
+      ...(command.matchId ? [command.matchId] : []),
+    ];
+    for (const id of ids) {
+      const correction = context.sharedTransforms?.get(id);
+      if (correction) return correction;
+    }
+    return undefined;
+  }
   render(
     frame: EvaluatedFrame,
     context: RenderContext,
@@ -262,16 +479,16 @@ export class ViewRenderer {
     textResolution = 1,
     clear = true,
     media: ReadonlyMap<string, ImageTexture> = new Map(),
+    collector?: (record: PaintRecord) => void,
   ) {
     if (this.disposed || !this.pipeline || !this.white || !this.sampler)
       throw Error("View renderer is not ready.");
-    const scale = Math.min(
-      context.resolution[0] / size[0],
-      context.resolution[1] / size[1],
-    );
-    const ox = (context.resolution[0] - size[0] * scale) / 2,
-      oy = (context.resolution[1] - size[1] * scale) / 2;
-    const [ca, cb, cc, cd, ce, cf] = frame.camera?.matrix ?? [1, 0, 0, 1, 0, 0];
+    const {
+      scale,
+      ox,
+      oy,
+      matrix: frameMatrix,
+    } = computeFrameTransform(size, context.resolution, frame.camera?.matrix);
     const rasterScale = scale * textResolution;
     const activeSurfaces = new Set(
       frame.commands
@@ -286,8 +503,14 @@ export class ViewRenderer {
     const compositionTextures = new Map<string, GPUTexture>();
     for (const c of frame.commands)
       if (c.kind === "composition" || c.kind === "group") {
-        const width = Math.max(1, Math.ceil(c.bounds.width * scale)),
-          height = Math.max(1, Math.ceil(c.bounds.height * scale));
+        const plan = planSurface(
+          c.bounds,
+          c.transform,
+          scale,
+          frameMatrix,
+          context.sharedSpace,
+        );
+        const { width, height } = plan;
         let surface = this.surfaces.get(c.path);
         if (surface && (surface.width !== width || surface.height !== height)) {
           this.releaseSurface(surface);
@@ -322,34 +545,24 @@ export class ViewRenderer {
           this.budget.bytes += width * height * 4;
           this.surfaces.set(c.path, surface);
         }
-        const [sx, sy, tx, ty] = c.transform;
-        const worldToPixels = [
-          ca * scale,
-          cb * scale,
-          cc * scale,
-          cd * scale,
-          ce * scale + ox,
-          cf * scale + oy,
-        ];
-        const childSpace = multiply(
-          context.sharedSpace ?? identity,
-          multiply(worldToPixels, [
-            (c.bounds.width * sx) / width,
-            0,
-            0,
-            (c.bounds.height * sy) / height,
-            c.bounds.x * sx + tx,
-            c.bounds.y * sy + ty,
-          ]),
-        );
+        const { childSpace } = plan;
+        // A surface transformed as one unit must not let its contents apply a pose again.
+        // That is decided here, from the matrix the transition actually supplies, rather than
+        // from candidate names or from a declared ID: a surface may list candidates this
+        // transition did not match while a descendant is matched, and those descendants must
+        // still animate.
+        const surfaceCorrected =
+          this.resolveCorrection(c, context) !== undefined;
         const childContext = {
           ...context,
-          sharedTransforms: c.sharedId ? undefined : context.sharedTransforms,
+          sharedTransforms: surfaceCorrected
+            ? undefined
+            : context.sharedTransforms,
           sharedSpace: childSpace,
           target: surface.texture,
           resolution: [width, height] as const,
         };
-        const childSize = [c.bounds.width, c.bounds.height] as const;
+        const childSize = plan.childDesignSize;
         surface.world.render(
           c.frame,
           childContext,
@@ -516,17 +729,11 @@ export class ViewRenderer {
           texture = resource.texture;
         }
         const [sx, sy, tx, ty] = c.transform;
-        let drawCamera = [
-          ca * scale,
-          cb * scale,
-          cc * scale,
-          cd * scale,
-          ce * scale + ox,
-          cf * scale + oy,
-        ];
-        const correction = c.sharedId
-          ? context.sharedTransforms?.get(c.sharedId)
-          : undefined;
+        let drawCamera: readonly number[] = frameMatrix;
+        // Matching identity decides *whether* a shared transition has a pose; the paint
+        // correction applies it to the whole declaring chain, so a background and the
+        // content it decorates move together in both modifier orders.
+        const correction = this.resolveCorrection(c, context);
         if (correction) {
           const space = context.sharedSpace ?? identity;
           drawCamera = multiply(
@@ -584,6 +791,12 @@ export class ViewRenderer {
           ],
           (i * stride) / 4,
         );
+        // Collected after the upload, so a record describes the uniforms the GPU receives.
+        // Nested world/overlay surfaces render through forked renderers that get no collector,
+        // so a surface reports itself unsupported instead of forwarding into a tree it skips.
+        // Debug outlines are appended to the copy above, so `frame.commands` is only real paint.
+        if (collector && i < frame.commands.length)
+          collector(paintRecord(c, values, (i * stride) / 4));
         bindings.push(
           context.device.createBindGroup({
             layout: this.pipeline!.getBindGroupLayout(0),

@@ -116,15 +116,59 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
     writeFileSync(
       join(consumer, "consumer.ts"),
       `import { parseProjectSettings, mergeProjectSettings, validateProject, videoClip, imageScene, audioFile, videoResource, loadVideoTexture, loadImageTexture } from "ritween";
-import { Stage, StageEntry, Overlay, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive, Circle, Line, Group, ForEach, Image, Video, Motion } from "ritween";
-import type { Project, ProjectSettings, StageScene, ViewNode, EvaluatedFrame } from "ritween";
+import { Stage, StageEntry, Overlay, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive, Circle, Line, Group, ForEach, Image, Video, Motion, ViewNode } from "ritween";
+import type { Project, ProjectSettings, StageScene, EvaluatedFrame } from "ritween";
+import { INSPECTION_SCHEMA_VERSION, buildInspectionDocument, measureInspection, parseInspectionTarget, serializeInspection, FrameSource } from "ritween";
+import type { InspectionDocument, InspectionDiagnostic, LayoutDiagnostic, LayoutNode, LayoutSize, Bounds, FrameInspection, SceneInspection, PaddingInsets, FrameOptions, BackgroundStyle } from "ritween";
 const reusable: ViewNode = Text("Declarative", { size: 32, maxWidth: 400, tracking: 1 });
+const flexibleNode: ViewNode = reusable.flex(2);
+void flexibleNode;
+// @ts-expect-error flex weight must be a number.
+const badFlex: ViewNode = reusable.flex("large");
+void badFlex;
 const stage: StageScene = Stage(({ theme }) => VStack([
   reusable.opacity({ from: 0, to: 1, duration: 0.8 }), Spacer(),
-  HStack([Box({ width: 100, height: 40, fill: theme.colors.accent }), reusable]),
+  HStack([Box({ width: 100, height: 40, fill: theme.colors.accent }), reusable.flex(1)]),
   ZStack([]),
 ]).padding(24).frame({ width: "fill", height: "fill" }));
 const evaluated: EvaluatedFrame = evaluateView(reusable, { time: 0, width: 400, height: 300, measureText: (text) => text.length * 10 });
+type PublicViewOption = keyof Parameters<typeof evaluateView>[1];
+const viewOptionsStayPublic: "inspectionCounter" extends PublicViewOption ? never : true = true;
+void viewOptionsStayPublic;
+const layoutDiagnostic: LayoutDiagnostic = {
+  code: "unused-flex",
+  severity: "warning",
+  path: "root",
+  localTime: 0,
+  space: "layout",
+  message: "flex has no effect outside HStack or VStack",
+};
+// @ts-expect-error Diagnostic codes are a closed set of stable strings.
+const badCode: LayoutDiagnostic = { ...layoutDiagnostic, code: "made-up" };
+// @ts-expect-error Severity is warning or error only.
+const badSeverity: LayoutDiagnostic = { ...layoutDiagnostic, severity: "info" };
+const frameForInspection: SceneInspection = { tree: evaluated.tree, commands: evaluated.commands, warnings: evaluated.warnings };
+// Additive identity/space metadata is optional, so legacy code keeps compiling.
+const identifiedNode: LayoutNode = evaluated.tree;
+const optionalId: string | undefined = identifiedNode.id;
+const optionalSpace: string | undefined = identifiedNode.space;
+const optionalOffered: LayoutSize | undefined = identifiedNode.offeredSize;
+const optionalSlot: Bounds | undefined = identifiedNode.allocatedSlot;
+// @ts-expect-error A tree node cannot carry a numeric authored ID.
+const badId: LayoutNode = { ...evaluated.tree, id: 7 };
+void [optionalId, optionalSpace, optionalOffered, optionalSlot, badId];
+const inspectionDocument: InspectionDocument = buildInspectionDocument({
+  packageVersion: "0.0.0",
+  project: { name: "Consumer", duration: 1, resolution: [320, 180] },
+  frame: { requestedTime: 0, effectiveTime: 0, scenes: [{ id: "main", name: "Main", time: 0, localTime: 0, progress: 0, frame: frameForInspection }] } satisfies FrameInspection,
+  target: parseInspectionTarget("scene:main#card"),
+});
+const inspectionJson: string = serializeInspection(inspectionDocument);
+const measuredBytes: number = measureInspection(inspectionDocument);
+void measuredBytes;
+const inspectionDiagnostic: InspectionDiagnostic | undefined = inspectionDocument.diagnostics[0];
+const schemaVersion: number = INSPECTION_SCHEMA_VERSION;
+void [layoutDiagnostic, badCode, badSeverity, inspectionJson, inspectionDiagnostic, schemaVersion, FrameSource];
 const value: number = motion({ from: 0, to: 1, duration: 1 }, 0.5);
 // @ts-expect-error Unsupported easing must not silently become linear.
 reusable.opacity({ from: 0, to: 1, duration: 1, ease: "unknown" });
@@ -167,6 +211,22 @@ const mediaWorld = World(() => Group([
 const mediaShot = Shot({ id: "media", source: "manifest.ts", start: 0, duration: 1, world: mediaWorld, mediaClips: [footage], images: ["/later.png"] });
 const stageEntry = StageEntry({ id: "direct", source: "manifest.ts", start: 0, duration: 1, mediaClips: [footage], view: () => Video(footage, { width: 320, height: 180 }) });
 const clipped = Video(footage, { width: 100, height: 100, crop: { x: 0.7, zoom: Motion.scale({ from: 1, to: 2 }) } }).clip({ shape: "rect", radius: 20 });
+// G2a primitives: directional padding, per-axis frame alignment, content background.
+const directionalInsets: PaddingInsets = { top: 8, right: 12, bottom: 8, left: 12 };
+const axisFrame: FrameOptions = { width: "fill", height: 40, alignX: "end", alignY: "start" };
+const cardStyle: BackgroundStyle = { fill: "#FFFFFF", radius: 8, stroke: "#202B38", strokeWidth: 1 };
+const card = reusable.padding(directionalInsets).frame(axisFrame).background(cardStyle);
+const symmetricCard = reusable.padding(24, 8).background({ fill: "#FFFFFF" });
+// @ts-expect-error A background sets no size; width must not become a layout dimension.
+reusable.background({ fill: "#FFFFFF", width: 10 });
+// @ts-expect-error Frame axis values are the existing Alignment union.
+reusable.frame({ alignX: "middle" });
+// The background wrapper's declared ID keeps one semantic shared-element target.
+const identifiedCard = reusable.background({ fill: "#FFFFFF" }).id("card");
+const leafIdentifiedCard = reusable.id("card").background({ fill: "#FFFFFF" });
+// @ts-expect-error Padding no longer accepts the unpublished x/y spec shape.
+new ViewNode({ kind: "padding", x: 12, y: 6, child: reusable });
+void [card, symmetricCard, identifiedCard, leafIdentifiedCard];
 const circleClip = clipped.clip({ shape: "circle" });
 const pathClip = clipped.clip({ shape: "path", outline: [["M", 0, 0], ["L", 100, 0], ["L", 0, 100], ["Z"]], fillRule: "evenodd" });
 const imageClip = clipped.clip({ shape: "image", url: "/mask.png", mode: "luminance" });

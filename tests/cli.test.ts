@@ -176,3 +176,105 @@ test("CLI exposes encoding controls and rejects invalid or misplaced export sett
   ])
     assert.throws(() => parseOptions(args));
 });
+
+test("inspect requires a finite time and reuses the existing project discovery", () => {
+  const inspect = parseOptions([
+    "inspect",
+    "--project",
+    "/tmp/project",
+    "--time",
+    "1.5",
+  ]);
+  assert.equal(inspect.command, "inspect");
+  assert.equal(inspect.project, "/tmp/project");
+  assert.equal(inspect.time, 1.5);
+  assert.equal(inspect.output, undefined, "stdout is the default");
+  assert.equal(inspect.target, undefined);
+  assert.equal(inspect.failOn, undefined);
+
+  const positional = parseOptions(["inspect", "/tmp/project", "--time", "2"]);
+  assert.equal(positional.project, "/tmp/project");
+  // Discovery matches every other command: the current directory is a valid default.
+  assert.equal(parseOptions(["inspect", "--time", "1"]).project, ".");
+  assert.equal(parseOptions(["inspect", "--demo", "--time", "1"]).demo, true);
+  for (const args of [
+    ["inspect"],
+    ["inspect", "--project", "/tmp/project"],
+    ["inspect", "--project", "/tmp/project", "--time", "NaN"],
+    ["inspect", "--project", "/tmp/project", "--time", "-1"],
+  ])
+    assert.throws(() => parseOptions(args), args.join(" "));
+});
+
+test("inspect target and fail-on are scoped to the inspect command", () => {
+  const targeted = parseOptions([
+    "inspect",
+    "--project",
+    "/tmp/project",
+    "--time",
+    "1",
+    "--target",
+    "scene:main#card",
+    "--fail-on",
+    "error",
+  ]);
+  assert.deepEqual(targeted.target, { scope: "scene:main", id: "card" });
+  assert.equal(targeted.failOn, "error");
+  assert.throws(
+    () =>
+      parseOptions([
+        "inspect",
+        "--project",
+        "/tmp/project",
+        "--time",
+        "1",
+        "--target",
+        "card",
+      ]),
+    /SCOPE#ID/,
+  );
+  assert.throws(
+    () =>
+      parseOptions([
+        "inspect",
+        "--project",
+        "/tmp/project",
+        "--time",
+        "1",
+        "--fail-on",
+        "warning",
+      ]),
+    /--fail-on must be error/,
+  );
+  for (const args of [
+    ["frame", "--project", "/tmp/project", "--target", "scene:main#card"],
+    ["export", "--project", "/tmp/project", "--fail-on", "error"],
+  ])
+    assert.throws(() => parseOptions(args), args.join(" "));
+});
+
+test("inspect output must be JSON and does not default to a file name", () => {
+  const written = parseOptions([
+    "inspect",
+    "--project",
+    "/tmp/project",
+    "--time",
+    "1",
+    "-o",
+    "artifacts/inspect.json",
+  ]);
+  assert.equal(written.output, "artifacts/inspect.json");
+  assert.throws(
+    () =>
+      parseOptions([
+        "inspect",
+        "--project",
+        "/tmp/project",
+        "--time",
+        "1",
+        "-o",
+        "frame.png",
+      ]),
+    /\.json extension/,
+  );
+});

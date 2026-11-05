@@ -54,6 +54,9 @@ export type { MediaStyle } from "./media";
 export type {
   Alignment,
   Dimension,
+  PaddingInsets,
+  FrameOptions,
+  BackgroundStyle,
   TextStyle,
   BoxStyle,
   StackOptions,
@@ -85,9 +88,12 @@ export { evaluateView, defaultTheme } from "./layout";
 export type {
   Theme,
   Bounds,
+  LayoutSize,
   TextRun,
   DrawCommand,
   LayoutNode,
+  LayoutDiagnostic,
+  LayoutDiagnosticCode,
   EvaluatedFrame,
   MeasureText,
   Transform,

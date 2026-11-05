@@ -15,7 +15,7 @@ import {
 } from "./layout";
 import type { ViewNode } from "./nodes";
 import { collectSharedElements } from "./shared-elements";
-import { ViewRenderer } from "./renderer";
+import { ViewRenderer, type PaintRecord } from "./renderer";
 import { Camera, evaluateCamera, type CameraOptions } from "./camera";
 
 export interface StageContext {
@@ -40,6 +40,8 @@ export interface StageOptions {
   readonly camera?: CameraOptions | ((context: StageContext) => CameraOptions);
   /** Text raster scale relative to output pixels; raise for close camera shots. */
   readonly textResolution?: number;
+  /** Opt in to layout inspection metadata (offeredSize, allocatedSlot) on evaluated frames. */
+  readonly inspection?: boolean;
 }
 export interface StageScene extends Scene {
   /** Last rendered layout and display list; no GPU readback required. */
@@ -109,7 +111,11 @@ function createViewScene(
   let setupContext: SetupContext;
   let media: ViewMedia | undefined;
   let prepared:
-    | { timing: FramePreparationContext; result: ReturnType<typeof evaluate> }
+    | {
+        timing: FramePreparationContext;
+        result: ReturnType<typeof evaluate>;
+        inspection: boolean;
+      }
     | undefined;
   let renderer: ViewRenderer | undefined;
   let frame: EvaluatedFrame | undefined;
@@ -136,17 +142,20 @@ function createViewScene(
       time: number;
       localTime: number;
       progress: number;
+      inspection?: boolean;
     },
   ) {
     if (!ready || disposed || !renderer) throw Error("Stage is not ready.");
     const env = contextFor(context, context);
     const activeRenderer = renderer;
+    const inspection = context.inspection ?? options.inspection ?? false;
     const layout = evaluateView(view(env), {
       time: context.localTime,
       width: env.designSize[0],
       height: env.designSize[1],
       theme,
       context: env,
+      inspection,
       measureText: (text, font, tracking) => {
         if (!document.fonts.check(font))
           throw Error(
@@ -170,11 +179,14 @@ function createViewScene(
     };
   }
   function resultFor(context: RenderContext) {
+    // A same-time prepare/render pair is only valid in the same effective inspection mode:
+    // metadata presence differs between modes, so a mode switch invalidates the prepared result.
     if (
       prepared &&
       prepared.timing.time === context.time &&
       prepared.timing.localTime === context.localTime &&
-      prepared.timing.progress === context.progress
+      prepared.timing.progress === context.progress &&
+      prepared.inspection === (context.inspection ?? options.inspection ?? false)
     )
       return prepared.result;
     throw Error("Stage frame is not prepared. Use renderAsync().");
@@ -182,6 +194,7 @@ function createViewScene(
   const scene: StageScene = {
     async prepareFrame(timing) {
       prepared = undefined;
+      frame = undefined; // a cancelled or failed preparation must not leave the previous frame inspectable
       timing.signal?.throwIfAborted();
       const result = evaluate({ ...setupContext, ...timing });
       if (!media && frameMedia(result.evaluated).length) {
@@ -190,7 +203,11 @@ function createViewScene(
       await media?.prepare(result.evaluated, timing);
       if (disposed) throw Error("Stage was disposed during frame preparation.");
       timing.signal?.throwIfAborted();
-      prepared = { timing: { ...timing }, result };
+      prepared = {
+        timing: { ...timing },
+        result,
+        inspection: timing.inspection ?? options.inspection ?? false,
+      };
     },
     sharedElements(context) {
       const { env, evaluated } = resultFor(context);
@@ -250,8 +267,13 @@ function createViewScene(
       }
     },
     render(context: RenderContext) {
+      // A failed or unprepared render must not leave the previous frame inspectable.
+      frame = undefined;
       if (!ready || disposed || !renderer) throw Error("Stage is not ready.");
       const { env, evaluated } = resultFor(context);
+      // Same effective mode as the prepared cache: only inspection mode allocates a collector.
+      const inspection = context.inspection ?? options.inspection ?? false;
+      const records: PaintRecord[] | undefined = inspection ? [] : undefined;
       renderer.render(
         evaluated,
         context,
@@ -261,8 +283,10 @@ function createViewScene(
         textResolution,
         clear,
         media?.resources,
+        records && ((record) => records.push(record)),
       );
-      frame = evaluated;
+      // Published only after a successful render; earlier snapshots and their records stay as they were.
+      frame = records ? { ...evaluated, paintRecords: records } : evaluated;
     },
     inspect: () => frame,
     dispose() {

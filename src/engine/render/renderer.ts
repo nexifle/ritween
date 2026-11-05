@@ -1,8 +1,72 @@
-import type { Project, Scene } from "../types";
+import type { Project, Scene, SceneInspection } from "../types";
 import { evaluateActive, validateProject } from "../timeline";
 import { TransitionRenderer } from "./transition";
 import { matchSharedElements } from "./shared-elements";
 import { managedVideoScenes } from "./visual";
+/** Frame data of an inspectable scene, or an explicit reason the scene cannot provide one. */
+export type InspectedLayer =
+  | { readonly frame: SceneInspection; readonly unavailable?: never }
+  | { readonly unavailable: string; readonly frame?: never };
+/** Project clock of an inspected active layer. */
+export interface InspectionClock {
+  /** Requested composition time of the inspected frame, in seconds. */
+  readonly time: number;
+  /** Composition time mapped into this layer's own clock. */
+  readonly localTime: number;
+  /** Fractional position within this layer's own duration. */
+  readonly progress: number;
+}
+/** One active scene of the last successful frame, in paint order. */
+export type InspectedScene = InspectionClock &
+  InspectedLayer & { readonly id: string; readonly name: string };
+/** Snapshot of the last successful frame; inspection is opt-in metadata, never pixels. */
+export interface FrameInspection {
+  /** Time passed to the successful render call, before timeline clamping. */
+  readonly requestedTime: number;
+  /** Clamped composition time the frame was evaluated at. */
+  readonly effectiveTime: number;
+  readonly scenes: readonly InspectedScene[];
+  readonly overlay?: InspectionClock & InspectedLayer;
+}
+/** Whether a returned value carries the structural frame data inspection promises. */
+function isSceneInspection(value: unknown): value is SceneInspection {
+  if (typeof value !== "object" || value === null) return false;
+  const frame = value as Partial<Record<keyof SceneInspection, unknown>>;
+  return (
+    "tree" in frame &&
+    Array.isArray(frame.commands) &&
+    Array.isArray(frame.warnings)
+  );
+}
+/** Read the capability once, with its receiver, because scenes may reuse the name for other data.
+ * The property read, the call, and the shape check of the returned value (whose properties may
+ * themselves be throwing getters or proxies) stay inside one handler: any of them failing reports
+ * an unavailable layer instead of rejecting a frame whose GPU work was already submitted.
+ */
+function readLayer(scene: Scene | undefined, label: string): InspectedLayer {
+  try {
+    const capability = scene?.inspect;
+    if (typeof capability !== "function")
+      return {
+        unavailable:
+          capability === undefined
+            ? `${label} does not implement the optional inspect() capability.`
+            : `${label} inspect property is not a function.`,
+      };
+    const value = (capability as () => unknown).call(scene);
+    if (isSceneInspection(value)) return { frame: value };
+    return {
+      unavailable:
+        value === undefined
+          ? `${label} returned no frame for this time.`
+          : `${label} inspect() returned a value that is not a scene inspection.`,
+    };
+  } catch (error) {
+    return {
+      unavailable: `${label} inspection failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
 /** Observe late setup failures even after a sibling pipeline cancels this wait. */
 function waitForSetup<T>(
   work: T | PromiseLike<T>,
@@ -37,18 +101,25 @@ export class Renderer {
   private renderGeneration = 0;
   private preparationQueue: Promise<void> = Promise.resolve();
   private activeFrames = new Set<AbortController>();
+  /** Monotonic owner of each render attempt; only the newest attempt may publish a frame. */
+  private attempt = 0;
+  /** Inspection captured at the submit of the last successful attempt; any new attempt clears it. */
+  private lastFrame?: FrameInspection;
   private constructor(
     readonly device: GPUDevice,
     private context: GPUCanvasContext,
     readonly project: Project,
     readonly resolution: readonly [number, number],
     readonly format: GPUTextureFormat,
+    private readonly inspectionEnabled: boolean,
   ) {}
   static async create(
     canvas: HTMLCanvasElement | OffscreenCanvas,
     project: Project,
     onError: (message: string) => void = () => {},
     signal?: AbortSignal,
+    /** Opt in to per-frame inspection capture; ordinary rendering never reads scene inspection. */
+    inspection = false,
   ) {
     signal?.throwIfAborted();
     validateProject(project);
@@ -79,6 +150,7 @@ export class Renderer {
       project,
       [canvas.width, canvas.height],
       format,
+      inspection,
     );
     device.addEventListener("uncapturederror", (e) =>
       onError(`GPU: ${e.error.message}`),
@@ -168,6 +240,7 @@ export class Renderer {
   }
   render(time: number) {
     if (this.disposed) throw Error("Renderer is disposed.");
+    const attempt = this.beginAttempt();
     const evaluation = evaluateActive(this.project, time);
     for (const active of evaluation.active)
       if (this.scenes.get(active.entry.id)!.prepareFrame)
@@ -188,7 +261,7 @@ export class Renderer {
     this.deactivateOtherMedia(
       evaluation.active.map((a) => this.scenes.get(a.entry.id)!),
     );
-    this.submitFrame(evaluation);
+    this.submitFrame(evaluation, attempt, time);
   }
   private deactivateOtherMedia(active: readonly Scene[]) {
     for (const scene of this.scenes.values())
@@ -196,6 +269,7 @@ export class Renderer {
   }
   async renderAsync(time: number, signal?: AbortSignal) {
     if (this.disposed) throw Error("Renderer is disposed.");
+    const attempt = this.beginAttempt();
     signal?.throwIfAborted();
     const generation = this.renderGeneration;
     const controller = new AbortController();
@@ -217,15 +291,17 @@ export class Renderer {
           localTime: active.localTime,
           progress: active.progress,
           signal: controller.signal,
+          ...(this.inspectionEnabled ? { inspection: true } : {}),
         });
       }
       this.assertCurrentFrame(generation, controller.signal);
       await this.overlay?.prepareFrame?.({
         ...this.overlayTiming(evaluation.primary.time),
         signal: controller.signal,
+        ...(this.inspectionEnabled ? { inspection: true } : {}),
       });
       this.assertCurrentFrame(generation, controller.signal);
-      this.submitFrame(evaluation);
+      this.submitFrame(evaluation, attempt, time);
     });
     const result = work.finally(() => {
       signal?.removeEventListener("abort", forwardAbort);
@@ -237,6 +313,50 @@ export class Renderer {
     );
     return result;
   }
+  /** Snapshot of the last successful frame; throws while no submitted frame is available. */
+  inspectFrame(): FrameInspection {
+    if (this.disposed) throw Error("Renderer is disposed.");
+    if (!this.inspectionEnabled)
+      throw Error(
+        "Frame inspection is disabled. Create the renderer with inspection enabled to capture frames.",
+      );
+    if (!this.lastFrame)
+      throw Error(
+        "No successful frame is available for inspection. Render a frame first; a newer, failed or cancelled attempt does not keep the previous frame.",
+      );
+    return this.lastFrame;
+  }
+  /** Every render attempt invalidates the snapshot and claims publication ownership. */
+  private beginAttempt() {
+    this.lastFrame = undefined;
+    return ++this.attempt;
+  }
+  /** Read inspection metadata of one submitted frame. The returned object is referenced, not
+   * copied, so a provider must return a frame it does not mutate after submission.
+   */
+  private captureFrame(
+    evaluation: ReturnType<typeof evaluateActive>,
+    requestedTime: number,
+  ): FrameInspection {
+    const scenes = evaluation.active.map((active): InspectedScene => ({
+      id: active.entry.id,
+      name: active.entry.name,
+      time: active.time,
+      localTime: active.localTime,
+      progress: active.progress,
+      ...readLayer(this.scenes.get(active.entry.id), active.entry.name),
+    }));
+    return {
+      requestedTime,
+      effectiveTime: evaluation.primary.time,
+      scenes,
+      overlay: this.overlay && {
+        ...this.overlayTiming(evaluation.primary.time),
+        ...readLayer(this.overlay, "Project overlay"),
+      },
+    };
+  }
+
   private abortPreparations(reason: DOMException) {
     for (const controller of [...this.activeFrames]) controller.abort(reason);
   }
@@ -253,7 +373,11 @@ export class Renderer {
   private overlayTiming(time: number) {
     return { time, localTime: time, progress: time / this.project.duration };
   }
-  private submitFrame(evaluation: ReturnType<typeof evaluateActive>) {
+  private submitFrame(
+    evaluation: ReturnType<typeof evaluateActive>,
+    attempt: number,
+    requestedTime: number,
+  ) {
     const encoder = this.device.createCommandEncoder();
     const target = this.context.getCurrentTexture();
     const context = {
@@ -271,12 +395,18 @@ export class Renderer {
           ? matchSharedElements(
               this.scenes
                 .get(evaluation.active[0].entry.id)!
-                .sharedElements?.({ ...context, ...evaluation.active[0] }) ??
-                [],
+                .sharedElements?.({
+                  ...context,
+                  ...evaluation.active[0],
+                  ...(this.inspectionEnabled ? { inspection: true } : {}),
+                }) ?? [],
               this.scenes
                 .get(evaluation.active[1].entry.id)!
-                .sharedElements?.({ ...context, ...evaluation.active[1] }) ??
-                [],
+                .sharedElements?.({
+                  ...context,
+                  ...evaluation.active[1],
+                  ...(this.inspectionEnabled ? { inspection: true } : {}),
+                }) ?? [],
               evaluation.transition.progress,
             )
           : undefined;
@@ -299,6 +429,7 @@ export class Renderer {
           ...active,
           target,
           sharedTransforms: shared?.[i],
+          ...(this.inspectionEnabled ? { inspection: true } : {}),
         });
       });
       this.transition.render(
@@ -308,17 +439,28 @@ export class Renderer {
     } else
       this.scenes
         .get(evaluation.primary.entry.id)!
-        .render({ ...context, ...evaluation.primary });
+        .render({
+          ...context,
+          ...evaluation.primary,
+          ...(this.inspectionEnabled ? { inspection: true } : {}),
+        });
     this.overlay?.render({
       ...context,
       ...this.overlayTiming(evaluation.primary.time),
+      ...(this.inspectionEnabled ? { inspection: true } : {}),
     });
     this.device.queue.submit([encoder.finish()]);
+    // Capture at this frame's submit so a later preparation or scene swap cannot rewrite it. An
+    // older attempt still completes (queued work stays ordered) but must not publish over a newer
+    // one. The captured frame references the provider's object, so providers must not mutate it.
+    if (this.inspectionEnabled && attempt === this.attempt)
+      this.lastFrame = this.captureFrame(evaluation, requestedTime);
   }
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
     this.renderGeneration++;
+    this.lastFrame = undefined;
     this.abortPreparations(
       new DOMException("Renderer was disposed.", "AbortError"),
     );

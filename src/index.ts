@@ -1,6 +1,7 @@
 /// <reference types="@webgpu/types" preserve="true" />
 export type {
   Scene,
+  SceneInspection,
   SceneEntry,
   SharedElement,
   Transition,
@@ -18,7 +19,38 @@ export type {
   ProjectSettings,
   ProjectExportSettings,
 } from "./engine/types";
+export type {
+  FrameInspection,
+  InspectedScene,
+  InspectedLayer,
+  InspectionClock,
+} from "./engine/render/renderer";
 export { Renderer } from "./engine/render/renderer";
+export {
+  INSPECTION_SCHEMA_VERSION,
+  MAX_INSPECTION_BYTES,
+  InspectionReadError,
+  InspectionSerializationError,
+  InspectionTargetError,
+  buildInspectionDocument,
+  measureInspection,
+  parseInspectionTarget,
+  serializeInspection,
+} from "./engine/inspect/report";
+export type {
+  InspectionBounds,
+  InspectionSize,
+  InspectionCapability,
+  InspectionClockFields,
+  InspectionCommand,
+  InspectionDiagnostic,
+  InspectionDocument,
+  InspectionLayoutNode,
+  InspectionScene,
+  InspectionSeverity,
+  InspectionTarget,
+  InspectionTargetResult,
+} from "./engine/inspect/report";
 export * from "./authoring/index";
 export { audioFile } from "./engine/decode/audio-file";
 export type { AudioFileOptions } from "./engine/decode/audio-file";

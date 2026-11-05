@@ -4433,71 +4433,80 @@ test("targeted media records follow retained, orphan, and duplicate owners on bo
   }
 });
 
-test("outer clipProjection rejects bad pairing and does not read foreign mask data", () => {
+test("outer surfaceProjection rejects bad pairing and does not read foreign mask data", () => {
+  const chain = {
+    boundaries: [
+      { occurrenceId: 4, kind: "clip", shape: "circle" },
+      { occurrenceId: 9, kind: "clip", shape: "rect" },
+    ],
+    coverage: "outer-clipped-draw-quad",
+  };
   const base = paintFields({
     accuracy: "conservative",
-    clipProjection: {
-      clipOccurrenceIds: [4, 9],
-      coverage: "outer-clipped-draw-quad",
-      clipShapes: ["circle", "rect"],
-    },
+    surfaceProjection: chain,
   });
-  const rejected = (clipProjection: unknown, pattern: RegExp) =>
+  const rejected = (surfaceProjection: unknown, pattern: RegExp) =>
     assert.throws(
-      () => paintRecord({ ...base, clipProjection }, "paint"),
+      () => paintRecord({ ...base, surfaceProjection }, "paint"),
       (error: unknown) =>
         error instanceof InspectionSerializationError &&
         pattern.test(error.message),
       pattern.source,
     );
   rejected(
-    { clipOccurrenceIds: [4], coverage: "outer-clipped-draw-quad" },
-    /clipShapes must be present/,
-  );
-  rejected(
     {
-      clipOccurrenceIds: [4],
+      boundaries: [{ occurrenceId: 4, kind: "clip" }],
       coverage: "outer-clipped-draw-quad",
-      clipShapes: ["circle", "rect"],
     },
-    /must have 1 entries/,
+    /shape must be/,
   );
   rejected(
     {
-      clipOccurrenceIds: [4],
-      coverage: "outer-clipped-draw-quad",
-      clipShapes: ["mask"],
-    },
-    /clipShapes\[0\]/,
-  );
-  rejected(
-    {
-      clipOccurrenceIds: [4, 9],
+      boundaries: [{ occurrenceId: 4, kind: "group", shape: "circle" }],
       coverage: "rect-clipped-draw-quad",
-      clipShapes: ["circle", "rect"],
     },
-    /clipShapes must be absent/,
+    /shape must be absent/,
   );
   rejected(
     {
-      clipOccurrenceIds: [4],
+      boundaries: [{ occurrenceId: 4, kind: "clip", shape: "mask" }],
       coverage: "outer-clipped-draw-quad",
-      clipShapes: ["rect"],
+    },
+    /boundaries\[0\]\.shape/,
+  );
+  rejected(
+    {
+      boundaries: [
+        { occurrenceId: 4, kind: "clip", shape: "circle" },
+        { occurrenceId: 9, kind: "clip", shape: "rect" },
+      ],
+      coverage: "rect-clipped-draw-quad",
+    },
+    /outer-clipped-draw-quad/,
+  );
+  rejected(
+    {
+      boundaries: [{ occurrenceId: 4, kind: "clip", shape: "rect" }],
+      coverage: "outer-clipped-draw-quad",
     },
     /every clip shape is "rect"/,
+  );
+  rejected(
+    { boundaries: [], coverage: "rect-clipped-draw-quad" },
+    /at least one surface/,
   );
   let foreign = 0;
   const forbidden = () => {
     foreign++;
     throw Error("foreign mask data was read");
   };
-  const ids = [4, 9];
-  const shapes = ["circle", "rect"];
+  const first = { occurrenceId: 4, kind: "clip", shape: "circle" };
+  const second = { occurrenceId: 9, kind: "clip", shape: "rect" };
+  const boundaries = [first, second];
   const raw = Object.defineProperties(
     {
-      clipOccurrenceIds: ids,
+      boundaries,
       coverage: "outer-clipped-draw-quad",
-      clipShapes: shapes,
     },
     {
       outline: { enumerable: true, get: forbidden },
@@ -4508,14 +4517,19 @@ test("outer clipProjection rejects bad pairing and does not read foreign mask da
     },
   );
   const budget = new InspectionBudget();
-  const published = paintRecord({ ...base, clipProjection: raw }, "paint", budget);
+  const published = paintRecord({ ...base, surfaceProjection: raw }, "paint", budget);
   assert.equal(foreign, 0);
   if (published.accuracy === "unavailable") throw Error("expected geometry");
-  assert.deepEqual(published.clipProjection?.clipShapes, ["circle", "rect"]);
-  ids.push(1);
-  shapes[0] = "path";
-  assert.deepEqual(published.clipProjection?.clipOccurrenceIds, [4, 9]);
-  assert.deepEqual(published.clipProjection?.clipShapes, ["circle", "rect"]);
+  assert.deepEqual(published.surfaceProjection?.boundaries, [
+    { occurrenceId: 4, kind: "clip", shape: "circle" },
+    { occurrenceId: 9, kind: "clip", shape: "rect" },
+  ]);
+  boundaries.push({ occurrenceId: 1, kind: "clip", shape: "path" });
+  first.shape = "path";
+  assert.deepEqual(published.surfaceProjection?.boundaries, [
+    { occurrenceId: 4, kind: "clip", shape: "circle" },
+    { occurrenceId: 9, kind: "clip", shape: "rect" },
+  ]);
   assert.equal(JSON.stringify(published).includes("outline"), false);
   const counted = published;
   const bytes = new TextEncoder().encode(JSON.stringify(counted)).length;

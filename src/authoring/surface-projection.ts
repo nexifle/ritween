@@ -5,11 +5,10 @@ import { checkVertexFloat32 } from "./vertex-float32";
 /** Clip mask family taken from the clip spec, not from the emitted mask outline. */
 export type ClipSurfaceShape = "rect" | "rounded" | "circle" | "path" | "image";
 
-/** Inspection-only identity of one Clip command. Absent on Group and Composition. */
-export interface InspectionSurface {
-  readonly kind: "clip";
-  readonly shape: ClipSurfaceShape;
-}
+/** Inspection-only identity of one tagged surface. Absent on Composition, World, and Overlay. */
+export type InspectionSurface =
+  | { readonly kind: "clip"; readonly shape: ClipSurfaceShape }
+  | { readonly kind: "group" };
 
 /** Affine matrix in Canvas order `[a, b, c, d, e, f]`. */
 export type Matrix6 = readonly [number, number, number, number, number, number];
@@ -44,25 +43,25 @@ export type SurfaceMapping =
   | { readonly status: "unavailable"; readonly reason: string };
 
 /**
- * One drawn Clip occurrence for a single render. Keyed by the evaluation occurrence, never by
- * semantic id. Discarded with the render; not serialized and not a paint record.
+ * One drawn Clip or Group occurrence for a single render. Keyed by the evaluation occurrence,
+ * never by semantic id. Discarded with the render; not serialized and not a paint record.
  */
 export interface SurfaceTrace {
   readonly occurrenceId: number;
   readonly ownerNodeId: number;
   readonly path: string;
-  readonly shape: ClipSurfaceShape;
+  readonly surface: InspectionSurface;
   readonly childResolution: readonly [number, number];
   readonly parentResolution: readonly [number, number];
   readonly uniform: CopiedSurfaceUniform;
   readonly projection: SurfaceMapping;
-  /** Parent Clip occurrence, when this Clip was drawn into one. */
+  /** Parent tagged surface occurrence, when this surface was drawn into one. */
   readonly parentOccurrenceId?: number;
 }
 
-/** A Clip drawn into Group or Composition has no scene chain in this unit. */
+/** A tagged surface drawn into Composition, World, or Overlay has no scene chain. */
 export const NON_CLIP_PARENT_REASON =
-  "parent surface is not a clip; scene mapping is unavailable.";
+  "parent surface is not a tagged clip or group; scene mapping is unavailable.";
 
 export const EMPTY_SURFACE_TRACES: readonly SurfaceTrace[] = Object.freeze([]);
 
@@ -78,6 +77,10 @@ export function clipInspectionSurface(shape: ClipShape): InspectionSurface {
           : "rect"
         : shape.shape,
   };
+}
+
+export function groupInspectionSurface(): InspectionSurface {
+  return { kind: "group" };
 }
 
 export function copySurfaceUniform(
@@ -154,12 +157,12 @@ export function childPixelsToParent(
   if (missing.length)
     return {
       status: "unavailable",
-      reason: `clip surface mapping is not finite: ${missing.join(", ")}.`,
+      reason: `surface mapping is not finite: ${missing.join(", ")}.`,
     };
   if (!(childWidth > 0) || !(childHeight > 0))
     return {
       status: "unavailable",
-      reason: `clip surface mapping is not finite: child resolution ${childWidth}x${childHeight} is not positive.`,
+      reason: `surface mapping is not finite: child resolution ${childWidth}x${childHeight} is not positive.`,
     };
   // Same uploaded fields and staged guard as a leaf quad. A finite binary64 matrix is not enough.
   try {
@@ -172,7 +175,7 @@ export function childPixelsToParent(
   } catch (error) {
     return {
       status: "unavailable",
-      reason: `clip surface mapping overflows float32 vertex stages: ${error instanceof Error ? error.message : String(error)}`,
+      reason: `surface mapping overflows float32 vertex stages: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
   const scaleX = uniform.rect[2] / childWidth;
@@ -180,7 +183,7 @@ export function childPixelsToParent(
   if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY))
     return {
       status: "unavailable",
-      reason: "clip surface mapping is not finite: allocation scale.",
+      reason: "surface mapping is not finite: allocation scale.",
     };
   const camera: Matrix6 = [
     uniform.cameraX[0],
@@ -209,7 +212,7 @@ export function childPixelsToParent(
         ),
       ),
     ),
-    "clip surface mapping",
+    "surface mapping",
   );
 }
 
@@ -233,54 +236,54 @@ export function composeParentToScene(
   );
 }
 
-interface PendingClip {
+interface PendingSurface {
   readonly occurrenceId: number;
   readonly ownerNodeId: number;
   readonly path: string;
-  readonly shape: ClipSurfaceShape;
+  readonly surface: InspectionSurface;
   readonly childResolution: readonly [number, number];
   readonly parentResolution: readonly [number, number];
   readonly uniform: CopiedSurfaceUniform;
-  readonly nested: PendingClip[];
+  readonly nested: PendingSurface[];
   readonly paints: CapturedPaint[];
   readonly childScissor?: PixelRect;
   readonly sceneBlocked?: string;
 }
 
-interface OpenClip {
+interface OpenSurface {
   readonly occurrenceId: number;
   readonly ownerNodeId: number;
   readonly path: string;
-  readonly shape: ClipSurfaceShape;
+  readonly surface: InspectionSurface;
   readonly childResolution: readonly [number, number];
-  readonly nested: PendingClip[];
+  readonly nested: PendingSurface[];
   readonly paints: CapturedPaint[];
   childScissor?: PixelRect;
 }
 
 /**
- * Clip traces for one render. Children are accepted before the parent uniform exists;
- * `finish` runs only after that uniform has been copied.
+ * Tagged Clip and Group traces for one render. Children are accepted before the parent
+ * uniform exists; `finish` runs only after that uniform has been copied.
  */
-export class ClipSurfaceTraces {
-  readonly roots: PendingClip[] = [];
-  readonly blocked: PendingClip[] = [];
-  private readonly opens = new Map<number, OpenClip>();
+export class SurfaceProjectionTraces {
+  readonly roots: PendingSurface[] = [];
+  readonly blocked: PendingSurface[] = [];
+  private readonly opens = new Map<number, OpenSurface>();
 
   open(
     occurrenceId: number,
     ownerNodeId: number,
     path: string,
-    shape: ClipSurfaceShape,
+    surface: InspectionSurface,
     childResolution: readonly [number, number],
-  ): { readonly nested: PendingClip[]; readonly paints: CapturedPaint[] } {
-    const nested: PendingClip[] = [];
+  ): { readonly nested: PendingSurface[]; readonly paints: CapturedPaint[] } {
+    const nested: PendingSurface[] = [];
     const paints: CapturedPaint[] = [];
     this.opens.set(occurrenceId, {
       occurrenceId,
       ownerNodeId,
       path,
-      shape,
+      surface,
       childResolution: [childResolution[0], childResolution[1]],
       nested,
       paints,
@@ -304,7 +307,7 @@ export class ClipSurfaceTraces {
     occurrenceId: number,
     uniform: CopiedSurfaceUniform,
     sceneBlocked?: string,
-  ): PendingClip | undefined {
+  ): PendingSurface | undefined {
     const open = this.opens.get(occurrenceId);
     if (!open) return undefined;
     this.opens.delete(occurrenceId);
@@ -312,7 +315,7 @@ export class ClipSurfaceTraces {
       occurrenceId: open.occurrenceId,
       ownerNodeId: open.ownerNodeId,
       path: open.path,
-      shape: open.shape,
+      surface: open.surface,
       childResolution: open.childResolution,
       parentResolution: [uniform.resolution[0], uniform.resolution[1]],
       uniform,
@@ -386,10 +389,10 @@ export type CapturedPaint =
     }
   | { readonly kind: "nested"; readonly occurrenceId: number };
 
-export interface ClipTracePass {
-  readonly book: ClipSurfaceTraces;
-  readonly sink: PendingClip[];
-  /** Present only for a clip child render that is collecting paint. */
+export interface SurfaceTracePass {
+  readonly book: SurfaceProjectionTraces;
+  readonly sink: PendingSurface[];
+  /** Present only for a tagged child render that is collecting paint. */
   readonly paints?: CapturedPaint[];
   readonly occurrenceId?: number;
   readonly blocked?: string;
@@ -400,18 +403,18 @@ function copyMatrix(matrix: Matrix6): Matrix6 {
 }
 
 function emit(
-  clip: PendingClip,
+  surface: PendingSurface,
   parentToScene: Matrix6 | undefined,
   parentOccurrenceId: number | undefined,
   blocked: string | undefined,
   traces: SurfaceTrace[],
 ) {
   const local = childPixelsToParent(
-    clip.uniform,
-    clip.childResolution[0],
-    clip.childResolution[1],
+    surface.uniform,
+    surface.childResolution[0],
+    surface.childResolution[1],
   );
-  const reason = blocked ?? clip.sceneBlocked;
+  const reason = blocked ?? surface.sceneBlocked;
   let projection: SurfaceMapping;
   if (local.status === "unavailable") projection = local;
   else if (reason) projection = { status: "unavailable", reason };
@@ -433,13 +436,13 @@ function emit(
           };
   }
   traces.push({
-    occurrenceId: clip.occurrenceId,
-    ownerNodeId: clip.ownerNodeId,
-    path: clip.path,
-    shape: clip.shape,
-    childResolution: clip.childResolution,
-    parentResolution: clip.parentResolution,
-    uniform: clip.uniform,
+    occurrenceId: surface.occurrenceId,
+    ownerNodeId: surface.ownerNodeId,
+    path: surface.path,
+    surface: surface.surface,
+    childResolution: surface.childResolution,
+    parentResolution: surface.parentResolution,
+    uniform: surface.uniform,
     projection,
     ...(parentOccurrenceId !== undefined ? { parentOccurrenceId } : {}),
   });
@@ -448,14 +451,14 @@ function emit(
     (projection.status === "unavailable" ? projection.reason : undefined);
   const nextParent =
     projection.status === "mapped" ? projection.childPixelsToScene : undefined;
-  for (const child of clip.nested)
-    emit(child, nextParent, clip.occurrenceId, nextBlocked, traces);
+  for (const child of surface.nested)
+    emit(child, nextParent, surface.occurrenceId, nextBlocked, traces);
 }
 
-export interface RectClipLevel {
+export interface SurfaceLevel {
   readonly occurrenceId: number;
-  /** Paired with `occurrenceId`. The chain clips the outer quad, not this shape's outline. */
-  readonly shape: ClipSurfaceShape;
+  /** Group adds no mask shape. A clip shape names the outer quad, not fragment coverage. */
+  readonly surface: InspectionSurface;
   readonly opacity: number;
   readonly matrix: Matrix6;
   /** Child target this level's polygon is clipped in, before `matrix`. */
@@ -655,7 +658,7 @@ function notFinite(reason: string): RectClipProjection {
 function emptyCoverage(
   seed: Point2,
   rect: PixelRect,
-  rest: readonly RectClipLevel[],
+  rest: readonly SurfaceLevel[],
   root: TargetWindow,
   axisAligned: boolean,
 ): RectClipProjection {
@@ -687,7 +690,7 @@ function emptyCoverage(
 export function projectRectClipChain(
   corners: readonly [Point2, Point2, Point2, Point2],
   leafOpacity: number,
-  chain: readonly RectClipLevel[],
+  chain: readonly SurfaceLevel[],
   root: TargetWindow,
 ): RectClipProjection {
   if (!Number.isFinite(leafOpacity))

@@ -375,7 +375,7 @@ test("rect clip leaves follow uploaded corners, scissor, and root resolution", a
     const padded = rendered.records.find((record) => record.path.includes("padded"));
     assert.ok(padded);
     const paddedGeometry = geometry(padded, "padded");
-    assert.equal(paddedGeometry.clipProjection?.coverage, "rect-clipped-draw-quad");
+    assert.equal(paddedGeometry.surfaceProjection?.coverage, "rect-clipped-draw-quad");
     assert.equal(paddedGeometry.accuracy, "exact-rectangle");
     const paddedLeaf = rendered.uniforms.find((write) =>
       write.some((block) => block[2] > 0 && block[2] < 40),
@@ -407,7 +407,7 @@ test("rect clip leaves follow uploaded corners, scissor, and root resolution", a
     const nested = rendered.records.find((record) => record.path.includes("inner"));
     assert.ok(nested && nested.accuracy !== "unavailable");
     assert.deepEqual(
-      nested.clipProjection?.clipOccurrenceIds,
+      nested.surfaceProjection?.boundaries.map((boundary) => boundary.occurrenceId),
       [inner.occurrenceId, outer.occurrenceId],
     );
     assert.equal(typeof nested.inspection?.nodeId, "number");
@@ -651,22 +651,34 @@ test("rotated and sheared quads do not claim AABB area, and unsupported boundari
     );
     const roundedRecord = geometry(rounded.records[0], "rounded");
     assert.equal(roundedRecord.accuracy, "conservative");
-    assert.equal(roundedRecord.clipProjection?.coverage, "outer-clipped-draw-quad");
-    assert.deepEqual(roundedRecord.clipProjection?.clipShapes, ["rounded"]);
+    assert.equal(roundedRecord.surfaceProjection?.coverage, "outer-clipped-draw-quad");
+    assert.deepEqual(roundedRecord.surfaceProjection?.boundaries, [
+      { occurrenceId: rounded.traces[0].occurrenceId, kind: "clip", shape: "rounded" },
+    ]);
     assert.equal(rounded.records.some((record) => record.kind === "composition"), false);
     const circle = await renderOnce(Box({ width: 12, height: 10, fill: "#123456" }).clip({ shape: "circle" }));
     const circleRecord = geometry(circle.records[0], "circle");
     assert.equal(circleRecord.accuracy, "conservative");
-    assert.deepEqual(circleRecord.clipProjection?.clipShapes, ["circle"]);
+    assert.deepEqual(
+      circleRecord.surfaceProjection?.boundaries.map((boundary) =>
+        boundary.kind === "clip" ? boundary.shape : boundary.kind,
+      ),
+      ["circle"],
+    );
 
     const grouped = await renderOnce(
       Group([Box({ width: 8, height: 8, fill: "#111111" }).id("inner")]).clip().id("window"),
     );
-    assert.equal(grouped.records.some((record) => record.path.includes("inner")), false);
-    const group = grouped.records.find((record) => record.kind === "group");
-    assert.equal(group?.accuracy, "unavailable");
-    if (group?.accuracy === "unavailable")
-      assert.match(group.unsupported, /group paint is not collected/);
+    assert.equal(grouped.records.some((record) => record.kind === "group"), false);
+    const inner = grouped.records.find((record) => record.path.includes("inner"));
+    assert.equal(inner?.accuracy, "exact-rectangle");
+    if (inner && inner.accuracy !== "unavailable") {
+      assert.equal(inner.surfaceProjection?.coverage, "rect-clipped-draw-quad");
+      assert.deepEqual(
+        inner.surfaceProjection?.boundaries.map((boundary) => boundary.kind),
+        ["group", "clip"],
+      );
+    }
 
     const world = await renderOnce(
       Composition(World(() => Box({ width: 8, height: 8, fill: "#111111" }).id("inside"), { size: [40, 24] }), {
@@ -804,8 +816,13 @@ test("non-rect clips publish the outer quad, not mask pixels, in both chain orde
     );
     const rectRecord = geometry(rect.records[0], "rect");
     assert.equal(rectRecord.accuracy, "exact-rectangle");
-    assert.equal(rectRecord.clipProjection?.coverage, "rect-clipped-draw-quad");
-    assert.equal(rectRecord.clipProjection?.clipShapes, undefined);
+    assert.equal(rectRecord.surfaceProjection?.coverage, "rect-clipped-draw-quad");
+    assert.equal(
+      rectRecord.surfaceProjection?.boundaries.every(
+        (boundary) => boundary.kind === "clip" && boundary.shape === "rect",
+      ),
+      true,
+    );
 
     const outside = [
       ["M", 400, 400],
@@ -829,10 +846,13 @@ test("non-rect clips publish the outer quad, not mask pixels, in both chain orde
       const record = geometry(rendered.records[0], expected[index]);
       assert.equal(record.accuracy, "conservative", expected[index]);
       assert.deepEqual(record.bounds, rectRecord.bounds, expected[index]);
-      assert.equal(record.clipProjection?.coverage, "outer-clipped-draw-quad");
-      assert.deepEqual(record.clipProjection?.clipShapes, [expected[index]]);
-      assert.deepEqual(record.clipProjection?.clipOccurrenceIds, [
-        rendered.traces[0].occurrenceId,
+      assert.equal(record.surfaceProjection?.coverage, "outer-clipped-draw-quad");
+      assert.deepEqual(record.surfaceProjection?.boundaries, [
+        {
+          occurrenceId: rendered.traces[0].occurrenceId,
+          kind: "clip",
+          shape: expected[index],
+        },
       ]);
       assert.equal(rendered.records.some((entry) => entry.kind === "composition"), false);
       assert.equal("url" in record, false);
@@ -864,11 +884,18 @@ test("non-rect clips publish the outer quad, not mask pixels, in both chain orde
       const outer = rendered.traces.find((trace) => trace.path.endsWith("outer"));
       assert.ok(inner && outer);
       assert.equal(record.accuracy, "conservative");
-      assert.deepEqual(record.clipProjection?.clipOccurrenceIds, [
-        inner.occurrenceId,
-        outer.occurrenceId,
-      ]);
-      assert.deepEqual(record.clipProjection?.clipShapes, [inner.shape, outer.shape]);
+      assert.deepEqual(
+        record.surfaceProjection?.boundaries.map((boundary) => boundary.occurrenceId),
+        [inner.occurrenceId, outer.occurrenceId],
+      );
+      assert.deepEqual(
+        record.surfaceProjection?.boundaries.map((boundary) =>
+          boundary.kind === "clip" ? boundary.shape : boundary.kind,
+        ),
+        [inner.surface, outer.surface].map((surface) =>
+          surface.kind === "clip" ? surface.shape : surface.kind,
+        ),
+      );
       assert.notEqual(record.inspection?.nodeId, inner.ownerNodeId);
       assert.notEqual(record.inspection?.nodeId, outer.ownerNodeId);
     }
@@ -886,7 +913,12 @@ test("non-rect clips publish the outer quad, not mask pixels, in both chain orde
     );
     assert.equal(photoRecord.kind, "media");
     assert.equal(photoRecord.accuracy, "conservative");
-    assert.deepEqual(photoRecord.clipProjection?.clipShapes, ["circle"]);
+    assert.deepEqual(
+      photoRecord.surfaceProjection?.boundaries.map((boundary) =>
+        boundary.kind === "clip" ? boundary.shape : boundary.kind,
+      ),
+      ["circle"],
+    );
 
     const correction = [1, 0, 0, 1, 30, -4] as const;
     const sharedRect = geometry(
@@ -1010,7 +1042,14 @@ test("non-rect clips publish the outer quad, not mask pixels, in both chain orde
   });
 });
 
-test("clipProjection is whitelisted, owned, and budgeted on both target paths without truncation", () => {
+test("surfaceProjection is whitelisted, owned, and budgeted on both target paths without truncation", () => {
+  const rectChain = {
+    boundaries: [
+      { occurrenceId: 7, kind: "group" },
+      { occurrenceId: 8, kind: "clip", shape: "rect" },
+    ],
+    coverage: "rect-clipped-draw-quad",
+  };
   const raw = {
     kind: "box",
     path: "card",
@@ -1022,14 +1061,14 @@ test("clipProjection is whitelisted, owned, and budgeted on both target paths wi
     provenance: "projected-box-draw-quad",
     geometryVisible: true,
     inspection: { id: 2, nodeId: 1, role: "content" },
-    clipProjection: { clipOccurrenceIds: [7, 8], coverage: "rect-clipped-draw-quad" },
+    surfaceProjection: rectChain,
   };
   const budget = new InspectionBudget();
   const published = paintRecord(raw, "paint", budget);
   const bytes = new TextEncoder().encode(JSON.stringify(published)).length;
   assert.equal(budget.bytes, bytes);
   assert.equal(
-    published.accuracy === "unavailable" ? undefined : published.clipProjection?.coverage,
+    published.accuracy === "unavailable" ? undefined : published.surfaceProjection?.coverage,
     "rect-clipped-draw-quad",
   );
   assert.throws(
@@ -1037,37 +1076,36 @@ test("clipProjection is whitelisted, owned, and budgeted on both target paths wi
     (error: unknown) => error instanceof InspectionSerializationError && /bytes of UTF-8/.test(error.message),
   );
   assert.throws(
-    () => paintRecord({ ...raw, clipProjection: { clipOccurrenceIds: [Number.NaN], coverage: "rect-clipped-draw-quad" } }, "paint"),
+    () => paintRecord({ ...raw, surfaceProjection: { boundaries: [{ occurrenceId: Number.NaN, kind: "group" }], coverage: "rect-clipped-draw-quad" } }, "paint"),
     (error: unknown) => error instanceof InspectionSerializationError,
   );
   assert.throws(
-    () => paintRecord({ ...raw, clipProjection: { clipOccurrenceIds: [1], coverage: "pixels" } }, "paint"),
+    () => paintRecord({ ...raw, surfaceProjection: { boundaries: [{ occurrenceId: 1, kind: "group" }], coverage: "pixels" } }, "paint"),
     (error: unknown) => error instanceof InspectionSerializationError && /coverage/.test(error.message),
   );
   assert.equal(
-    "clipShapes" in (published.accuracy === "unavailable" ? {} : published.clipProjection ?? {}),
+    "clipShapes" in (published.accuracy === "unavailable" ? {} : published.surfaceProjection ?? {}),
     false,
   );
+  const outerChain = {
+    boundaries: [
+      { occurrenceId: 7, kind: "clip", shape: "circle" },
+      { occurrenceId: 8, kind: "clip", shape: "rect" },
+    ],
+    coverage: "outer-clipped-draw-quad",
+  };
   const outerRaw = {
     ...raw,
     accuracy: "conservative",
-    clipProjection: {
-      clipOccurrenceIds: [7, 8],
-      coverage: "outer-clipped-draw-quad",
-      clipShapes: ["circle", "rect"],
-    },
+    surfaceProjection: outerChain,
   };
   const outerBudget = new InspectionBudget();
   const outerPublished = paintRecord(outerRaw, "paint", outerBudget);
   const outerBytes = new TextEncoder().encode(JSON.stringify(outerPublished)).length;
   assert.equal(outerBudget.bytes, outerBytes);
   assert.deepEqual(
-    outerPublished.accuracy === "unavailable" ? undefined : outerPublished.clipProjection,
-    {
-      clipOccurrenceIds: [7, 8],
-      coverage: "outer-clipped-draw-quad",
-      clipShapes: ["circle", "rect"],
-    },
+    outerPublished.accuracy === "unavailable" ? undefined : outerPublished.surfaceProjection,
+    outerChain,
   );
   assert.throws(
     () => paintRecord(outerRaw, "paint", new InspectionBudget(outerBytes - 1)),

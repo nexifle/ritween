@@ -190,14 +190,14 @@ test("Stage publishes paint records only in inspection mode, from the drawn unif
       const frame = stage.inspect();
       assert.ok(frame?.paintRecords, "inspection mode must publish records");
       const records = frame.paintRecords;
-      assert.equal(records.length, 2, "one record per drawn command");
-      const [box, group] = records;
+      assert.equal(records.length, 2, "group owner is not a second leaf");
+      const [box, nested] = records;
       assert.equal(box.kind, "box");
       assert.equal(box.accuracy, "exact-rectangle");
       assert.deepEqual(box.resolution, [200, 100]);
-      assert.equal(group.kind, "group");
-      assert.equal(group.accuracy, "unavailable");
-      assert.match(group.unsupported!, /group paint is not collected/);
+      assert.equal(nested.kind, "box");
+      assert.equal(nested.accuracy, "exact-rectangle");
+      assert.equal(records.some((record) => record.kind === "group"), false);
 
       // The record carries the resolution actually drawn to, read from the uploaded uniforms.
       const block = on.blocks()[0];

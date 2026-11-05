@@ -17,18 +17,19 @@ import { planSurface } from "./surface-plan";
 import { checkVertexFloat32 } from "./vertex-float32";
 import {
   childPixelsToParent,
-  ClipSurfaceTraces,
   copySurfaceUniform,
   EMPTY_SURFACE_TRACES,
   NON_CLIP_PARENT_REASON,
   projectRectClipChain,
+  SurfaceProjectionTraces,
   type CapturedPaint,
-  type ClipSurfaceShape,
-  type ClipTracePass,
   type CopiedSurfaceUniform,
+  type ClipSurfaceShape,
+  type InspectionSurface,
   type PixelRect,
-  type RectClipLevel,
+  type SurfaceLevel,
   type SurfaceTrace,
+  type SurfaceTracePass,
   type TargetWindow,
 } from "./surface-projection";
 
@@ -109,19 +110,23 @@ const MAX_TEXT_ENTRIES = 128;
  * target, not final transition output.
  * `accuracy` is the discriminant: `unavailable` means no rectangle this collector can honestly
  * record, so coverage stays partial instead of claiming the paint is out of frame. Nested
- * Group/Composition paint is not forwarded. Every Clip chain, including rounded, circle, path,
- * and image, projects the outer draw quad of its Box, Text, and Media leaves into this space.
- * That quad is not mask pixels, an outline, or fragment coverage. This is not a completed G3
- * projection.
+ * Composition, World, and Overlay paint is not forwarded. A tagged Clip or Group chain projects
+ * the outer draw quad of its Box, Text, and Media leaves into this space. That quad is not mask
+ * pixels, an outline, or fragment coverage. This is not a completed G3 projection.
  */
-/** Draw-quad provenance after a Clip chain. Not a pixel-coverage or mask-visibility claim. */
-export interface ClipProjection {
-  /** Covering clip occurrences, leaf target first. */
-  readonly clipOccurrenceIds: readonly number[];
-  /** Rect-only chains keep the old token. Any non-rect boundary uses the outer quad token. */
+/** One tagged surface the leaf quad was clipped through, leaf target first. */
+export type SurfaceBoundary =
+  | { readonly occurrenceId: number; readonly kind: "group" }
+  | {
+      readonly occurrenceId: number;
+      readonly kind: "clip";
+      readonly shape: ClipSurfaceShape;
+    };
+/** Viewport/scissor chain of the outer quad. Not fragment coverage or a mask outline. */
+export interface SurfaceProjection {
+  readonly boundaries: readonly SurfaceBoundary[];
+  /** `outer-clipped-draw-quad` only when a Clip boundary is non-rect. Group adds no shape. */
   readonly coverage: "rect-clipped-draw-quad" | "outer-clipped-draw-quad";
-  /** Leaf→root shapes. Omitted for a rect-only chain so that published shape stays unchanged. */
-  readonly clipShapes?: readonly ClipSurfaceShape[];
 }
 export type PaintRecord = {
   readonly path: string;
@@ -146,8 +151,8 @@ export type PaintRecord = {
        * visibility only: an empty mask can still be true, and this is not fragment proof.
        */
       readonly geometryVisible: boolean;
-      /** Present only when this draw was projected through a Clip chain. */
-      readonly clipProjection?: ClipProjection;
+      /** Present only when this draw passed through at least one tagged surface. */
+      readonly surfaceProjection?: SurfaceProjection;
       readonly unsupported?: never;
     }
   | {
@@ -157,7 +162,7 @@ export type PaintRecord = {
       readonly bounds: Bounds;
       readonly provenance: "projected-text-draw-quad";
       readonly geometryVisible: boolean;
-      readonly clipProjection?: ClipProjection;
+      readonly surfaceProjection?: SurfaceProjection;
       readonly unsupported?: never;
     }
   | {
@@ -169,7 +174,7 @@ export type PaintRecord = {
       readonly provenance:
         "projected-image-draw-quad" | "projected-video-draw-quad";
       readonly geometryVisible: boolean;
-      readonly clipProjection?: ClipProjection;
+      readonly surfaceProjection?: SurfaceProjection;
       readonly unsupported?: never;
     }
   | {
@@ -443,17 +448,9 @@ function captureBoundary(command: DrawCommand): CapturedPaint {
   };
 }
 
-interface ClipSlot {
-  readonly occurrenceId: number;
-  readonly shape: SurfaceTrace["shape"];
-  readonly path: string;
-  readonly inspection?: InspectionIdentity;
-  readonly paintRole: "content" | "background";
-}
-
 type PublishSlot =
   | { readonly kind: "record"; readonly record: PaintRecord }
-  | { readonly kind: "clip"; readonly clip: ClipSlot };
+  | { readonly kind: "surface"; readonly occurrenceId: number };
 
 function unavailableRecord(
   identity: {
@@ -486,52 +483,52 @@ function levelWindow(
   return { resolution: [resolution[0], resolution[1]], scissor };
 }
 
-interface ClipNode {
+interface SurfaceNode {
   readonly occurrenceId: number;
-  readonly shape: SurfaceTrace["shape"];
+  readonly surface: SurfaceTrace["surface"];
   readonly childResolution: readonly [number, number];
   readonly uniform: CopiedSurfaceUniform;
   readonly paints: CapturedPaint[];
-  readonly nested: readonly ClipNode[];
+  readonly nested: readonly SurfaceNode[];
   readonly childScissor?: PixelRect;
 }
 
 function projectNode(
-  clip: ClipNode,
-  suffix: readonly RectClipLevel[],
+  surface: SurfaceNode,
+  suffix: readonly SurfaceLevel[],
   inherited: string | undefined,
   root: TargetWindow,
   rootResolution: readonly [number, number],
   out: PaintRecord[],
 ) {
-  const child = levelWindow(clip.childResolution, clip.childScissor);
+  const child = levelWindow(surface.childResolution, surface.childScissor);
   const mapped = child
-    ? importChildMatrix(clip)
+    ? importChildMatrix(surface)
     : {
         status: "unavailable" as const,
-        reason: "clip child scissor was not recorded.",
+        reason: "surface child scissor was not recorded.",
       };
   const blocked =
     inherited ??
     (mapped.status === "unavailable" ? mapped.reason : undefined);
-  const level: RectClipLevel | undefined =
+  const level: SurfaceLevel | undefined =
     child && mapped.status === "mapped"
       ? {
-          occurrenceId: clip.occurrenceId,
-          shape: clip.shape,
-          opacity: clip.uniform.opacity,
+          occurrenceId: surface.occurrenceId,
+          surface: surface.surface,
+          opacity: surface.uniform.opacity,
           matrix: mapped.matrix,
           child,
         }
       : undefined;
   const chain = level ? [level, ...suffix] : suffix;
-  for (const paint of clip.paints) {
+  for (const paint of surface.paints) {
     if (paint.kind === "nested") {
-      const childClip = clip.nested.find(
+      const childSurface = surface.nested.find(
         (entry) => entry.occurrenceId === paint.occurrenceId,
       );
-      if (childClip)
-        projectNode(childClip, chain, blocked, root, rootResolution, out);
+      if (childSurface)
+        projectNode(childSurface, chain, blocked, root, rootResolution, out);
       continue;
     }
     if (paint.kind === "boundary") {
@@ -561,7 +558,7 @@ function projectNode(
           rootResolution,
           paint.failure ??
             blocked ??
-            "clip child scissor was not recorded.",
+            "surface child scissor was not recorded.",
         ),
       );
       continue;
@@ -587,24 +584,32 @@ function projectNode(
       );
       continue;
     }
-    const shapes = chain.map((entry) => entry.shape);
-    const nonRect = shapes.some((shape) => shape !== "rect");
-    // Any non-rect boundary is conservative even when the outer quad is axis-aligned or empty.
+    const boundaries = chain.map((entry) =>
+      entry.surface.kind === "group"
+        ? {
+            occurrenceId: entry.occurrenceId,
+            kind: "group" as const,
+          }
+        : {
+            occurrenceId: entry.occurrenceId,
+            kind: "clip" as const,
+            shape: entry.surface.shape,
+          },
+    );
+    const nonRect = boundaries.some(
+      (boundary) => boundary.kind === "clip" && boundary.shape !== "rect",
+    );
+    // Any non-rect Clip is conservative even when the outer quad is axis-aligned or empty.
     const accuracy =
       paint.commandKind === "media" || nonRect || !projected.axisAligned
         ? "conservative"
         : "exact-rectangle";
-    const clipOccurrenceIds = chain.map((entry) => entry.occurrenceId);
-    const clipProjection: ClipProjection = nonRect
-      ? {
-          clipOccurrenceIds,
-          coverage: "outer-clipped-draw-quad",
-          clipShapes: shapes,
-        }
-      : {
-          clipOccurrenceIds,
-          coverage: "rect-clipped-draw-quad",
-        };
+    const surfaceProjection: SurfaceProjection = {
+      boundaries,
+      coverage: nonRect
+        ? "outer-clipped-draw-quad"
+        : "rect-clipped-draw-quad",
+    };
     const shared = {
       path: paint.path,
       ...(paint.inspection ? { inspection: paint.inspection } : {}),
@@ -613,7 +618,7 @@ function projectNode(
       resolution: rootResolution,
       bounds: projected.bounds,
       geometryVisible: projected.geometryVisible,
-      clipProjection,
+      surfaceProjection,
     };
     if (paint.commandKind === "text")
       out.push({
@@ -641,11 +646,24 @@ function projectNode(
   }
 }
 
-function importChildMatrix(clip: ClipNode) {
+function importChildMatrix(surface: SurfaceNode) {
   return childPixelsToParent(
-    clip.uniform,
-    clip.childResolution[0],
-    clip.childResolution[1],
+    surface.uniform,
+    surface.childResolution[0],
+    surface.childResolution[1],
+  );
+}
+
+function isTaggedSurface(
+  command: DrawCommand,
+): command is Extract<DrawCommand, { kind: "composition" | "group" }> & {
+  readonly inspection: InspectionIdentity;
+  readonly inspectionSurface: InspectionSurface;
+} {
+  return (
+    (command.kind === "composition" || command.kind === "group") &&
+    command.inspectionSurface !== undefined &&
+    command.inspection !== undefined
   );
 }
 
@@ -662,7 +680,7 @@ export class ViewRenderer {
   private disposed = false;
   private colors = new Map<string, readonly number[]>();
   /** Set by the parent render only for the child call, then cleared. */
-  private tracePass?: ClipTracePass;
+  private tracePass?: SurfaceTracePass;
   private surfaceProjection: readonly SurfaceTrace[] = EMPTY_SURFACE_TRACES;
   private ownsShared = true;
   private surfaces = new Map<
@@ -882,7 +900,7 @@ export class ViewRenderer {
     const ensureBook =
       collector || incoming
         ? () => {
-            book ??= new ClipSurfaceTraces();
+            book ??= new SurfaceProjectionTraces();
             sink ??= book.roots;
             return book;
           }
@@ -990,19 +1008,15 @@ export class ViewRenderer {
           };
           const childSize = plan.childDesignSize;
           // Paint collector stays on this render. A fork may only receive the trace pass.
-          let childPass: ClipTracePass | undefined;
+          let childPass: SurfaceTracePass | undefined;
           if (ensureBook) {
-            if (
-              c.kind === "composition" &&
-              c.inspectionSurface &&
-              c.inspection
-            ) {
+            if (isTaggedSurface(c)) {
               const active = ensureBook();
               const opened = active.open(
                 c.inspection.id,
                 c.inspection.nodeId,
                 c.path,
-                c.inspectionSurface.shape,
+                c.inspectionSurface,
                 [width, height],
               );
               childPass = {
@@ -1012,8 +1026,10 @@ export class ViewRenderer {
                 occurrenceId: c.inspection.id,
               };
             } else if (
-              frameHasClip(c.frame) ||
-              (c.kind === "composition" && c.overlay && frameHasClip(c.overlay))
+              frameHasTaggedSurface(c.frame) ||
+              (c.kind === "composition" &&
+                c.overlay &&
+                frameHasTaggedSurface(c.overlay))
             ) {
               const active = ensureBook();
               childPass = {
@@ -1272,13 +1288,7 @@ export class ViewRenderer {
           // Nested world/overlay surfaces render through forked renderers that get no collector,
           // so a surface reports itself unsupported instead of forwarding into a tree it skips.
           // Debug outlines are appended to the copy above, so `frame.commands` is only real paint.
-          if (
-            book &&
-            i < frame.commands.length &&
-            c.kind === "composition" &&
-            c.inspectionSurface &&
-            c.inspection
-          ) {
+          if (book && i < frame.commands.length && isTaggedSurface(c)) {
             // Child traces were accepted before this uniform existed; reconcile only now.
             const raw = book.close(
               c.inspection.id,
@@ -1288,11 +1298,7 @@ export class ViewRenderer {
             if (raw) (blocked ? book.blocked : (sink ?? book.roots)).push(raw);
           }
           if (incoming?.paints && i < frame.commands.length) {
-            if (
-              c.kind === "composition" &&
-              c.inspectionSurface &&
-              c.inspection
-            )
+            if (isTaggedSurface(c))
               incoming.paints.push({
                 kind: "nested",
                 occurrenceId: c.inspection.id,
@@ -1308,21 +1314,8 @@ export class ViewRenderer {
             else incoming.paints.push(captureBoundary(c));
           }
           if (slots && i < frame.commands.length) {
-            if (
-              c.kind === "composition" &&
-              c.inspectionSurface &&
-              c.inspection
-            )
-              slots.push({
-                kind: "clip",
-                clip: {
-                  occurrenceId: c.inspection.id,
-                  shape: c.inspectionSurface.shape,
-                  path: c.path,
-                  ...(c.inspection ? { inspection: { ...c.inspection } } : {}),
-                  paintRole: c.paintRole ?? "content",
-                },
-              });
+            if (isTaggedSurface(c))
+              slots.push({ kind: "surface", occurrenceId: c.inspection.id });
             else
               slots.push({
                 kind: "record",
@@ -1433,7 +1426,7 @@ export class ViewRenderer {
               collector(slot.record);
               continue;
             }
-            const records = projected.get(slot.clip.occurrenceId) ?? [];
+            const records = projected.get(slot.occurrenceId) ?? [];
             for (const record of records) collector(record);
           }
         }
@@ -1476,16 +1469,15 @@ export class ViewRenderer {
   }
 }
 
-function frameHasClip(frame: EvaluatedFrame): boolean {
+function frameHasTaggedSurface(frame: EvaluatedFrame): boolean {
   for (const command of frame.commands) {
     if (command.kind !== "composition" && command.kind !== "group") continue;
-    if (command.kind === "composition" && command.inspectionSurface)
-      return true;
-    if (frameHasClip(command.frame)) return true;
+    if (command.inspectionSurface) return true;
+    if (frameHasTaggedSurface(command.frame)) return true;
     if (
       command.kind === "composition" &&
       command.overlay &&
-      frameHasClip(command.overlay)
+      frameHasTaggedSurface(command.overlay)
     )
       return true;
   }

@@ -411,16 +411,13 @@ test("non-Box paints and surfaces report unsupported instead of forwarding into 
       }).id("mark"),
     ]);
     const { frame, records } = await renderOnce(view);
-    assert.equal(records.length, frame.commands.length);
     const byPath = new Map(records.map((record) => [record.path, record]));
-    const surface = byPath.get("root/surface");
+    const nested = records.find((record) => record.path.includes("nested"));
     const world = byPath.get("root/world");
     const mark = byPath.get("root/mark");
-    assert.equal(surface?.accuracy, "unavailable");
-    assert.equal(surface?.kind, "group");
-    if (surface?.accuracy !== "unavailable")
-      return assert.fail("expected a group");
-    assert.match(surface.unsupported, /group paint is not collected/);
+    assert.equal(records.some((record) => record.kind === "group"), false);
+    assert.equal(nested?.kind, "box");
+    assert.equal(nested?.accuracy, "exact-rectangle");
     assert.equal(world?.kind, "composition");
     assert.equal(world?.accuracy, "unavailable");
     if (world?.accuracy !== "unavailable")
@@ -428,8 +425,6 @@ test("non-Box paints and surfaces report unsupported instead of forwarding into 
     assert.match(world.unsupported, /not collected/);
     assert.equal(mark?.kind, "path");
     assert.equal(mark?.accuracy, "unavailable");
-    // Nested Text renders inside a forked renderer that receives no collector.
-    assert.equal(byPath.has("root/surface/nested"), false);
     assert.equal(
       records.some((record) => record.path.includes("inner-label")),
       false,
@@ -610,16 +605,16 @@ test("records snapshot inspection and resolution against later source mutation",
     ]);
     const { frame, records } = await renderOnce(view, { target });
     const box = quadRecord(records[0], "box");
-    const surface = records[1];
+    const nested = records.find((record) => record.path.includes("surface"));
     const source = frame.commands[0].inspection as { id: number };
-    assert.ok(source && box.inspection);
+    assert.ok(source && box.inspection && nested);
     source.id = -1;
     target[0] = 999;
     assert.notEqual(box.inspection.id, -1);
     assert.deepEqual(box.resolution, [100, 100]);
-    assert.equal(surface.accuracy, "unavailable");
-    assert.deepEqual(surface.resolution, [100, 100]);
-    assert.equal(surface.inspection?.id >= 0, true);
+    assert.notEqual(nested.kind, "group");
+    assert.deepEqual(nested.resolution, [100, 100]);
+    assert.equal(nested.inspection?.id >= 0, true);
   });
 });
 
@@ -743,7 +738,6 @@ test("an unavailable Text quad does not drop a sibling Box, and overflow stays i
       Group([Text("nested").id("inside")]).id("surface"),
     ]);
     const { frame, records, uniforms } = await renderOnce(view);
-    assert.equal(records.length, frame.commands.length);
     assert.equal(records.length, 3);
     const box = quadRecord(
       records.find((record) => record.kind === "box"),
@@ -751,16 +745,15 @@ test("an unavailable Text quad does not drop a sibling Box, and overflow stays i
     );
     assert.equal(box.provenance, "projected-box-draw-quad");
     assertQuad(box.bounds, uniforms[0], "sibling box");
-    const text = records.find((record) => record.kind === "text");
+    const text = records.find(
+      (record) => record.kind === "text" && !record.path.includes("inside"),
+    );
     assert.equal(text?.accuracy, "unavailable");
     if (text?.accuracy !== "unavailable") return;
     assert.match(text.unsupported, /not finite/);
-    const surface = records.find((record) => record.kind === "group");
-    assert.equal(surface?.accuracy, "unavailable");
-    assert.equal(
-      records.some((record) => record.path.includes("inside")),
-      false,
-    );
+    const inside = records.find((record) => record.path.includes("inside"));
+    assert.equal(inside?.kind, "text");
+    assert.equal(records.some((record) => record.kind === "group"), false);
 
     const staged = await renderOnce(
       ZStack([Text("hi").scale(1e38, 1e38, [0, 0])]),
@@ -1046,15 +1039,8 @@ test("media overflow is unavailable, and nested media is not collected", async (
       { media: prepared(source) },
     );
     assert.equal(nested.records.length, 1);
-    assert.equal(nested.records[0].kind, "group");
-    assert.equal(nested.records[0].accuracy, "unavailable");
-    assert.equal(
-      nested.records.some((record) => record.kind === "media"),
-      false,
-    );
-    assert.equal(
-      nested.records.some((record) => record.path.includes("inside")),
-      false,
-    );
+    assert.equal(nested.records[0].kind, "media");
+    assert.equal(nested.records.some((record) => record.kind === "group"), false);
+    assert.equal(nested.records[0].path.includes("inside"), true);
   });
 });

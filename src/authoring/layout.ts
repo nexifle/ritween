@@ -8,6 +8,7 @@ import type { StageContext } from "./stage";
 import type { PaintRecord } from "./renderer";
 import {
   clipInspectionSurface,
+  groupInspectionSurface,
   type InspectionSurface,
 } from "./surface-projection";
 import type { Alignment, TextStyle, ViewNode } from "./nodes";
@@ -91,6 +92,8 @@ export type DrawCommand = {
     }
   | {
       readonly kind: "group";
+      /** Set only for an emitted Group, and only while inspection is on. */
+      readonly inspectionSurface?: InspectionSurface;
       readonly frame: EvaluatedFrame;
       readonly overlay?: never;
     }
@@ -1172,6 +1175,9 @@ function evaluateViewWithCounter(
             sharedId: m.node.key,
             ...stamp,
             ...commandIdentity(counter, nodeId, "surface"),
+            ...(counter
+              ? { inspectionSurface: groupInspectionSurface() }
+              : {}),
             bounds: { x: left, y: top, width, height },
             transform: [1, 1, 0, 0],
             opacity,

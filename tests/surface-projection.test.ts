@@ -518,8 +518,11 @@ test("duplicate semantic ids keep distinct occurrence traces", async () => {
       2,
     );
     assert.deepEqual(
-      rendered.traces.map((trace) => trace.shape),
-      ["rect", "rect"],
+      rendered.traces.map((trace) => trace.surface),
+      [
+        { kind: "clip", shape: "rect" },
+        { kind: "clip", shape: "rect" },
+      ],
     );
     const commands = [
       rendered.frame.commands[0],
@@ -593,11 +596,17 @@ test("clip shapes are tagged from the spec and a plain composition stays unsuppo
     const tags = new Map(
       rendered.traces.map((trace) => [trace.path.split("/").at(-1), trace]),
     );
-    assert.equal(tags.get("plain")?.shape, "rect");
-    assert.equal(tags.get("round")?.shape, "rounded");
-    assert.equal(tags.get("roundel")?.shape, "circle");
-    assert.equal(tags.get("outline")?.shape, "path");
-    assert.equal(tags.get("masked")?.shape, "image");
+    assert.deepEqual(tags.get("plain")?.surface, { kind: "clip", shape: "rect" });
+    assert.deepEqual(tags.get("round")?.surface, {
+      kind: "clip",
+      shape: "rounded",
+    });
+    assert.deepEqual(tags.get("roundel")?.surface, {
+      kind: "clip",
+      shape: "circle",
+    });
+    assert.deepEqual(tags.get("outline")?.surface, { kind: "clip", shape: "path" });
+    assert.deepEqual(tags.get("masked")?.surface, { kind: "clip", shape: "image" });
     const world = rendered.frame.commands.find((command) =>
       command.path.endsWith("plain-world"),
     );
@@ -730,20 +739,28 @@ test("a failed render publishes no snapshot and flat records stay on the top-lev
         ],
       ]),
     });
-    assert.equal(flatRender.traces, EMPTY_SURFACE_TRACES);
-    assert.deepEqual(
-      flatRender.records.map((record) => record.kind),
-      ["box", "text", "media", "group"],
+    assert.equal(
+      flatRender.traces.some((trace) => trace.surface.kind === "group"),
+      true,
     );
-    assert.equal(flatRender.records.length, flatRender.frame.commands.length);
+    assert.equal(
+      flatRender.records.some((record) => record.kind === "group"),
+      false,
+      "a group owner is not a second leaf",
+    );
     assert.equal(
       flatRender.records.some((record) => record.path.includes("nested")),
-      false,
+      true,
     );
-    const group = flatRender.records[3];
-    assert.equal(group.accuracy, "unavailable");
-    if (group.accuracy === "unavailable")
-      assert.match(group.unsupported, /group paint is not collected/);
+    const nested = flatRender.records.find((record) =>
+      record.path.includes("nested"),
+    );
+    assert.equal(nested?.accuracy, "exact-rectangle");
+    if (nested && nested.accuracy !== "unavailable")
+      assert.equal(
+        nested.surfaceProjection?.coverage,
+        "rect-clipped-draw-quad",
+      );
 
     const stage = Stage(
       () =>
@@ -836,7 +853,7 @@ test("a failed render publishes no snapshot and flat records stay on the top-lev
       assert.equal(
         built.scenes[0].paintRecords?.[0].accuracy === "unavailable"
           ? undefined
-          : built.scenes[0].paintRecords?.[0].clipProjection?.coverage,
+          : built.scenes[0].paintRecords?.[0].surfaceProjection?.coverage,
         "rect-clipped-draw-quad",
       );
       assert.equal(
@@ -1174,7 +1191,7 @@ test("finite rounded clip uniforms that overflow a float32 vertex stage do not p
     if (nestedBox?.accuracy !== "unavailable") return;
     assert.equal(nestedBox.unsupported, ancestor);
     assert.equal("bounds" in nestedBox, false);
-    assert.equal("clipProjection" in nestedBox, false);
+    assert.equal("surfaceProjection" in nestedBox, false);
 
     const rounded = await renderOnce(
       Box({ width: 50, height: 50, fill: "#123456" })

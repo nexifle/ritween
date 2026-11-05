@@ -166,10 +166,11 @@ export interface InspectionScene {
    * nothing. Records are ideal projected top-level Box, Text, and Media draw quads in
    * `scene-target-pixels` before transition projection. A Text quad is the texture/line box,
    * not glyph ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or ink
-   * coverage. A Clip chain adds `clipProjection` for those quads: rect-only keeps the old
-   * coverage, and any non-rect boundary publishes the outer draw quad with paired shapes.
-   * That is still not mask pixels, fragment visibility, or a GPU rounding guarantee. Nested
-   * Group/Composition paint stays unavailable. This is not completed G3.
+   * coverage. A tagged Clip or Group chain adds `surfaceProjection` for those quads:
+   * rect-only and Group-only chains keep `rect-clipped-draw-quad`, and any non-rect Clip
+   * publishes `outer-clipped-draw-quad`. That is still not mask pixels, fragment visibility,
+   * or a GPU rounding guarantee. Composition, World, and Overlay paint stays unavailable.
+   * This is not completed G3.
    */
   readonly paintRecords?: readonly InspectionPaintRecord[];
   /** Legacy `EvaluatedFrame.warnings` strings, preserved verbatim and in order. */
@@ -194,8 +195,8 @@ export interface InspectionCapability {
      * in `scene-target-pixels` before transition. A Text quad is the texture/line box, not glyph
      * ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or pixel coverage.
      * Nothing here is final visual coverage, fragment visibility, or a GPU rounding guarantee.
-     * Clip leaves record an outer draw quad, not mask pixels. Nested Group/Composition paint
-     * stays unrecorded. G3 is not complete.
+     * Clip and Group leaves record an outer draw quad, not mask pixels. Composition, World,
+     * and Overlay paint stays unrecorded. G3 is not complete.
      */
     readonly paint: "partial";
   };
@@ -1116,7 +1117,7 @@ export type InspectionPaintRecord = {
       readonly bounds: InspectionBounds;
       readonly provenance: "projected-box-draw-quad";
       readonly geometryVisible: boolean;
-      readonly clipProjection?: InspectionClipProjection;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
     }
   | {
       readonly kind: "text";
@@ -1124,7 +1125,7 @@ export type InspectionPaintRecord = {
       readonly bounds: InspectionBounds;
       readonly provenance: "projected-text-draw-quad";
       readonly geometryVisible: boolean;
-      readonly clipProjection?: InspectionClipProjection;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
     }
   | {
       readonly kind: "media";
@@ -1134,7 +1135,7 @@ export type InspectionPaintRecord = {
         | "projected-image-draw-quad"
         | "projected-video-draw-quad";
       readonly geometryVisible: boolean;
-      readonly clipProjection?: InspectionClipProjection;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
     }
   | {
       readonly kind: string;
@@ -1152,98 +1153,96 @@ const PAINT_IDENTITY_STRUCTURE = 25;
 const PAINT_GEOMETRY_STRUCTURE = 43;
 /** `,"unsupported":`, excluding its value. */
 const PAINT_UNAVAILABLE_STRUCTURE = 15;
-/** `,"clipProjection":` on a geometry record, charged only when the field is present. */
-const CLIP_PROJECTION_KEY = 19;
-/**
- * `{"clipOccurrenceIds":[],"coverage":"rect-clipped-draw-quad"}` excluding id digits.
- * Brackets are included; a separator is charged before every id after the first.
- * Coverage length is charged after the enum read and before the id array is copied.
- */
-const CLIP_PROJECTION_BODY = 59;
-const CLIP_COVERAGES = [
+/** `,"surfaceProjection":` on a geometry record, charged only when the field is present. */
+const SURFACE_PROJECTION_KEY = 21;
+/** `{"boundaries":[],"coverage":""}` excluding the coverage token and boundary items. */
+const SURFACE_PROJECTION_BODY = 31;
+/** `{"occurrenceId":,"kind":}` excluding the id digits and the quoted kind. */
+const SURFACE_BOUNDARY_ITEM = 25;
+/** `,"shape":""` excluding the shape token. Charged before the shape is read. */
+const SURFACE_BOUNDARY_SHAPE = 11;
+const SURFACE_COVERAGES = [
   "rect-clipped-draw-quad",
   "outer-clipped-draw-quad",
 ] as const;
-const CLIP_SHAPES = ["rect", "rounded", "circle", "path", "image"] as const;
-/** `,"clipShapes":[]` excluding shape tokens and the commas between them. */
-const CLIP_SHAPES_STRUCTURE = 16;
-export interface InspectionClipProjection {
-  /** Covering clip occurrences, leaf target first. */
-  readonly clipOccurrenceIds: readonly number[];
-  readonly coverage: (typeof CLIP_COVERAGES)[number];
-  /** Required with `outer-clipped-draw-quad`, same order and length as the ids. Omitted for rect-only. */
-  readonly clipShapes?: readonly (typeof CLIP_SHAPES)[number][];
+const SURFACE_KINDS = ["group", "clip"] as const;
+const SURFACE_SHAPES = ["rect", "rounded", "circle", "path", "image"] as const;
+export type InspectionSurfaceBoundary =
+  | { readonly occurrenceId: number; readonly kind: "group" }
+  | {
+      readonly occurrenceId: number;
+      readonly kind: "clip";
+      readonly shape: (typeof SURFACE_SHAPES)[number];
+    };
+export interface InspectionSurfaceProjection {
+  /** Leaf target first. Group boundaries carry no mask shape. */
+  readonly boundaries: readonly InspectionSurfaceBoundary[];
+  readonly coverage: (typeof SURFACE_COVERAGES)[number];
 }
-/** Opt-in inspection identity of one paint record: counter IDs only, never the owner node. */
-function clipProjection(
+function surfaceProjection(
   value: unknown,
   where: string,
   budget?: InspectionBudget,
-): InspectionClipProjection {
-  budget?.charge(
-    CLIP_PROJECTION_KEY +
-      CLIP_PROJECTION_BODY -
-      "rect-clipped-draw-quad".length,
-  );
+): InspectionSurfaceProjection {
+  budget?.charge(SURFACE_PROJECTION_KEY + SURFACE_PROJECTION_BODY);
   const coverage = oneOf(
     read(value, "coverage", where),
-    CLIP_COVERAGES,
+    SURFACE_COVERAGES,
     `${where}.coverage`,
   );
   budget?.charge(coverage.length);
-  const ids = list(
-    read(value, "clipOccurrenceIds", where),
-    `${where}.clipOccurrenceIds`,
+  const rawBoundaries = list(
+    read(value, "boundaries", where),
+    `${where}.boundaries`,
   );
-  const count = size(ids, `${where}.clipOccurrenceIds`);
-  const clipOccurrenceIds: number[] = [];
+  const count = size(rawBoundaries, `${where}.boundaries`);
+  if (count < 1)
+    throw new InspectionSerializationError(
+      `${where}.boundaries must have at least one surface.`,
+    );
+  const boundaries: InspectionSurfaceBoundary[] = [];
+  let nonRect = false;
   for (let index = 0; index < count; index++) {
     if (index > 0) budget?.charge(1);
-    clipOccurrenceIds.push(
-      safeId(
-        reading(() => ids[index]),
-        `${where}.clipOccurrenceIds[${index}]`,
-        budget,
-      ),
+    budget?.charge(SURFACE_BOUNDARY_ITEM);
+    const entry = reading(() => rawBoundaries[index]);
+    const itemWhere = `${where}.boundaries[${index}]`;
+    const occurrenceId = safeId(
+      read(entry, "occurrenceId", itemWhere),
+      `${itemWhere}.occurrenceId`,
+      budget,
     );
-  }
-  const rawShapes = read(value, "clipShapes", where);
-  if (coverage === "rect-clipped-draw-quad") {
-    if (rawShapes !== undefined)
-      throw new InspectionSerializationError(
-        `${where}.clipShapes must be absent when coverage is "rect-clipped-draw-quad".`,
-      );
-    return { clipOccurrenceIds, coverage };
-  }
-  if (rawShapes === undefined)
-    throw new InspectionSerializationError(
-      `${where}.clipShapes must be present when coverage is "outer-clipped-draw-quad".`,
+    const kind = oneOf(
+      read(entry, "kind", itemWhere),
+      SURFACE_KINDS,
+      `${itemWhere}.kind`,
     );
-  const shapes = list(rawShapes, `${where}.clipShapes`);
-  const shapeCount = size(shapes, `${where}.clipShapes`);
-  if (shapeCount !== count)
-    throw new InspectionSerializationError(
-      `${where}.clipShapes must have ${count} entries, received ${shapeCount}.`,
-    );
-  budget?.charge(CLIP_SHAPES_STRUCTURE);
-  const clipShapes: (typeof CLIP_SHAPES)[number][] = [];
-  let nonRect = false;
-  for (let index = 0; index < shapeCount; index++) {
-    if (index > 0) budget?.charge(1);
+    budget?.charge(kind.length + 2);
+    if (kind === "group") {
+      if (read(entry, "shape", itemWhere) !== undefined)
+        throw new InspectionSerializationError(
+          `${itemWhere}.shape must be absent when kind is "group".`,
+        );
+      boundaries.push({ occurrenceId, kind });
+      continue;
+    }
+    budget?.charge(SURFACE_BOUNDARY_SHAPE);
     const shape = oneOf(
-      reading(() => shapes[index]),
-      CLIP_SHAPES,
-      `${where}.clipShapes[${index}]`,
+      read(entry, "shape", itemWhere),
+      SURFACE_SHAPES,
+      `${itemWhere}.shape`,
     );
-    budget?.charge(shape.length + 2);
+    budget?.charge(shape.length);
     if (shape !== "rect") nonRect = true;
-    clipShapes.push(shape);
+    boundaries.push({ occurrenceId, kind, shape });
   }
-  if (!nonRect)
+  if (nonRect !== (coverage === "outer-clipped-draw-quad"))
     throw new InspectionSerializationError(
-      `${where}.coverage must be "rect-clipped-draw-quad" when every clip shape is "rect".`,
+      nonRect
+        ? `${where}.coverage must be "outer-clipped-draw-quad" when a clip shape is not "rect".`
+        : `${where}.coverage must be "rect-clipped-draw-quad" when every clip shape is "rect".`,
     );
-  return { clipOccurrenceIds, coverage, clipShapes };
+  return { boundaries, coverage };
 }
 function paintIdentity(
   value: unknown,
@@ -1351,15 +1350,15 @@ export function paintRecord(
     accuracy: accuracyVal,
     geometryVisible: geometryVisibleVal,
   };
-  const rawClip = read(value, "clipProjection", where);
-  const clipProjectionVal =
-    rawClip === undefined
+  const rawSurface = read(value, "surfaceProjection", where);
+  const surfaceProjectionVal =
+    rawSurface === undefined
       ? undefined
-      : clipProjection(rawClip, `${where}.clipProjection`, budget);
-  const clipped =
-    clipProjectionVal === undefined
+      : surfaceProjection(rawSurface, `${where}.surfaceProjection`, budget);
+  const projected =
+    surfaceProjectionVal === undefined
       ? {}
-      : { clipProjection: clipProjectionVal };
+      : { surfaceProjection: surfaceProjectionVal };
   if (kindVal === "media") {
     if (accuracyVal !== "conservative")
       throw new InspectionSerializationError(
@@ -1377,7 +1376,7 @@ export function paintRecord(
       accuracy: "conservative",
       provenance: provenanceVal,
       bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
-      ...clipped,
+      ...projected,
     };
   }
   if (kindVal === "text") {
@@ -1392,7 +1391,7 @@ export function paintRecord(
       kind: "text",
       provenance: provenanceVal,
       bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
-      ...clipped,
+      ...projected,
     };
   }
   const provenanceVal = oneOf(
@@ -1406,7 +1405,7 @@ export function paintRecord(
     kind: "box",
     provenance: provenanceVal,
     bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
-    ...clipped,
+    ...projected,
   };
 }
 /**
@@ -1919,7 +1918,7 @@ export function buildInspectionDocument(options: {
       transitions: {
         projection: "unavailable",
         reason:
-          "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. A Clip chain records the outer draw quad, not mask pixels or outline coverage. Nested Group and Composition paint and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
+          "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. A tagged Clip or Group chain records the outer draw quad, not mask pixels or fragment coverage. Composition, World, Overlay, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
       },
     },
     scenes: targetScene ? [targetScene] : scenes,

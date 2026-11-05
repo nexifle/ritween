@@ -6,6 +6,10 @@ import type { MediaSpec } from "./media";
 import { evaluateCamera, type CameraState } from "./camera";
 import type { StageContext } from "./stage";
 import type { PaintRecord } from "./renderer";
+import {
+  clipInspectionSurface,
+  type InspectionSurface,
+} from "./surface-projection";
 import type { Alignment, TextStyle, ViewNode } from "./nodes";
 
 export interface Theme {
@@ -77,6 +81,8 @@ export type DrawCommand = {
 } & (
   | {
       readonly kind: "composition";
+      /** Set only for a Clip, and only while inspection is on. Not a Composition tag. */
+      readonly inspectionSurface?: InspectionSurface;
       readonly mask?: PathOutline;
       readonly imageMask?: ImageMask;
       readonly maskFillRule?: "nonzero" | "evenodd";
@@ -1090,6 +1096,10 @@ function evaluateViewWithCounter(
           sharedId: m.node.key,
           ...stamp,
           ...commandIdentity(counter, nodeId, "surface"),
+          // Shape comes from the clip spec. A mask outline cannot tell rect from circle.
+          ...(counter
+            ? { inspectionSurface: clipInspectionSurface(s.shape) }
+            : {}),
           bounds,
           transform: current,
           opacity,

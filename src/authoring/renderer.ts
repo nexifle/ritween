@@ -14,6 +14,14 @@ import type {
 import { computeFrameTransform } from "./frame-transform";
 import { projectRect } from "./project-rect";
 import { planSurface } from "./surface-plan";
+import {
+  ClipSurfaceTraces,
+  copySurfaceUniform,
+  EMPTY_SURFACE_TRACES,
+  NON_CLIP_PARENT_REASON,
+  type ClipTracePass,
+  type SurfaceTrace,
+} from "./surface-projection";
 
 const shader = `
 struct Controls {
@@ -135,8 +143,7 @@ export type PaintRecord = {
       /** Ideal projected texture-quad AABB after fitting, not a UV crop or alpha bound. */
       readonly bounds: Bounds;
       readonly provenance:
-        | "projected-image-draw-quad"
-        | "projected-video-draw-quad";
+        "projected-image-draw-quad" | "projected-video-draw-quad";
       readonly geometryVisible: boolean;
       readonly unsupported?: never;
     }
@@ -344,6 +351,9 @@ export class ViewRenderer {
   private context = this.canvas.getContext("2d")!;
   private disposed = false;
   private colors = new Map<string, readonly number[]>();
+  /** Set by the parent render only for the child call, then cleared. */
+  private tracePass?: ClipTracePass;
+  private surfaceProjection: readonly SurfaceTrace[] = EMPTY_SURFACE_TRACES;
   private ownsShared = true;
   private surfaces = new Map<
     string,
@@ -534,6 +544,10 @@ export class ViewRenderer {
     }
     return undefined;
   }
+  /** Reconciled Clip traces from the last successful collecting render. Empty otherwise. */
+  surfaceTraces(): readonly SurfaceTrace[] {
+    return this.surfaceProjection;
+  }
   render(
     frame: EvaluatedFrame,
     context: RenderContext,
@@ -545,397 +559,486 @@ export class ViewRenderer {
     media: ReadonlyMap<string, ImageTexture> = new Map(),
     collector?: (record: PaintRecord) => void,
   ) {
+    const incoming = this.tracePass;
+    this.tracePass = undefined;
+    // Root snapshot dies before the readiness throw, which is outside the catch.
+    if (!incoming) this.surfaceProjection = EMPTY_SURFACE_TRACES;
     if (this.disposed || !this.pipeline || !this.white || !this.sampler)
       throw Error("View renderer is not ready.");
-    const {
-      scale,
-      ox,
-      oy,
-      matrix: frameMatrix,
-    } = computeFrameTransform(size, context.resolution, frame.camera?.matrix);
-    const rasterScale = scale * textResolution;
-    const activeSurfaces = new Set(
-      frame.commands
-        .filter((c) => c.kind === "composition" || c.kind === "group")
-        .map((c) => c.path),
-    );
-    for (const [key, surface] of this.surfaces)
-      if (!activeSurfaces.has(key)) {
-        this.releaseSurface(surface);
-        this.surfaces.delete(key);
-      }
-    const compositionTextures = new Map<string, GPUTexture>();
-    for (const c of frame.commands)
-      if (c.kind === "composition" || c.kind === "group") {
-        const plan = planSurface(
-          c.bounds,
-          c.transform,
-          scale,
-          frameMatrix,
-          context.sharedSpace,
-        );
-        const { width, height } = plan;
-        let surface = this.surfaces.get(c.path);
-        if (surface && (surface.width !== width || surface.height !== height)) {
-          this.releaseSurface(surface);
-          this.surfaces.delete(c.path);
-          surface = undefined;
-        }
-        if (!surface) {
-          if (
-            width > context.device.limits.maxTextureDimension2D ||
-            height > context.device.limits.maxTextureDimension2D ||
-            this.budget.bytes + width * height * 4 > 256 * 1024 * 1024
-          )
-            throw Error(
-              `${c.path}: composition surfaces exceed device or 256 MiB budget.`,
-            );
-          const texture = context.device.createTexture({
-            label: c.path,
-            size: [width, height],
-            format: context.format,
-            usage:
-              GPUTextureUsage.RENDER_ATTACHMENT |
-              GPUTextureUsage.TEXTURE_BINDING |
-              GPUTextureUsage.COPY_SRC |
-              GPUTextureUsage.COPY_DST,
-          });
-          surface = {
-            texture,
-            world: this.fork(),
-            width,
-            height,
-          };
-          this.budget.bytes += width * height * 4;
-          this.surfaces.set(c.path, surface);
-        }
-        const { childSpace } = plan;
-        // A surface transformed as one unit must not let its contents apply a pose again.
-        // That is decided here, from the matrix the transition actually supplies, rather than
-        // from candidate names or from a declared ID: a surface may list candidates this
-        // transition did not match while a descendant is matched, and those descendants must
-        // still animate.
-        const surfaceCorrected =
-          this.resolveCorrection(c, context) !== undefined;
-        const childContext = {
-          ...context,
-          sharedTransforms: surfaceCorrected
-            ? undefined
-            : context.sharedTransforms,
-          sharedSpace: childSpace,
-          target: surface.texture,
-          resolution: [width, height] as const,
-        };
-        const childSize = plan.childDesignSize;
-        surface.world.render(
-          c.frame,
-          childContext,
-          childSize,
-          "#00000000",
-          debug,
-          textResolution,
-          true,
-          media,
-        );
-        if (c.overlay) {
-          surface.overlay ??= this.fork();
-          surface.overlay.render(
-            c.overlay,
-            childContext,
-            childSize,
-            "#00000000",
-            debug,
-            textResolution,
-            false,
-            media,
-          );
-        } else {
-          surface.overlay?.dispose();
-          surface.overlay = undefined;
-        }
-        compositionTextures.set(c.path, surface.texture);
-      }
-    const commands = [...frame.commands];
-    if (debug) {
-      const visit = (node: EvaluatedFrame["tree"]) => {
-        commands.push({
-          kind: "box",
-          path: node.path,
-          bounds: node.bounds,
-          transform: node.transform,
-          opacity: 1,
-          fill: "#00000000",
-          radius: 0,
-          stroke: "#E43A79",
-          strokeWidth: 1 / (scale * (frame.camera?.zoom ?? 1)),
-        });
-        if (node.kind !== "composition" && node.kind !== "group")
-          node.children.forEach(visit);
-      };
-      visit(frame.tree);
-    }
-    const keys = new Set(
-      commands.flatMap((c) =>
-        c.kind === "text"
-          ? [this.textKey(c.text, c.bounds.width, c.bounds.height, rasterScale)]
-          : [],
-      ),
-    );
-    for (const [key, entry] of this.texts)
-      if (!keys.has(key)) {
-        this.releaseText(entry);
-        this.texts.delete(key);
-      }
-    const stride = Math.max(
-      256,
-      context.device.limits.minUniformBufferOffsetAlignment,
-    );
-    const bytes = Math.max(stride, commands.length * stride);
-    if (bytes > context.device.limits.maxBufferSize)
-      throw Error("View draw list exceeds GPU buffer capacity.");
-    if (!this.uniform || this.uniform.size < bytes) {
-      this.uniform?.destroy();
-      this.uniform = context.device.createBuffer({
-        size: bytes,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-    }
-    const values = new Float32Array(bytes / 4);
-    // shortcut: one binding/draw per primitive, batch only after real workload measurements.
-    const edgeValues: number[] = [];
-    const edgeRanges = commands.map((c) => {
-      const offset = edgeValues.length * 4;
-      const outline =
-        c.kind === "path"
-          ? c.outline
-          : c.kind === "composition"
-            ? c.mask
-            : undefined;
-      if (outline)
-        for (const contour of flattenPath(outline))
-          contour.forEach((p, i) =>
-            edgeValues.push(...p, ...contour[(i + 1) % contour.length]),
-          );
-      const count = (edgeValues.length * 4 - offset) / 16;
-      const alignment = context.device.limits.minStorageBufferOffsetAlignment;
-      while ((edgeValues.length * 4) % alignment) edgeValues.push(0);
-      return { offset, count };
-    });
-    const edgeBytes = Math.max(16, edgeValues.length * 4 + 16);
-    if (edgeBytes > context.device.limits.maxStorageBufferBindingSize)
-      throw Error("Path edges exceed GPU storage budget.");
-    if (!this.edgeBuffer || this.edgeBuffer.size < edgeBytes) {
-      this.edgeBuffer?.destroy();
-      this.edgeBuffer = context.device.createBuffer({
-        size: edgeBytes,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      });
-    }
-    if (edgeValues.length)
-      context.device.queue.writeBuffer(
-        this.edgeBuffer,
-        0,
-        new Float32Array(edgeValues),
+    let book = incoming?.book;
+    let sink = incoming?.sink;
+    const blocked = incoming?.blocked;
+    // No book and no closure unless this render is collecting or continuing a trace.
+    const ensureBook =
+      collector || incoming
+        ? () => {
+            book ??= new ClipSurfaceTraces();
+            sink ??= book.roots;
+            return book;
+          }
+        : undefined;
+    try {
+      const {
+        scale,
+        ox,
+        oy,
+        matrix: frameMatrix,
+      } = computeFrameTransform(size, context.resolution, frame.camera?.matrix);
+      const rasterScale = scale * textResolution;
+      const activeSurfaces = new Set(
+        frame.commands
+          .filter((c) => c.kind === "composition" || c.kind === "group")
+          .map((c) => c.path),
       );
-    const bindings: GPUBindGroup[] = [];
-    commands.forEach((c, i) => {
-      try {
-        let texture =
-          c.kind === "composition" || c.kind === "group"
-            ? compositionTextures.get(c.path)!
-            : this.white!;
-        if (c.kind === "text") {
-          const key = this.textKey(
-            c.text,
-            c.bounds.width,
-            c.bounds.height,
-            rasterScale,
-          );
-          let cached = this.texts.get(key);
-          if (!cached) {
-            this.color(c.text.color);
-            cached = this.rasterText(c, rasterScale, context);
-            this.texts.set(key, cached);
-          }
-          texture = cached.texture;
+      for (const [key, surface] of this.surfaces)
+        if (!activeSurfaces.has(key)) {
+          this.releaseSurface(surface);
+          this.surfaces.delete(key);
         }
-        let b = c.bounds;
-        let uv: readonly number[] = [1, 1, 0, 0];
-        if (c.kind === "media") {
-          const resource = media.get(mediaKey(c.source));
-          if (!resource)
-            throw Error("Media is not prepared; use renderAsync().");
-          const fitted = fitMedia(
-            b.width,
-            b.height,
-            resource.width,
-            resource.height,
-            c.crop ? "cover" : (c.source.style.fit ?? "contain"),
+      const compositionTextures = new Map<string, GPUTexture>();
+      for (const c of frame.commands)
+        if (c.kind === "composition" || c.kind === "group") {
+          const plan = planSurface(
+            c.bounds,
+            c.transform,
+            scale,
+            frameMatrix,
+            context.sharedSpace,
           );
-          b = {
-            x: b.x + fitted.x,
-            y: b.y + fitted.y,
-            width: fitted.width,
-            height: fitted.height,
+          const { width, height } = plan;
+          let surface = this.surfaces.get(c.path);
+          if (
+            surface &&
+            (surface.width !== width || surface.height !== height)
+          ) {
+            this.releaseSurface(surface);
+            this.surfaces.delete(c.path);
+            surface = undefined;
+          }
+          if (!surface) {
+            if (
+              width > context.device.limits.maxTextureDimension2D ||
+              height > context.device.limits.maxTextureDimension2D ||
+              this.budget.bytes + width * height * 4 > 256 * 1024 * 1024
+            )
+              throw Error(
+                `${c.path}: composition surfaces exceed device or 256 MiB budget.`,
+              );
+            const texture = context.device.createTexture({
+              label: c.path,
+              size: [width, height],
+              format: context.format,
+              usage:
+                GPUTextureUsage.RENDER_ATTACHMENT |
+                GPUTextureUsage.TEXTURE_BINDING |
+                GPUTextureUsage.COPY_SRC |
+                GPUTextureUsage.COPY_DST,
+            });
+            surface = {
+              texture,
+              world: this.fork(),
+              width,
+              height,
+            };
+            this.budget.bytes += width * height * 4;
+            this.surfaces.set(c.path, surface);
+          }
+          const { childSpace } = plan;
+          // A surface transformed as one unit must not let its contents apply a pose again.
+          // That is decided here, from the matrix the transition actually supplies, rather than
+          // from candidate names or from a declared ID: a surface may list candidates this
+          // transition did not match while a descendant is matched, and those descendants must
+          // still animate.
+          const surfaceCorrected =
+            this.resolveCorrection(c, context) !== undefined;
+          const childContext = {
+            ...context,
+            sharedTransforms: surfaceCorrected
+              ? undefined
+              : context.sharedTransforms,
+            sharedSpace: childSpace,
+            target: surface.texture,
+            resolution: [width, height] as const,
           };
-          uv = fitted.uv;
-          if (c.crop) {
-            const [x, y, zoom] = c.crop;
-            const u = fitted.uv[0] / zoom,
-              v = fitted.uv[1] / zoom;
-            uv = [
-              u,
-              v,
-              Math.max(0, Math.min(1 - u, x - u / 2)),
-              Math.max(0, Math.min(1 - v, y - v / 2)),
-            ];
+          const childSize = plan.childDesignSize;
+          // Paint collector stays on this render. A fork may only receive the trace pass.
+          let childPass: ClipTracePass | undefined;
+          if (ensureBook) {
+            if (
+              c.kind === "composition" &&
+              c.inspectionSurface &&
+              c.inspection
+            ) {
+              const active = ensureBook();
+              childPass = {
+                book: active,
+                sink: active.open(
+                  c.inspection.id,
+                  c.inspection.nodeId,
+                  c.path,
+                  c.inspectionSurface.shape,
+                  [width, height],
+                ),
+              };
+            } else if (
+              frameHasClip(c.frame) ||
+              (c.kind === "composition" && c.overlay && frameHasClip(c.overlay))
+            ) {
+              const active = ensureBook();
+              childPass = {
+                book: active,
+                sink: sink ?? active.roots,
+                blocked: blocked ?? NON_CLIP_PARENT_REASON,
+              };
+            }
           }
-          texture = resource.texture;
+          surface.world.tracePass = childPass;
+          try {
+            surface.world.render(
+              c.frame,
+              childContext,
+              childSize,
+              "#00000000",
+              debug,
+              textResolution,
+              true,
+              media,
+            );
+          } finally {
+            surface.world.tracePass = undefined;
+          }
+          if (c.overlay) {
+            surface.overlay ??= this.fork();
+            surface.overlay.tracePass = childPass;
+            try {
+              surface.overlay.render(
+                c.overlay,
+                childContext,
+                childSize,
+                "#00000000",
+                debug,
+                textResolution,
+                false,
+                media,
+              );
+            } finally {
+              surface.overlay.tracePass = undefined;
+            }
+          } else {
+            surface.overlay?.dispose();
+            surface.overlay = undefined;
+          }
+          compositionTextures.set(c.path, surface.texture);
         }
-        const [sx, sy, tx, ty] = c.transform;
-        let drawCamera: readonly number[] = frameMatrix;
-        // Matching identity decides *whether* a shared transition has a pose; the paint
-        // correction applies it to the whole declaring chain, so a background and the
-        // content it decorates move together in both modifier orders.
-        const correction = this.resolveCorrection(c, context);
-        if (correction) {
-          const space = context.sharedSpace ?? identity;
-          drawCamera = multiply(
-            multiply(multiply(inverse(space), correction), space),
-            drawCamera,
+      const commands = [...frame.commands];
+      if (debug) {
+        const visit = (node: EvaluatedFrame["tree"]) => {
+          commands.push({
+            kind: "box",
+            path: node.path,
+            bounds: node.bounds,
+            transform: node.transform,
+            opacity: 1,
+            fill: "#00000000",
+            radius: 0,
+            stroke: "#E43A79",
+            strokeWidth: 1 / (scale * (frame.camera?.zoom ?? 1)),
+          });
+          if (node.kind !== "composition" && node.kind !== "group")
+            node.children.forEach(visit);
+        };
+        visit(frame.tree);
+      }
+      const keys = new Set(
+        commands.flatMap((c) =>
+          c.kind === "text"
+            ? [
+                this.textKey(
+                  c.text,
+                  c.bounds.width,
+                  c.bounds.height,
+                  rasterScale,
+                ),
+              ]
+            : [],
+        ),
+      );
+      for (const [key, entry] of this.texts)
+        if (!keys.has(key)) {
+          this.releaseText(entry);
+          this.texts.delete(key);
+        }
+      const stride = Math.max(
+        256,
+        context.device.limits.minUniformBufferOffsetAlignment,
+      );
+      const bytes = Math.max(stride, commands.length * stride);
+      if (bytes > context.device.limits.maxBufferSize)
+        throw Error("View draw list exceeds GPU buffer capacity.");
+      if (!this.uniform || this.uniform.size < bytes) {
+        this.uniform?.destroy();
+        this.uniform = context.device.createBuffer({
+          size: bytes,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+      }
+      const values = new Float32Array(bytes / 4);
+      // shortcut: one binding/draw per primitive, batch only after real workload measurements.
+      const edgeValues: number[] = [];
+      const edgeRanges = commands.map((c) => {
+        const offset = edgeValues.length * 4;
+        const outline =
+          c.kind === "path"
+            ? c.outline
+            : c.kind === "composition"
+              ? c.mask
+              : undefined;
+        if (outline)
+          for (const contour of flattenPath(outline))
+            contour.forEach((p, i) =>
+              edgeValues.push(...p, ...contour[(i + 1) % contour.length]),
+            );
+        const count = (edgeValues.length * 4 - offset) / 16;
+        const alignment = context.device.limits.minStorageBufferOffsetAlignment;
+        while ((edgeValues.length * 4) % alignment) edgeValues.push(0);
+        return { offset, count };
+      });
+      const edgeBytes = Math.max(16, edgeValues.length * 4 + 16);
+      if (edgeBytes > context.device.limits.maxStorageBufferBindingSize)
+        throw Error("Path edges exceed GPU storage budget.");
+      if (!this.edgeBuffer || this.edgeBuffer.size < edgeBytes) {
+        this.edgeBuffer?.destroy();
+        this.edgeBuffer = context.device.createBuffer({
+          size: edgeBytes,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+      }
+      if (edgeValues.length)
+        context.device.queue.writeBuffer(
+          this.edgeBuffer,
+          0,
+          new Float32Array(edgeValues),
+        );
+      const bindings: GPUBindGroup[] = [];
+      commands.forEach((c, i) => {
+        try {
+          let texture =
+            c.kind === "composition" || c.kind === "group"
+              ? compositionTextures.get(c.path)!
+              : this.white!;
+          if (c.kind === "text") {
+            const key = this.textKey(
+              c.text,
+              c.bounds.width,
+              c.bounds.height,
+              rasterScale,
+            );
+            let cached = this.texts.get(key);
+            if (!cached) {
+              this.color(c.text.color);
+              cached = this.rasterText(c, rasterScale, context);
+              this.texts.set(key, cached);
+            }
+            texture = cached.texture;
+          }
+          let b = c.bounds;
+          let uv: readonly number[] = [1, 1, 0, 0];
+          if (c.kind === "media") {
+            const resource = media.get(mediaKey(c.source));
+            if (!resource)
+              throw Error("Media is not prepared; use renderAsync().");
+            const fitted = fitMedia(
+              b.width,
+              b.height,
+              resource.width,
+              resource.height,
+              c.crop ? "cover" : (c.source.style.fit ?? "contain"),
+            );
+            b = {
+              x: b.x + fitted.x,
+              y: b.y + fitted.y,
+              width: fitted.width,
+              height: fitted.height,
+            };
+            uv = fitted.uv;
+            if (c.crop) {
+              const [x, y, zoom] = c.crop;
+              const u = fitted.uv[0] / zoom,
+                v = fitted.uv[1] / zoom;
+              uv = [
+                u,
+                v,
+                Math.max(0, Math.min(1 - u, x - u / 2)),
+                Math.max(0, Math.min(1 - v, y - v / 2)),
+              ];
+            }
+            texture = resource.texture;
+          }
+          const [sx, sy, tx, ty] = c.transform;
+          let drawCamera: readonly number[] = frameMatrix;
+          // Matching identity decides *whether* a shared transition has a pose; the paint
+          // correction applies it to the whole declaring chain, so a background and the
+          // content it decorates move together in both modifier orders.
+          const correction = this.resolveCorrection(c, context);
+          if (correction) {
+            const space = context.sharedSpace ?? identity;
+            drawCamera = multiply(
+              multiply(multiply(inverse(space), correction), space),
+              drawCamera,
+            );
+          }
+          values.set(
+            [
+              b.x,
+              b.y,
+              b.width,
+              b.height,
+              sx,
+              sy,
+              tx,
+              ty,
+              ...context.resolution,
+              c.kind === "box" ? c.radius : 0,
+              c.kind === "box" ? c.strokeWidth : 0,
+              ...(c.kind === "box" || c.kind === "path"
+                ? this.color(c.fill)
+                : [1, 1, 1, 1]),
+              ...(c.kind === "box" && c.stroke
+                ? this.color(c.stroke)
+                : [0, 0, 0, 0]),
+              c.opacity,
+              c.kind === "box"
+                ? 0
+                : c.kind === "composition" || c.kind === "group"
+                  ? c.kind === "composition" && c.imageMask
+                    ? c.imageMask.mode === "luminance"
+                      ? 6
+                      : 5
+                    : c.kind === "composition" && c.mask
+                      ? 4
+                      : 2
+                  : c.kind === "path"
+                    ? 3
+                    : 1,
+              edgeRanges[i].count,
+              (c.kind === "path" && c.fillRule === "evenodd") ||
+              (c.kind === "composition" && c.maskFillRule === "evenodd")
+                ? 1
+                : 0,
+              drawCamera[0],
+              drawCamera[2],
+              drawCamera[4],
+              0,
+              drawCamera[1],
+              drawCamera[3],
+              drawCamera[5],
+              0,
+              ...uv,
+            ],
+            (i * stride) / 4,
+          );
+          // Collected after the upload, so a record describes the uniforms the GPU receives.
+          // Nested world/overlay surfaces render through forked renderers that get no collector,
+          // so a surface reports itself unsupported instead of forwarding into a tree it skips.
+          // Debug outlines are appended to the copy above, so `frame.commands` is only real paint.
+          if (
+            book &&
+            i < frame.commands.length &&
+            c.kind === "composition" &&
+            c.inspectionSurface &&
+            c.inspection
+          ) {
+            // Child traces were accepted before this uniform existed; reconcile only now.
+            const raw = book.close(
+              c.inspection.id,
+              copySurfaceUniform(values, (i * stride) / 4),
+              blocked,
+            );
+            if (raw) (blocked ? book.blocked : (sink ?? book.roots)).push(raw);
+          }
+          if (collector && i < frame.commands.length)
+            collector(paintRecord(c, values, (i * stride) / 4));
+          bindings.push(
+            context.device.createBindGroup({
+              layout: this.pipeline!.getBindGroupLayout(0),
+              entries: [
+                {
+                  binding: 0,
+                  resource: {
+                    buffer: this.uniform!,
+                    offset: i * stride,
+                    size: 144,
+                  },
+                },
+                { binding: 1, resource: texture.createView() },
+                { binding: 2, resource: this.sampler! },
+                {
+                  binding: 4,
+                  resource: (() => {
+                    if (c.kind !== "composition" || !c.imageMask)
+                      return this.white!.createView();
+                    const mask = media.get(
+                      mediaKey({
+                        kind: "image",
+                        url: c.imageMask.url,
+                        style: { width: b.width, height: b.height },
+                      }),
+                    );
+                    if (!mask)
+                      throw Error(
+                        "Mask image is not prepared; use renderAsync().",
+                      );
+                    return mask.texture.createView();
+                  })(),
+                },
+                {
+                  binding: 3,
+                  resource: {
+                    buffer: this.edgeBuffer!,
+                    offset: edgeRanges[i].offset,
+                    size: Math.max(16, edgeRanges[i].count * 16),
+                  },
+                },
+              ],
+            }),
+          );
+        } catch (error) {
+          throw Error(
+            `${c.path}: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
           );
         }
-        values.set(
-          [
-            b.x,
-            b.y,
-            b.width,
-            b.height,
-            sx,
-            sy,
-            tx,
-            ty,
-            ...context.resolution,
-            c.kind === "box" ? c.radius : 0,
-            c.kind === "box" ? c.strokeWidth : 0,
-            ...(c.kind === "box" || c.kind === "path"
-              ? this.color(c.fill)
-              : [1, 1, 1, 1]),
-            ...(c.kind === "box" && c.stroke
-              ? this.color(c.stroke)
-              : [0, 0, 0, 0]),
-            c.opacity,
-            c.kind === "box"
-              ? 0
-              : c.kind === "composition" || c.kind === "group"
-                ? c.kind === "composition" && c.imageMask
-                  ? c.imageMask.mode === "luminance"
-                    ? 6
-                    : 5
-                  : c.kind === "composition" && c.mask
-                    ? 4
-                    : 2
-                : c.kind === "path"
-                  ? 3
-                  : 1,
-            edgeRanges[i].count,
-            (c.kind === "path" && c.fillRule === "evenodd") ||
-            (c.kind === "composition" && c.maskFillRule === "evenodd")
-              ? 1
-              : 0,
-            drawCamera[0],
-            drawCamera[2],
-            drawCamera[4],
-            0,
-            drawCamera[1],
-            drawCamera[3],
-            drawCamera[5],
-            0,
-            ...uv,
-          ],
-          (i * stride) / 4,
-        );
-        // Collected after the upload, so a record describes the uniforms the GPU receives.
-        // Nested world/overlay surfaces render through forked renderers that get no collector,
-        // so a surface reports itself unsupported instead of forwarding into a tree it skips.
-        // Debug outlines are appended to the copy above, so `frame.commands` is only real paint.
-        if (collector && i < frame.commands.length)
-          collector(paintRecord(c, values, (i * stride) / 4));
-        bindings.push(
-          context.device.createBindGroup({
-            layout: this.pipeline!.getBindGroupLayout(0),
-            entries: [
-              {
-                binding: 0,
-                resource: {
-                  buffer: this.uniform!,
-                  offset: i * stride,
-                  size: 144,
-                },
-              },
-              { binding: 1, resource: texture.createView() },
-              { binding: 2, resource: this.sampler! },
-              {
-                binding: 4,
-                resource: (() => {
-                  if (c.kind !== "composition" || !c.imageMask)
-                    return this.white!.createView();
-                  const mask = media.get(
-                    mediaKey({
-                      kind: "image",
-                      url: c.imageMask.url,
-                      style: { width: b.width, height: b.height },
-                    }),
-                  );
-                  if (!mask)
-                    throw Error(
-                      "Mask image is not prepared; use renderAsync().",
-                    );
-                  return mask.texture.createView();
-                })(),
-              },
-              {
-                binding: 3,
-                resource: {
-                  buffer: this.edgeBuffer!,
-                  offset: edgeRanges[i].offset,
-                  size: Math.max(16, edgeRanges[i].count * 16),
-                },
-              },
-            ],
-          }),
-        );
-      } catch (error) {
-        throw Error(
-          `${c.path}: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error },
-        );
-      }
-    });
-    context.device.queue.writeBuffer(this.uniform, 0, values);
-    const [r, g, b, a] = this.color(background);
-    const pass = context.encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: context.target.createView(),
-          loadOp: clear ? "clear" : "load",
-          storeOp: "store",
-          clearValue: { r, g, b, a },
-        },
-      ],
-    });
-    pass.setScissorRect(
-      Math.ceil(ox),
-      Math.ceil(oy),
-      Math.max(0, Math.floor(context.resolution[0] - ox) - Math.ceil(ox)),
-      Math.max(0, Math.floor(context.resolution[1] - oy) - Math.ceil(oy)),
-    );
-    pass.setPipeline(this.pipeline);
-    bindings.forEach((bind) => {
-      pass.setBindGroup(0, bind);
-      pass.draw(6);
-    });
-    pass.end();
+      });
+      context.device.queue.writeBuffer(this.uniform, 0, values);
+      const [r, g, b, a] = this.color(background);
+      const pass = context.encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: context.target.createView(),
+            loadOp: clear ? "clear" : "load",
+            storeOp: "store",
+            clearValue: { r, g, b, a },
+          },
+        ],
+      });
+      pass.setScissorRect(
+        Math.ceil(ox),
+        Math.ceil(oy),
+        Math.max(0, Math.floor(context.resolution[0] - ox) - Math.ceil(ox)),
+        Math.max(0, Math.floor(context.resolution[1] - oy) - Math.ceil(oy)),
+      );
+      pass.setPipeline(this.pipeline);
+      bindings.forEach((bind) => {
+        pass.setBindGroup(0, bind);
+        pass.draw(6);
+      });
+      pass.end();
+      if (!incoming)
+        this.surfaceProjection = book?.finish() ?? EMPTY_SURFACE_TRACES;
+    } catch (error) {
+      if (!incoming) this.surfaceProjection = EMPTY_SURFACE_TRACES;
+      throw error;
+    }
   }
   private releaseSurface(surface: {
     texture: GPUTexture;
@@ -965,5 +1068,23 @@ export class ViewRenderer {
     for (const entry of this.texts.values()) this.releaseText(entry);
     this.texts.clear();
     this.canvas.width = this.canvas.height = 0;
+    this.surfaceProjection = EMPTY_SURFACE_TRACES;
+    this.tracePass = undefined;
   }
+}
+
+function frameHasClip(frame: EvaluatedFrame): boolean {
+  for (const command of frame.commands) {
+    if (command.kind !== "composition" && command.kind !== "group") continue;
+    if (command.kind === "composition" && command.inspectionSurface)
+      return true;
+    if (frameHasClip(command.frame)) return true;
+    if (
+      command.kind === "composition" &&
+      command.overlay &&
+      frameHasClip(command.overlay)
+    )
+      return true;
+  }
+  return false;
 }

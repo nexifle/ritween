@@ -1167,8 +1167,8 @@ const expectedRole = (kind: string): "content" | "background" | "surface" =>
       ? "background"
       : "content";
 
-/** Command-only opt-in metadata: nothing else may differ between inspection off and on. */
-const commandInspectionKeys = new Set(["inspection"]);
+/** Command-only opt-in metadata: identity/role and the Clip surface tag. Nothing else may differ. */
+const commandInspectionKeys = new Set(["inspection", "inspectionSurface"]);
 /** Tree metadata: the new identity plus the pre-existing layout metadata from G3.3/G3.4a. */
 const treeInspectionKeys = new Set([
   "inspection",
@@ -1435,7 +1435,7 @@ test("G3.4b: every command is owned directly by the node of its own path with a 
   assert.equal(new Set(ids).size, ids.length);
 });
 
-test("G3.4b: inspection off allocates no identity or role and changes no command field", () => {
+test("G3.4b: inspection off allocates no identity or role; only inspection metadata differs", () => {
   const view = identityFixture();
   const plain = inspected(view, { inspection: false });
   const on = inspected(view);
@@ -1446,15 +1446,38 @@ test("G3.4b: inspection off allocates no identity or role and changes no command
       false,
       `${node.path} keeps no identity`,
     );
-  for (const command of allCommands(plain.commands))
+  for (const command of allCommands(plain.commands)) {
     assert.equal(
       "inspection" in command,
       false,
       `${command.path} keeps no role`,
     );
+    assert.equal(
+      "inspectionSurface" in command,
+      false,
+      `${command.path} keeps no clip surface tag`,
+    );
+  }
 
-  // Every other field — kind, path, bounds, transform, opacity, sharedId, matchId,
-  // correctionIds, masks, resources, uniforms and command order — must be identical.
+  const onCommands = allCommands(on.commands);
+  const clip = onCommands.find((command) => command.sharedId === "window");
+  const composition = onCommands.find(
+    (command) => command.sharedId === "nested",
+  );
+  assert.equal(clip?.kind, "composition", "window is the fixture Clip surface");
+  assert.equal(
+    composition?.kind,
+    "composition",
+    "nested is the fixture Composition surface",
+  );
+  assert.equal("inspectionSurface" in clip!, true);
+  assert.equal("inspectionSurface" in composition!, false);
+  assert.equal(on.commands[0]?.kind, "composition");
+  assert.equal("inspectionSurface" in on.commands[0]!, false);
+
+  // Only inspection metadata may differ. Every other field — kind, path, bounds,
+  // transform, opacity, sharedId, matchId, correctionIds, masks, resources, uniforms
+  // and command order — must be identical.
   assert.deepEqual(
     withoutInspectionMetadata(on.commands),
     withoutInspectionMetadata(plain.commands),

@@ -10,7 +10,9 @@
  * - a nested Composition publishing its own space,
  * - a raw Scene published as unavailable with a reason,
  * - transition projection published as explicitly pending G3,
- * - authored-ID targeting, atomic --output, exit codes and cancellation.
+ * - authored-ID targeting, atomic --output, exit codes and cancellation,
+ * - a flat Box fixture proved through the same CLI, plus one FrameSource
+ *   A→B→A pixel seek. G7 production counters are not measured here.
  *
  * Run after `npm run build`:
  *   node scripts/validate-inspect.mjs
@@ -34,7 +36,23 @@ import {
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
+import { createServer as createViteServer } from "vite";
 import { nodeCli } from "./node-cli.mjs";
+
+/** Must match `scripts/inspect-fixture/manifest-box.mjs`. Checked against that file before use. */
+const OUTPUT = [320, 180];
+const BOX_A = { x: 40, y: 30, width: 80, height: 40 };
+const BOX_B = { x: 100, y: 30, width: 80, height: 40 };
+const BACKGROUND_RGBA = [0x11, 0x22, 0x33, 255];
+const COLOR_A_RGBA = [0xe2, 0x3d, 0x3d, 255];
+const COLOR_B_RGBA = [0x2e, 0x6b, 0xff, 255];
+const TIME_A = 0.25;
+const TIME_B = 1.25;
+const TIME_CLIP = 2.25;
+const SAMPLE_A = [70, 50];
+const SAMPLE_B = [150, 50];
+const SAMPLE_BG = [16, 16];
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cli = process.env.CLI_BINARY
@@ -128,6 +146,35 @@ async function createConsumer(directory, manifest) {
 }
 // The proof itself is recorded by the page; this is the shape the run asserted.
 const expectedFontWeights = ["400", "700"];
+const boxConsumer = join(artifacts, "consumer-box");
+
+function walk(node, visit) {
+  visit(node);
+  for (const child of node.children ?? []) walk(child, visit);
+}
+
+function nodeById(root, id) {
+  let found;
+  walk(root, (node) => {
+    if (node.id === id) found = node;
+  });
+  return found;
+}
+
+function idsOf(root) {
+  const ids = [];
+  walk(root, (node) => {
+    if (node.id) ids.push(node.id);
+  });
+  return ids;
+}
+
+/** Paint record whose owner inspection id is the authored node's, not a path guess. */
+function recordOwnedBy(records, node) {
+  return records.find(
+    (record) => record.inspection?.nodeId === node?.inspectionId,
+  );
+}
 
 function run(args, { timeout = 180_000, cwd = root } = {}) {
   return new Promise((resolveRun, rejectRun) => {
@@ -176,6 +223,475 @@ function hasFractionalGeometry(node) {
     values.some((value) => !Number.isInteger(value)) ||
     node.children.some(hasFractionalGeometry)
   );
+}
+
+function maxChannelDelta(left, right) {
+  assert.equal(left.length, right.length);
+  let max = 0;
+  for (let i = 0; i < left.length; i++)
+    max = Math.max(max, Math.abs(left[i] - right[i]));
+  return max;
+}
+
+function samplePixel(frame, point) {
+  const index = (point[1] * OUTPUT[0] + point[0]) * 4;
+  return [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]];
+}
+
+function assertNear(actual, expected, tolerance, label) {
+  for (let i = 0; i < expected.length; i++)
+    assert.ok(
+      Math.abs(actual[i] - expected[i]) <= tolerance,
+      `${label}: ${actual} expected ${expected} within ${tolerance}`,
+    );
+}
+
+function assertBoxRecord(record, bounds, role) {
+  assert.equal(record.kind, "box");
+  assert.equal(record.provenance, "projected-box-draw-quad");
+  assert.equal(record.space, "scene-target-pixels");
+  assert.deepEqual([...record.resolution], [...OUTPUT]);
+  assert.deepEqual(record.bounds, bounds);
+  assert.equal(record.accuracy, "exact-rectangle");
+  assert.equal(record.geometryVisible, true);
+  assert.equal(record.paintRole, role);
+  assert.equal(record.inspection.role, role);
+}
+
+/**
+ * Public CLI inspect of the flat Box fixture, then one FrameSource instance
+ * seeking A → B → A. Tolerance comes from an unchanged A repeat before that seek.
+ */
+async function proveFlatBoxes() {
+  const evidence = {
+    fixture: "scripts/inspect-fixture/manifest-box.mjs",
+    output: [...OUTPUT],
+    boxA: BOX_A,
+    boxB: BOX_B,
+    samples: {
+      aInterior: [...SAMPLE_A],
+      bInterior: [...SAMPLE_B],
+      background: [...SAMPLE_BG],
+      note: "Interiors are inset from every ideal quad edge; the quad is not a pixel bound.",
+    },
+    g7: {
+      productionCounters: "unavailable",
+      renderPassReuse: "not-measured",
+      textureReuse: "not-measured",
+      reason:
+        "G7 requires engine instrumentation. This script does not estimate passes or texture reuse.",
+    },
+  };
+  let browser;
+  let vite;
+  try {
+    const fixtureSource = await readFile(
+      join(template, "manifest-box.mjs"),
+      "utf8",
+    );
+    for (const needle of [
+      "x: 40, y: 30, width: 80, height: 40",
+      "x: 100, y: 30, width: 80, height: 40",
+      "[320, 180]",
+      "#112233",
+      "#E23D3D",
+      "#2E6BFF",
+      "TIME_A = 0.25",
+      "TIME_B = 1.25",
+      "TIME_CLIP = 2.25",
+      "[70, 50]",
+      "[150, 50]",
+      "[16, 16]",
+    ])
+      assert.ok(
+        fixtureSource.includes(needle),
+        `manifest-box.mjs drifted from the Lane B contract: missing ${needle}`,
+      );
+    await createConsumer(boxConsumer, "manifest-box.mjs");
+    const inspectAt = (time, extra = []) =>
+      inspectJson([
+        "inspect",
+        "--project",
+        boxConsumer,
+        "--time",
+        String(time),
+        ...extra,
+      ]);
+
+    const stateA = await inspectAt(TIME_A);
+    const stateB = await inspectAt(TIME_B);
+    for (const [label, result, id, bounds, backgroundId] of [
+      ["A", stateA, "box-a", BOX_A, "bg-a"],
+      ["B", stateB, "box-b", BOX_B, "bg-b"],
+    ]) {
+      const { document } = result;
+      assert.equal(document.capability.geometry.paint, "partial", label);
+      assert.equal(
+        document.capability.transitions.projection,
+        "unavailable",
+        label,
+      );
+      assert.match(document.capability.transitions.reason, /G3/, label);
+      assert.deepEqual([...document.project.resolution], [...OUTPUT], label);
+      assert.equal(document.time.requested, label === "A" ? TIME_A : TIME_B);
+      assert.equal(document.scenes.length, 1, `${label} must not overlap a transition`);
+      const scene = document.scenes[0];
+      assert.equal(scene.scope, "scene:flat");
+      const box = nodeById(scene.tree, id);
+      const background = nodeById(scene.tree, backgroundId);
+      assert.ok(box?.inspectionId !== undefined, id);
+      assert.ok(background?.inspectionId !== undefined, backgroundId);
+      const records = scene.paintRecords ?? [];
+      const boxRecord = recordOwnedBy(records, box);
+      const backgroundRecord = recordOwnedBy(records, background);
+      assert.ok(boxRecord, `${id} paint record`);
+      assert.ok(backgroundRecord, `${backgroundId} paint record`);
+      assertBoxRecord(boxRecord, bounds, "content");
+      assertBoxRecord(
+        backgroundRecord,
+        { x: 0, y: 0, width: OUTPUT[0], height: OUTPUT[1] },
+        "background",
+      );
+      assert.equal(boxRecord.inspection.nodeId, box.inspectionId);
+      assert.equal(backgroundRecord.inspection.nodeId, background.inspectionId);
+      evidence[label === "A" ? "stateA" : "stateB"] = {
+        scope: scene.scope,
+        box: boxRecord.bounds,
+        backgroundId,
+        backgroundRole: backgroundRecord.paintRole,
+        provenance: boxRecord.provenance,
+        space: boxRecord.space,
+        resolution: boxRecord.resolution,
+        ownerId: box.inspectionId,
+      };
+    }
+
+    const targeted = await inspectAt(TIME_A, ["--target", "scene:flat#box-a"]);
+    const keptScene = targeted.document.scenes[0];
+    const keptIds = idsOf(keptScene.tree).sort();
+    assert.deepEqual(keptIds, ["box-a", "flat-stage"]);
+    assert.equal(targeted.document.target.id, "box-a");
+    assert.equal(targeted.document.target.matches, 1);
+    assert.equal(targeted.document.target.scope, "scene:flat");
+    const keptRecords = keptScene.paintRecords ?? [];
+    const keptBox = nodeById(keptScene.tree, "box-a");
+    assert.equal(keptRecords.length, 1);
+    assert.equal(keptRecords[0].inspection.nodeId, keptBox.inspectionId);
+    assert.deepEqual(keptRecords[0].bounds, BOX_A);
+    assert.equal(keptRecords[0].provenance, "projected-box-draw-quad");
+    assert.equal(
+      keptRecords.some((record) => record.paintRole === "background"),
+      false,
+      "targeting box-a must drop the background sibling",
+    );
+    assert.equal(
+      (keptScene.commands ?? []).some((command) => command.matchId === "bg-a"),
+      false,
+    );
+    evidence.target = {
+      ...targeted.document.target,
+      keptIds,
+      droppedSibling: "bg-a",
+    };
+
+    const quiet = await run([
+      "inspect",
+      "--project",
+      boxConsumer,
+      "--time",
+      String(TIME_A),
+      "--fail-on",
+      "error",
+    ]);
+    assert.equal(
+      quiet.code,
+      0,
+      `flat boxes have no error diagnostic: ${quiet.stderr}`,
+    );
+    assert.equal(
+      stateA.document.diagnostics.some((entry) => entry.severity === "error"),
+      false,
+    );
+
+    const clip = await inspectAt(TIME_CLIP);
+    const clipDiagnostics = clip.document.diagnostics.map((entry) => ({
+      code: entry.code,
+      severity: entry.severity,
+      id: entry.id ?? null,
+      space: entry.space,
+      path: entry.path,
+    }));
+    const deficit = clip.document.diagnostics.find(
+      (entry) =>
+        entry.code === "fixed-allocation-deficit" && entry.id === "clip-chips",
+    );
+    assert.ok(
+      deficit,
+      `clip scene diagnostics: ${JSON.stringify(clipDiagnostics)}`,
+    );
+    assert.equal(deficit.severity, "error");
+    assert.equal(
+      clip.document.diagnostics.some((entry) => /clip/i.test(entry.code)),
+      false,
+      "clip must not be reported as its own diagnostic code",
+    );
+    assert.equal(
+      clip.document.diagnostics.some(
+        (entry) => entry.id === "clip-fit" || entry.id === "clipped-fit",
+      ),
+      false,
+      "a fitting clip is not an error",
+    );
+    const failOn = await run([
+      "inspect",
+      "--project",
+      boxConsumer,
+      "--time",
+      String(TIME_CLIP),
+      "--fail-on",
+      "error",
+    ]);
+    assert.equal(failOn.code, 1, failOn.stderr);
+    assert.match(failOn.stderr, /error diagnostic/);
+    const failedDocument = JSON.parse(failOn.stdout);
+    assert.ok(
+      failedDocument.diagnostics.some(
+        (entry) =>
+          entry.code === "fixed-allocation-deficit" &&
+          entry.severity === "error" &&
+          entry.id === "clip-chips",
+      ),
+    );
+    evidence.clip = {
+      diagnostics: clipDiagnostics,
+      failOnExit: failOn.code,
+      failOnReason:
+        "fixed-allocation-deficit on clip-chips; clip itself has no diagnostic code",
+      fittingClipDiagnostics: 0,
+    };
+
+    vite = await createViteServer({
+      configFile: false,
+      root,
+      logLevel: "warn",
+      optimizeDeps: { noDiscovery: true },
+      resolve: { alias: { ritween: join(root, "dist/index.js") } },
+      server: { host: "127.0.0.1", port: 5175, strictPort: true },
+      plugins: [
+        {
+          name: "lane-b-box-page",
+          configureServer(server) {
+            server.middlewares.use((req, res, next) => {
+              if (req.url !== "/" && !req.url.startsWith("/?"))
+                return next();
+              res.setHeader("Content-Type", "text/html");
+              res.end(
+                '<!doctype html><link rel="icon" href="data:,"><title>Lane B box pixels</title>',
+              );
+            });
+          },
+        },
+      ],
+    });
+    await vite.listen();
+    browser = await chromium.launch({
+      channel: process.env.CHROME_CHANNEL ?? "chrome",
+      headless: true,
+      args: ["--enable-unsafe-webgpu"],
+    });
+    const page = await browser.newPage();
+    page.setDefaultTimeout(90_000);
+    const browserErrors = [];
+    page.on("pageerror", (error) => browserErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") browserErrors.push(message.text());
+    });
+    await page.goto(vite.resolvedUrls.local[0]);
+    const captured = await page.evaluate(async () => {
+      const fixture = await import("/scripts/inspect-fixture/manifest-box.mjs");
+      const errors = [];
+      const source = await fixture.FrameSource.create(fixture.project, {
+        width: fixture.OUTPUT[0],
+        height: fixture.OUTPUT[1],
+        onError: (message) => errors.push(String(message)),
+      });
+      const decode = async (time) => {
+        const canvas = await source.render(time);
+        const copy = new OffscreenCanvas(canvas.width, canvas.height);
+        const context = copy.getContext("2d", { willReadFrequently: true });
+        context.drawImage(canvas, 0, 0);
+        const image = context.getImageData(0, 0, canvas.width, canvas.height);
+        const blob = await copy.convertToBlob({ type: "image/png" });
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let binary = "";
+        for (let i = 0; i < bytes.length; i += 8192)
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        return {
+          width: canvas.width,
+          height: canvas.height,
+          pixels: Array.from(image.data),
+          png: btoa(binary),
+        };
+      };
+      const steps = [];
+      let calibration;
+      let sequence;
+      try {
+        const first = await decode(fixture.TIME_A);
+        const repeat = await decode(fixture.TIME_A);
+        steps.push("calibrate-a", "calibrate-a-repeat");
+        let tolerance = 0;
+        for (let i = 0; i < first.pixels.length; i++)
+          tolerance = Math.max(
+            tolerance,
+            Math.abs(first.pixels[i] - repeat.pixels[i]),
+          );
+        steps.push("tolerance-recorded");
+        calibration = { first, repeat, tolerance };
+        const seqA = await decode(fixture.TIME_A);
+        const seqB = await decode(fixture.TIME_B);
+        const seqA2 = await decode(fixture.TIME_A);
+        steps.push("sequence-a", "sequence-b", "sequence-a");
+        sequence = { seqA, seqB, seqA2 };
+      } finally {
+        source.dispose();
+      }
+      let gpu = null;
+      let gpuError = null;
+      try {
+        const adapter = await navigator.gpu?.requestAdapter();
+        gpu = adapter?.info
+          ? {
+              vendor: adapter.info.vendor ?? null,
+              architecture: adapter.info.architecture ?? null,
+              device: adapter.info.device ?? null,
+              description: adapter.info.description ?? null,
+              isFallbackAdapter: adapter.info.isFallbackAdapter ?? null,
+            }
+          : null;
+        if (!adapter) gpuError = "requestAdapter returned null";
+      } catch (error) {
+        gpuError = String(error);
+      }
+      return {
+        steps,
+        tolerance: calibration.tolerance,
+        frames: {
+          cal1: calibration.first,
+          cal2: calibration.repeat,
+          seqA: sequence.seqA,
+          seqB: sequence.seqB,
+          seqA2: sequence.seqA2,
+        },
+        gpu,
+        gpuError,
+        renderErrors: errors,
+        userAgent: navigator.userAgent,
+      };
+    });
+    assert.deepEqual(captured.steps, [
+      "calibrate-a",
+      "calibrate-a-repeat",
+      "tolerance-recorded",
+      "sequence-a",
+      "sequence-b",
+      "sequence-a",
+    ]);
+    const { cal1, cal2, seqA, seqB, seqA2 } = captured.frames;
+    for (const frame of [cal1, cal2, seqA, seqB, seqA2])
+      assert.deepEqual([frame.width, frame.height], [...OUTPUT]);
+    const tolerance = maxChannelDelta(cal1.pixels, cal2.pixels);
+    assert.equal(tolerance, captured.tolerance);
+    const gap = Math.min(
+      maxChannelDelta(COLOR_A_RGBA, BACKGROUND_RGBA),
+      maxChannelDelta(COLOR_B_RGBA, BACKGROUND_RGBA),
+      maxChannelDelta(COLOR_A_RGBA, COLOR_B_RGBA),
+    );
+    assert.ok(
+      tolerance < gap,
+      `calibrated tolerance ${tolerance} cannot separate fixture colors (gap ${gap})`,
+    );
+    const deltas = {
+      calibration: tolerance,
+      sequenceAToCalibration: maxChannelDelta(seqA.pixels, cal1.pixels),
+      sequenceARepeatToCalibration: maxChannelDelta(seqA2.pixels, cal1.pixels),
+      sequenceAToSequenceA: maxChannelDelta(seqA.pixels, seqA2.pixels),
+      sequenceAToSequenceB: maxChannelDelta(seqA.pixels, seqB.pixels),
+    };
+    assert.ok(deltas.sequenceAToCalibration <= tolerance);
+    assert.ok(deltas.sequenceARepeatToCalibration <= tolerance);
+    assert.ok(deltas.sequenceAToSequenceA <= tolerance);
+    assert.ok(
+      deltas.sequenceAToSequenceB > tolerance,
+      "A and B must differ by more than the calibrated tolerance",
+    );
+    const samples = {
+      cal1: {
+        a: samplePixel(cal1.pixels, SAMPLE_A),
+        b: samplePixel(cal1.pixels, SAMPLE_B),
+        background: samplePixel(cal1.pixels, SAMPLE_BG),
+      },
+      cal2: {
+        a: samplePixel(cal2.pixels, SAMPLE_A),
+        b: samplePixel(cal2.pixels, SAMPLE_B),
+      },
+      seqA: {
+        a: samplePixel(seqA.pixels, SAMPLE_A),
+        b: samplePixel(seqA.pixels, SAMPLE_B),
+      },
+      seqB: {
+        a: samplePixel(seqB.pixels, SAMPLE_A),
+        b: samplePixel(seqB.pixels, SAMPLE_B),
+      },
+      seqA2: {
+        a: samplePixel(seqA2.pixels, SAMPLE_A),
+        b: samplePixel(seqA2.pixels, SAMPLE_B),
+      },
+    };
+    for (const [label, frame] of [
+      ["cal1", samples.cal1],
+      ["cal2", samples.cal2],
+      ["seqA", samples.seqA],
+      ["seqA2", samples.seqA2],
+    ]) {
+      assertNear(frame.a, COLOR_A_RGBA, tolerance, `${label} A interior`);
+      assertNear(frame.b, BACKGROUND_RGBA, tolerance, `${label} B interior`);
+    }
+    assertNear(samples.cal1.background, BACKGROUND_RGBA, tolerance, "background");
+    assertNear(samples.seqB.a, BACKGROUND_RGBA, tolerance, "B frame A interior");
+    assertNear(samples.seqB.b, COLOR_B_RGBA, tolerance, "B frame B interior");
+    const pngA = join(reports, "box-a.png");
+    const pngB = join(reports, "box-b.png");
+    await writeFile(pngA, Buffer.from(seqA.png, "base64"));
+    await writeFile(pngB, Buffer.from(seqB.png, "base64"));
+    evidence.pixels = {
+      browser: {
+        version: browser.version(),
+        userAgent: captured.userAgent,
+      },
+      gpu: captured.gpu,
+      gpuError: captured.gpuError,
+      renderErrors: captured.renderErrors,
+      pageErrors: browserErrors,
+      resolution: [...OUTPUT],
+      tolerance,
+      colorGap: gap,
+      deltas,
+      samples,
+      captures: ["artifacts/g1b/reports/box-a.png", "artifacts/g1b/reports/box-b.png"],
+      instance: "one FrameSource; calibrate A twice, then seek A → B → A",
+    };
+    assert.deepEqual(captured.renderErrors, []);
+    assert.deepEqual(browserErrors, []);
+  } finally {
+    await browser?.close();
+    await vite?.close();
+    await writeFile(
+      join(reports, "box-pixel-proof.json"),
+      JSON.stringify(evidence, null, 2),
+    );
+  }
+  return evidence;
 }
 
 const findings = {};
@@ -350,6 +866,7 @@ try {
     },
     documentFaces: latestFontProof.documentFaces,
   };
+  findings.boxProof = await proveFlatBoxes();
 
   // Legacy paths stay unqualified; the scope carries the qualification.
   for (const scene of document.scenes)
@@ -421,7 +938,7 @@ try {
   );
   assert.deepEqual(rawInspection.document.capability.geometry, {
     layout: "exact-rectangle",
-    paint: "unavailable",
+    paint: "partial",
   });
   assert.equal(
     rawInspection.document.capability.transitions.projection,
@@ -753,6 +1270,12 @@ try {
       "cancellation publishes no partial JSON",
       "cancellation during render leaves no output and no temp file",
       "output stays inside the 64 MiB budget",
+      "flat Box CLI: partial paint, projected-box-draw-quad, scene-target-pixels, 320x180",
+      "target keeps box owner and drops the background sibling",
+      "transition projection unavailable at the non-overlapping sample",
+      "one FrameSource A→B→A pixels within calibration tolerance",
+      "clip --fail-on error follows fixed-allocation-deficit, not a clip code",
+      "G7 counters left unavailable",
     ],
   };
   await writeFile(

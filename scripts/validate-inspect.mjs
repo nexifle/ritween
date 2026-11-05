@@ -9,7 +9,8 @@
  * - project overlay metadata with the project clock,
  * - a nested Composition publishing its own space,
  * - a raw Scene published as unavailable with a reason,
- * - transition projection published as explicitly pending G3,
+ * - transition projection is the recorded-leaf partial published by the engine,
+ *   not a completed G3 claim,
  * - authored-ID targeting, atomic --output, exit codes and cancellation,
  * - a flat Box fixture proved through the same CLI, plus one FrameSource
  *   A→B→A pixel seek. G7 production counters are not measured here.
@@ -224,6 +225,27 @@ const MASK_VIEWPORTS = [
 ];
 /** Recipe table for manifest-surface.mjs. Not read back from a report. */
 const SURFACE_PORT = 5182;
+const TRANSITION_PORT = 5183;
+const TRANSITION_OUTPUT = [100, 80];
+const TRANSITION_QUANT = 2;
+const TRANSITION_RED = [255, 0, 0, 255];
+const TRANSITION_BLUE = [0, 0, 255, 255];
+const TRANSITION_BLACK = [0, 0, 0, 255];
+const TRANSITION_MIX_25 = [191, 0, 64, 255];
+const TRANSITION_MIX_75 = [64, 0, 191, 255];
+const TRANSITION_SHADER =
+  "fn transition(uv: vec2f, progress: f32) -> vec4f { return vec4f(1, 0, 0, 1); }";
+const TRANSITION_PARTIAL_MARKERS = [
+  "Recorded-leaf output projection is partial",
+  "All built-ins are covered at recorded-leaf level",
+  "Slide and wipe use weight 1 inside the shader-selected region",
+  "Custom shaders are not projected",
+  "G3 is not complete",
+];
+const TRANSITION_UNAVAILABLE_MARKERS = [
+  "transition output stay unavailable",
+  "Inspect a non-overlapping time for exact results.",
+];
 const SURFACE_SCOPE = "scene:surface";
 const SURFACE_TIME_A = 0;
 const SURFACE_TIME_B = 1;
@@ -393,6 +415,7 @@ const sourceMp4 = join(artifacts, "source.mp4");
 const clipConsumer = join(artifacts, "consumer-clip");
 const maskConsumer = join(artifacts, "consumer-mask");
 const surfaceConsumer = join(artifacts, "consumer-surface");
+const transitionConsumer = join(artifacts, "consumer-transition");
 const maskHalfPng = join(artifacts, "mask-half.png");
 const maskClearPng = join(artifacts, "mask-clear.png");
 
@@ -553,6 +576,93 @@ function assertQuadEqual(left, right, label) {
     assertFloat32Close(left[key], right[key], `${label}.${key}`);
 }
 
+function clipToViewport(bounds, resolution) {
+  const x0 = Math.min(bounds.x, bounds.x + bounds.width);
+  const x1 = Math.max(bounds.x, bounds.x + bounds.width);
+  const y0 = Math.min(bounds.y, bounds.y + bounds.height);
+  const y1 = Math.max(bounds.y, bounds.y + bounds.height);
+  const x = Math.max(x0, 0);
+  const y = Math.max(y0, 0);
+  const right = Math.min(x1, resolution[0]);
+  const bottom = Math.min(y1, resolution[1]);
+  const width = right - x;
+  const height = bottom - y;
+  if (width > 0 && height > 0) return { x, y, width, height };
+  return { x, y, width: 0, height: 0 };
+}
+
+function assertPartialTransitionCapability(document, label) {
+  assert.equal(document.capability.transitions.projection, "partial", label);
+  for (const marker of TRANSITION_PARTIAL_MARKERS)
+    assert.equal(
+      document.capability.transitions.reason.includes(marker),
+      true,
+      `${label} missing ${marker}`,
+    );
+  for (const marker of TRANSITION_UNAVAILABLE_MARKERS)
+    assert.equal(
+      document.capability.transitions.reason.includes(marker),
+      false,
+      `${label} still uses the unavailable reason`,
+    );
+}
+
+/** Direct recorded leaves: final quad is the pre quad after output clipping. */
+function assertDirectScene(scene, resolution, label) {
+  assert.deepEqual(
+    scene.finalProjection,
+    { status: "available", scope: "recorded-leaves" },
+    label,
+  );
+  assert.equal(Array.isArray(scene.paintRecords), true, label);
+  assert.equal(Array.isArray(scene.finalPaintRecords), true, label);
+  assert.equal(
+    scene.finalPaintRecords.length,
+    scene.paintRecords.length,
+    label,
+  );
+  scene.paintRecords.forEach((pre, index) => {
+    const final = scene.finalPaintRecords[index];
+    const where = `${label}[${index}]`;
+    assert.equal(final.space, "output-pixels", where);
+    assert.equal(final.sceneWeight, 1, where);
+    assert.deepEqual([...final.resolution], [...resolution], where);
+    assert.equal(final.kind, pre.kind, where);
+    assert.equal(final.provenance, pre.provenance, where);
+    assert.equal(final.accuracy, pre.accuracy, where);
+    assert.equal(final.paintRole, pre.paintRole, where);
+    assert.equal(final.inspection?.nodeId, pre.inspection?.nodeId, where);
+    const clipped = clipToViewport(pre.bounds, resolution);
+    assertQuadEqual(final.bounds, clipped, where);
+    assert.equal(
+      final.geometryVisible,
+      Boolean(pre.geometryVisible && clipped.width > 0 && clipped.height > 0),
+      where,
+    );
+    if (pre.surfaceProjection === undefined)
+      assert.equal(final.surfaceProjection, undefined, where);
+    else
+      assert.deepEqual(final.surfaceProjection, pre.surfaceProjection, where);
+  });
+}
+
+function assertDirectDocument(document, label) {
+  assertPartialTransitionCapability(document, label);
+  for (const scene of document.scenes)
+    assertDirectScene(scene, document.project.resolution, `${label} ${scene.scope}`);
+}
+
+function sampleFramePixel(pixels, point, width) {
+  const index = (point[1] * width + point[0]) * 4;
+  return [
+    pixels[index],
+    pixels[index + 1],
+    pixels[index + 2],
+    pixels[index + 3],
+  ];
+}
+
+
 function fixtureFontsPlugin() {
   const allowed = new Map([
     ["/fonts/Inter-Regular.woff2", "font/woff2"],
@@ -706,6 +816,30 @@ async function captureFlatSequence({
     inspect: Boolean(inspect),
     onError: (message) => errors.push(String(message)),
   });
+  const builder = inspect
+    ? await import("/src/engine/inspect/report.ts")
+    : null;
+  const listed = (value) =>
+    Array.isArray(value)
+      ? { present: true, count: value.length }
+      : { present: false };
+  const compactRecord = (record) => ({
+    kind: record.kind ?? null,
+    provenance: record.provenance ?? null,
+    space: record.space ?? null,
+    resolution: record.resolution
+      ? [record.resolution[0], record.resolution[1]]
+      : null,
+    accuracy: record.accuracy ?? null,
+    geometryVisible: record.geometryVisible ?? null,
+    paintRole: record.paintRole ?? null,
+    sceneWeight: record.sceneWeight ?? null,
+    bounds: record.bounds ? { ...record.bounds } : null,
+    ownerId: record.inspection?.nodeId ?? null,
+    unsupported: record.unsupported ?? null,
+  });
+  const listedRecords = (value) =>
+    Array.isArray(value) ? value.map(compactRecord) : undefined;
   const summarize = (report) => {
     const scene = report?.scenes?.[0];
     const frame = scene?.frame;
@@ -730,6 +864,8 @@ async function captureFlatSequence({
       nodes,
       commands: (frame?.commands ?? []).map((command) => ({
         kind: command.kind ?? null,
+        matchId: command.matchId ?? null,
+        sharedId: command.sharedId ?? null,
         inspection: command.inspection
           ? {
               id: command.inspection.id,
@@ -764,6 +900,101 @@ async function captureFlatSequence({
             }
           : null,
       })),
+      scenes: (report?.scenes ?? []).map((layer) => ({
+        id: layer.id ?? null,
+        name: layer.name ?? null,
+        clock: {
+          time: layer.time ?? null,
+          localTime: layer.localTime ?? null,
+          progress: layer.progress ?? null,
+        },
+        unavailable: layer.unavailable ?? null,
+        paintRecords: listed(layer.frame?.paintRecords),
+        ownerIds: (layer.frame?.paintRecords ?? []).map(
+          (record) => record.inspection?.nodeId ?? null,
+        ),
+      })),
+      overlay: report?.overlay
+        ? {
+            present: true,
+            clock: {
+              time: report.overlay.time ?? null,
+              localTime: report.overlay.localTime ?? null,
+              progress: report.overlay.progress ?? null,
+            },
+            unavailable: report.overlay.unavailable ?? null,
+            paintRecords: listed(report.overlay.frame?.paintRecords),
+          }
+        : { present: false },
+      transitionDraw: report?.transitionDraw
+        ? {
+            kind: report.transitionDraw.kind ?? null,
+            output: report.transitionDraw.output
+              ? [...report.transitionDraw.output]
+              : null,
+            uniform: report.transitionDraw.uniform
+              ? [...report.transitionDraw.uniform]
+              : null,
+            outgoingId: report.transitionDraw.outgoingId ?? null,
+            incomingId: report.transitionDraw.incomingId ?? null,
+          }
+        : { present: false },
+      built: builder
+        ? (() => {
+            const document = builder.buildInspectionDocument({
+              packageVersion: "0.0.0-proof",
+              project: {
+                name: fixture.project.name,
+                duration: fixture.project.duration,
+                resolution: fixture.project.resolution,
+              },
+              frame: report,
+            });
+            return {
+              projection: document.capability.transitions.projection,
+              reason: document.capability.transitions.reason,
+              scenes: document.scenes.map((layer) => {
+                const nodes = [];
+                const visit = (node) => {
+                  if (!node || typeof node !== "object") return;
+                  if (node.id)
+                    nodes.push({
+                      id: node.id,
+                      inspectionId: node.inspectionId ?? null,
+                    });
+                  for (const child of node.children ?? []) visit(child);
+                };
+                visit(layer.tree);
+                return {
+                  scope: layer.scope,
+                  id: layer.id,
+                  clock: { ...layer.clock },
+                  finalProjection: layer.finalProjection,
+                  paintRecords: listed(layer.paintRecords),
+                  finalPaintRecords: listed(layer.finalPaintRecords),
+                  owners: (layer.paintRecords ?? []).map(
+                    (record) => record.inspection?.nodeId ?? null,
+                  ),
+                  nodes,
+                  commands: (layer.commands ?? []).map((command) => ({
+                    kind: command.kind ?? null,
+                    matchId: command.matchId ?? null,
+                    sharedId: command.sharedId ?? null,
+                    inspection: command.inspection
+                      ? {
+                          id: command.inspection.id,
+                          nodeId: command.inspection.nodeId,
+                          role: command.inspection.role,
+                        }
+                      : null,
+                  })),
+                  records: listedRecords(layer.paintRecords),
+                  finalRecords: listedRecords(layer.finalPaintRecords),
+                };
+              }),
+            };
+          })()
+        : null,
     };
   };
   const decode = async (time) => {
@@ -919,12 +1150,7 @@ async function proveFlatBoxes() {
     ]) {
       const { document } = result;
       assert.equal(document.capability.geometry.paint, "partial", label);
-      assert.equal(
-        document.capability.transitions.projection,
-        "unavailable",
-        label,
-      );
-      assert.match(document.capability.transitions.reason, /G3/, label);
+      assertDirectDocument(document, label);
       assert.deepEqual([...document.project.resolution], [...OUTPUT], label);
       assert.equal(document.time.requested, label === "A" ? TIME_A : TIME_B);
       assert.equal(document.scenes.length, 1, `${label} must not overlap a transition`);
@@ -1356,6 +1582,7 @@ async function proveFlatText() {
     ]) {
       const { document } = result;
       assert.equal(document.capability.geometry.paint, "partial", label);
+      assertDirectDocument(document, label);
       assert.deepEqual([...document.project.resolution], [...TEXT_OUTPUT], label);
       assert.equal(document.time.requested, time, label);
       assert.equal(document.scenes.length, 1, label);
@@ -1782,6 +2009,7 @@ async function proveFlatImages() {
       assert.equal(document.time.requested, time, label);
       assert.equal(document.scenes.length, 1, label);
       assert.deepEqual([...document.project.resolution], [...OUTPUT], label);
+      assertDirectDocument(document, label);
       assert.equal(
         document.diagnostics.some((entry) => entry.severity === "error"),
         false,
@@ -2358,6 +2586,7 @@ async function proveFlatVideo() {
       assert.equal(document.time.effective, time, label);
       assert.equal(document.scenes.length, 1, label);
       assert.deepEqual([...document.project.resolution], [...OUTPUT], label);
+      assertDirectDocument(document, label);
       assert.equal(
         document.diagnostics.some((entry) => entry.severity === "error"),
         false,
@@ -2405,6 +2634,7 @@ async function proveFlatVideo() {
         label,
       );
       const scene = document.scenes[0];
+      assertDirectDocument(document, label);
       const video = nodeById(scene.tree, VIDEO_ID);
       assert.equal(video?.kind, "video", label);
       const records = scene.paintRecords ?? [];
@@ -3127,8 +3357,7 @@ async function proveRectClip() {
       assert.equal(result.raw.includes("clipShapes"), false, label);
       const { document } = result;
       assert.equal(document.capability.geometry.paint, "partial", label);
-      assert.equal(document.capability.transitions.projection, "unavailable", label);
-      assert.match(document.capability.transitions.reason, /G3/, label);
+      assertDirectDocument(document, label);
       assert.deepEqual([...document.project.resolution], [...OUTPUT], label);
       assert.equal(document.scenes.length, 1, label);
       const scene = document.scenes[0];
@@ -3980,8 +4209,7 @@ async function proveMaskFamilies() {
       assert.equal(result.raw.includes("clipShapes"), false, label);
       const { document } = result;
       assert.equal(document.capability.geometry.paint, "partial", label);
-      assert.equal(document.capability.transitions.projection, "unavailable", label);
-      assert.match(document.capability.transitions.reason, /G3/, label);
+      assertDirectDocument(document, label);
       assert.equal(document.scenes.length, 1, label);
       const scene = document.scenes[0];
       assert.equal(scene.scope, MASK_SCOPE, label);
@@ -4642,8 +4870,7 @@ async function proveNativeSurfaces() {
       assert.equal(result.args.includes("--space"), false, label);
       const { document } = result;
       assert.equal(document.capability.geometry.paint, "partial", label);
-      assert.equal(document.capability.transitions.projection, "unavailable", label);
-      assert.match(document.capability.transitions.reason, /G3/, label);
+      assertDirectDocument(document, label);
       assert.equal(document.scenes.length, 1, label);
       const scene = document.scenes[0];
       assert.equal(scene.scope, SURFACE_SCOPE, label);
@@ -4878,6 +5105,594 @@ if (process.env.RITWEEN_SURFACE_PROOF === "1") {
     handshakeServer.close();
   }
   process.exit(0);
+}
+
+function transitionBase(key) {
+  return ["crossfade", "shared", "slide", "zoom", "wipe", "custom"].indexOf(
+    key,
+  ) * 3;
+}
+
+function assertFiniteQuad(bounds, label) {
+  for (const key of ["x", "y", "width", "height"])
+    assert.equal(Number.isFinite(bounds?.[key]), true, `${label}.${key}`);
+}
+
+/** Hidden clip: weight 0 and zero extent. Origin is not an expectation. */
+function assertTransitionHidden(record, label) {
+  assertFiniteQuad(record.bounds, label);
+  assert.equal(record.sceneWeight, 0, label);
+  assert.equal(record.geometryVisible, false, label);
+  assert.equal(record.bounds.width, 0, label);
+  assert.equal(record.bounds.height, 0, label);
+  assert.equal(record.space, "output-pixels", label);
+  assert.equal(record.accuracy, "exact-rectangle", label);
+  assert.equal(record.provenance, "projected-box-draw-quad", label);
+  assert.deepEqual([...record.resolution], [...TRANSITION_OUTPUT], label);
+}
+
+function assertTransitionVisible(record, bounds, weight, label) {
+  assertProjectedLeaf(record, { bounds, weight }, label);
+}
+
+function assertProjectedLeaf(record, spec, label) {
+  transitionRecordAsserts += 1;
+  assertFiniteQuad(record.bounds, label);
+  if (spec.hidden) {
+    assertTransitionHidden(record, label);
+    return;
+  }
+  assert.equal(record.space, "output-pixels", label);
+  assert.equal(record.sceneWeight, spec.weight, label);
+  assert.equal(record.geometryVisible, spec.weight !== 0, label);
+  assert.equal(record.accuracy, "exact-rectangle", label);
+  assert.equal(record.provenance, "projected-box-draw-quad", label);
+  assert.deepEqual([...record.resolution], [...TRANSITION_OUTPUT], label);
+  assertQuadEqual(record.bounds, spec.bounds, label);
+}
+
+function assertSourceLeaf(record, bounds, label) {
+  transitionRecordAsserts += 1;
+  assertFiniteQuad(record.bounds, label);
+  assert.equal(record.space, "scene-target-pixels", label);
+  assert.equal(record.sceneWeight ?? null, null, label);
+  assert.equal(record.geometryVisible, true, label);
+  assert.equal(record.accuracy, "exact-rectangle", label);
+  assert.equal(record.provenance, "projected-box-draw-quad", label);
+  assert.equal(record.paintRole, "content", label);
+  assert.deepEqual([...record.resolution], [...TRANSITION_OUTPUT], label);
+  assertQuadEqual(record.bounds, bounds, label);
+}
+
+function assertLeafPair(pre, final, role, label) {
+  assertSourceLeaf(pre, role.pre, `${label} pre`);
+  assertProjectedLeaf(final, role.final, `${label} final`);
+  if (role.same) assertQuadEqual(pre.bounds, final.bounds, `${label} not doubled`);
+}
+
+const TRANSITION_BOX = Object.freeze({ x: 10, y: 20, width: 30, height: 20 });
+const TRANSITION_HERO_0 = Object.freeze({ x: 0, y: 20, width: 20, height: 20 });
+const TRANSITION_HERO_60 = Object.freeze({ x: 60, y: 20, width: 20, height: 20 });
+const TRANSITION_HERO_25 = Object.freeze({ x: 9.375, y: 20, width: 20, height: 20 });
+const TRANSITION_HERO_75 = Object.freeze({ x: 50.625, y: 20, width: 20, height: 20 });
+const TRANSITION_HIDDEN = Object.freeze({ hidden: true });
+const TRANSITION_KEYS = Object.freeze([
+  "crossfade",
+  "shared",
+  "slide",
+  "zoom",
+  "wipe",
+  "custom",
+]);
+let transitionRecordAsserts = 0;
+
+function transitionRole(pre, final, weight, same = false) {
+  return {
+    pre,
+    final: final === TRANSITION_HIDDEN ? TRANSITION_HIDDEN : { bounds: final, weight },
+    ...(same ? { same: true } : {}),
+  };
+}
+function transitionUniformExpected(progress, key) {
+  const kind = { crossfade: 0, wipe: 1, slide: 2, zoom: 3, shared: 0, custom: 0 }[key];
+  const [dx, dy] = key === "wipe" ? [0, -1] : [-1, 0];
+  return [progress, kind, dx, dy];
+}
+/** Shader-derived. Not fitted from a report. p=0 is the uploaded line, not a float sliver. */
+const TRANSITION_CASES = {
+  crossfade: {
+    p0: { progress: 0, out: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 1, true), in: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 0, true) },
+    p25: { progress: 0.25, out: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 0.75, true), in: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 0.25, true) },
+    p75: { progress: 0.75, out: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 0.25, true), in: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 0.75, true) },
+  },
+  shared: {
+    p0: { progress: 0, out: transitionRole(TRANSITION_HERO_0, TRANSITION_HERO_0, 1, true), in: transitionRole(TRANSITION_HERO_0, TRANSITION_HERO_0, 0, true) },
+    p25: { progress: 0.25, out: transitionRole(TRANSITION_HERO_25, TRANSITION_HERO_25, 0.75, true), in: transitionRole(TRANSITION_HERO_25, TRANSITION_HERO_25, 0.25, true) },
+    p75: { progress: 0.75, out: transitionRole(TRANSITION_HERO_75, TRANSITION_HERO_75, 0.25, true), in: transitionRole(TRANSITION_HERO_75, TRANSITION_HERO_75, 0.75, true) },
+  },
+  slide: {
+    p0: { progress: 0, out: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 1, true), in: transitionRole(TRANSITION_BOX, TRANSITION_HIDDEN) },
+    p25: { progress: 0.25, out: transitionRole(TRANSITION_BOX, { x: 0, y: 20, width: 15, height: 20 }, 1), in: transitionRole(TRANSITION_BOX, { x: 85, y: 20, width: 15, height: 20 }, 1) },
+    p75: { progress: 0.75, out: transitionRole(TRANSITION_BOX, TRANSITION_HIDDEN), in: transitionRole(TRANSITION_BOX, { x: 35, y: 20, width: 30, height: 20 }, 1) },
+  },
+  zoom: {
+    p0: { progress: 0, out: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 1, true), in: transitionRole(TRANSITION_BOX, { x: 30, y: 30, width: 15, height: 10 }, 0) },
+    p25: { progress: 0.25, out: transitionRole(TRANSITION_BOX, { x: 0, y: 15, width: 37.5, height: 25 }, 0.75), in: transitionRole(TRANSITION_BOX, { x: 25, y: 27.5, width: 18.75, height: 12.5 }, 0.25) },
+    p75: { progress: 0.75, out: transitionRole(TRANSITION_BOX, { x: 0, y: 5, width: 32.5, height: 35 }, 0.25), in: transitionRole(TRANSITION_BOX, { x: 15, y: 22.5, width: 26.25, height: 17.5 }, 0.75) },
+  },
+  wipe: {
+    p0: { progress: 0, out: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 1, true), in: transitionRole(TRANSITION_BOX, TRANSITION_HIDDEN) },
+    p25: { progress: 0.25, out: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 1, true), in: transitionRole(TRANSITION_BOX, TRANSITION_HIDDEN) },
+    p75: { progress: 0.75, out: transitionRole(TRANSITION_BOX, TRANSITION_HIDDEN), in: transitionRole(TRANSITION_BOX, TRANSITION_BOX, 1, true) },
+  },
+  custom: {
+    p0: { progress: 0 },
+    p25: { progress: 0.25 },
+    p75: { progress: 0.75 },
+  },
+};
+const TRANSITION_DIRECT = {
+  crossfade: TRANSITION_BOX,
+  slide: TRANSITION_BOX,
+  zoom: TRANSITION_BOX,
+  wipe: TRANSITION_BOX,
+  custom: TRANSITION_BOX,
+  shared: TRANSITION_HERO_60,
+};
+const TRANSITION_PIXELS = {
+  "crossfade-p0": [[[15, 25], TRANSITION_RED], [[50, 40], TRANSITION_BLACK]],
+  "crossfade-p25": [[[15, 25], TRANSITION_MIX_25]],
+  "crossfade-p75": [[[15, 25], TRANSITION_MIX_75]],
+  "crossfade-end": [[[15, 25], TRANSITION_BLUE], [[50, 40], TRANSITION_BLACK]],
+  "slide-p0": [[[15, 25], TRANSITION_RED], [[50, 25], TRANSITION_BLACK], [[90, 25], TRANSITION_BLACK]],
+  "slide-p25": [[[5, 25], TRANSITION_RED], [[90, 25], TRANSITION_BLUE], [[50, 25], TRANSITION_BLACK]],
+  "slide-p75": [[[50, 30], TRANSITION_BLUE], [[8, 25], TRANSITION_BLACK]],
+  "slide-end": [[[15, 25], TRANSITION_BLUE], [[50, 40], TRANSITION_BLACK]],
+  "zoom-p0": [[[15, 25], TRANSITION_RED], [[50, 40], TRANSITION_BLACK]],
+  "zoom-p25": [[[16, 22], [191, 0, 0, 255]], [[30, 32], TRANSITION_MIX_25]],
+  "zoom-p75": [[[22, 28], TRANSITION_MIX_75]],
+  "zoom-end": [[[15, 25], TRANSITION_BLUE], [[50, 40], TRANSITION_BLACK]],
+  "wipe-p0": [[[15, 25], TRANSITION_RED], [[15, 70], TRANSITION_BLACK]],
+  "wipe-p25": [[[15, 25], TRANSITION_RED], [[15, 70], TRANSITION_BLACK]],
+  "wipe-p75": [[[15, 25], TRANSITION_BLUE], [[15, 10], TRANSITION_BLACK]],
+  "wipe-end": [[[15, 25], TRANSITION_BLUE], [[50, 40], TRANSITION_BLACK]],
+  "shared-p0": [[[10, 30], TRANSITION_RED], [[70, 30], TRANSITION_BLACK]],
+  "shared-p25": [[[15, 25], TRANSITION_MIX_25]],
+  "shared-p75": [[[55, 25], TRANSITION_MIX_75]],
+  "shared-end": [[[70, 30], TRANSITION_BLUE], [[10, 30], TRANSITION_BLACK]],
+  "custom-end": [[[15, 25], TRANSITION_BLUE], [[50, 40], TRANSITION_BLACK]],
+};
+
+function ownedFinal(scene, id) {
+  const node = nodeById(scene.tree, id);
+  assert.equal(typeof node?.inspectionId, "number", id);
+  const pre = recordOwnedBy(scene.paintRecords ?? [], node);
+  const final = recordOwnedBy(scene.finalPaintRecords ?? [], node);
+  assert.ok(pre, `${id} pre`);
+  assert.equal(pre.inspection.nodeId, node.inspectionId, id);
+  return { node, pre, final };
+}
+
+function ownedInFrame(scene, authoredId, label) {
+  const node = scene.nodes.find((item) => item.id === authoredId);
+  assert.equal(typeof node?.inspectionId, "number", `${label} ${authoredId} node`);
+  const command = (scene.commands ?? []).find(
+    (item) =>
+      item.sharedId === authoredId &&
+      item.inspection?.nodeId === node.inspectionId &&
+      item.inspection.role === "content",
+  );
+  assert.ok(command, `${label} ${authoredId} command`);
+  assert.equal(Array.isArray(scene.records), true, `${label} pre array`);
+  const pres = scene.records.filter((record) => record.ownerId === node.inspectionId);
+  assert.equal(pres.length, 1, `${label} ${authoredId} pre count`);
+  assert.equal(pres[0].ownerId, command.inspection.nodeId, `${label} owner`);
+  assert.equal(pres[0].paintRole, "content", label);
+  if (scene.finalRecords === undefined) {
+    assert.equal(scene.finalPaintRecords.present, false, `${label} final absent`);
+    return { node, command, pre: pres[0], final: undefined };
+  }
+  const finals = scene.finalRecords.filter((record) => record.ownerId === node.inspectionId);
+  assert.equal(finals.length, 1, `${label} ${authoredId} final count`);
+  assert.equal(finals[0].ownerId, command.inspection.nodeId, `${label} final owner`);
+  return { node, command, pre: pres[0], final: finals[0] };
+}
+
+async function proveNativeTransitions() {
+  const evidence = {
+    startedAt: new Date().toISOString(),
+    fixture: "scripts/inspect-fixture/manifest-transition.mjs",
+    limits: {
+      quad: "ideal projected recorded draw quad, not fragment coverage or clamp-to-edge sampling",
+      quant: `shader mix tolerance ${TRANSITION_QUANT}, separate from calibration noise`,
+      ids: "inspection ids are compared only inside the report that allocated them",
+      g3: "not complete",
+      g7: "not measured",
+    },
+  };
+  const fixtureSource = await readFile(
+    join(template, "manifest-transition.mjs"),
+    "utf8",
+  );
+  for (const needle of [
+    "[100, 80]",
+    "x: 10, y: 20, width: 30, height: 20",
+    "width: 20, height: 20",
+    ".offset(role === \"out\" ? 0 : 60, HERO.y)",
+    'id("hero")',
+    '{ type: "shared", duration: 1 }',
+    'direction: "left"',
+    'direction: "up"',
+    TRANSITION_SHADER,
+    "#000000",
+    "#ff0000",
+    "#0000ff",
+    "PAIR_SPAN = 3",
+    "duration: 2",
+  ])
+    assert.ok(fixtureSource.includes(needle), `manifest-transition.mjs missing ${needle}`);
+  assert.equal(fixtureSource.includes("sharedElements"), false);
+  assert.equal(fixtureSource.includes("Overlay"), false);
+  await createConsumer(transitionConsumer, "manifest-transition.mjs");
+  const inspectAt = (time, extra = []) =>
+    inspectJson([
+      "inspect",
+      "--project",
+      transitionConsumer,
+      "--time",
+      String(time),
+      ...extra,
+    ]);
+  transitionRecordAsserts = 0;
+  const slide25 = transitionBase("slide") + 1.25;
+  const full = {};
+  for (const key of ["crossfade", "shared", "slide", "zoom", "wipe", "custom"]) {
+    full[key] = await inspectAt(transitionBase(key) + 1.25);
+    assert.equal(full[key].raw.includes(TRANSITION_SHADER), false, key);
+    assert.equal(full[key].raw.includes("fn transition"), false, key);
+  }
+  const slideLate = await inspectAt(transitionBase("slide") + 1.75);
+  const zoomLate = await inspectAt(transitionBase("zoom") + 1.75);
+  const sharedLate = await inspectAt(transitionBase("shared") + 1.75);
+  const direct = await inspectAt(transitionBase("crossfade") + 2);
+  assertDirectDocument(direct.document, "crossfade direct");
+  assert.equal(direct.document.scenes.length, 1);
+  assert.equal(direct.document.scenes[0].scope, "scene:crossfade-in");
+  const directBox = ownedFinal(direct.document.scenes[0], "crossfade-in-box");
+  assertSourceLeaf(directBox.pre, TRANSITION_DIRECT.crossfade, "direct pre");
+  assertTransitionVisible(directBox.final, TRANSITION_DIRECT.crossfade, 1, "direct box");
+  assertQuadEqual(directBox.final.bounds, directBox.pre.bounds, "direct clip");
+
+  const expectPair = (result, key, phase, label) => {
+    const { document } = result;
+    assert.deepEqual(
+      document.scenes.map((scene) => scene.scope),
+      [`scene:${key}-out`, `scene:${key}-in`],
+      label,
+    );
+    assert.equal(document.scenes.some((scene) => scene.scope === "overlay"), false, label);
+    for (const scene of document.scenes) {
+      assert.equal(scene.clock.time, document.time.effective, label);
+      assert.equal(Array.isArray(scene.paintRecords), true, `${label} pre present`);
+    }
+    if (key === "custom") {
+      assert.equal(document.capability.transitions.projection, "unavailable", label);
+      for (const marker of TRANSITION_UNAVAILABLE_MARKERS)
+        assert.equal(
+          document.capability.transitions.reason.includes(marker),
+          true,
+          label,
+        );
+      for (const scene of document.scenes) {
+        assert.equal(scene.finalProjection.status, "unavailable", label);
+        assert.match(scene.finalProjection.reason, /Custom transition output is not projected/, label);
+        assert.equal(Object.hasOwn(scene, "finalPaintRecords"), false, label);
+        assert.ok(scene.paintRecords.length > 0, label);
+      }
+      const out = ownedFinal(document.scenes[0], "custom-out-box");
+      const inn = ownedFinal(document.scenes[1], "custom-in-box");
+      assert.equal(out.final, undefined, label);
+      assert.equal(inn.final, undefined, label);
+      assertSourceLeaf(out.pre, TRANSITION_BOX, `${label} A pre`);
+      assertSourceLeaf(inn.pre, TRANSITION_BOX, `${label} B pre`);
+      return;
+    }
+    assertPartialTransitionCapability(document, label);
+    const outgoing = document.scenes[0];
+    const incoming = document.scenes[1];
+    const caseSpec = TRANSITION_CASES[key][phase];
+    const outId = key === "shared" ? "hero" : `${key}-out-box`;
+    const inId = key === "shared" ? "hero" : `${key}-in-box`;
+    const out = ownedFinal(outgoing, outId);
+    const inn = ownedFinal(incoming, inId);
+    assert.equal(outgoing.finalPaintRecords.length, outgoing.paintRecords.length, label);
+    assert.equal(incoming.finalPaintRecords.length, incoming.paintRecords.length, label);
+    assertLeafPair(out.pre, out.final, caseSpec.out, `${label} A`);
+    assertLeafPair(inn.pre, inn.final, caseSpec.in, `${label} B`);
+    if (key === "shared") {
+      assertQuadEqual(out.pre.bounds, inn.pre.bounds, `${label} both hero pre`);
+      assertQuadEqual(out.final.bounds, inn.final.bounds, `${label} both hero scopes`);
+    }
+  };
+  expectPair(full.crossfade, "crossfade", "p25", "crossfade .25");
+  expectPair(full.shared, "shared", "p25", "shared .25");
+  expectPair(full.slide, "slide", "p25", "slide .25");
+  expectPair(slideLate, "slide", "p75", "slide .75");
+  expectPair(full.zoom, "zoom", "p25", "zoom .25");
+  expectPair(zoomLate, "zoom", "p75", "zoom .75");
+  expectPair(sharedLate, "shared", "p75", "shared .75");
+  expectPair(full.wipe, "wipe", "p25", "wipe .25");
+  expectPair(full.custom, "custom", "p25", "custom .25");
+
+  const targetOut = await inspectAt(slide25, [
+    "--target",
+    "scene:slide-out#slide-out-box",
+  ]);
+  const targetIn = await inspectAt(slide25, [
+    "--target",
+    "scene:slide-in#slide-in-box",
+  ]);
+  for (const [result, id, bounds] of [
+    [targetOut, "slide-out-box", { x: 0, y: 20, width: 15, height: 20 }],
+    [targetIn, "slide-in-box", { x: 85, y: 20, width: 15, height: 20 }],
+  ]) {
+    const scene = result.document.scenes[0];
+    assert.equal(result.document.scenes.length, 1, id);
+    assert.equal(scene.scope, `scene:${id.replace("-box", "")}`, id);
+    assertPartialTransitionCapability(result.document, id);
+    assert.equal(scene.paintRecords.length, 1, id);
+    assert.equal(scene.finalPaintRecords.length, 1, id);
+    const owned = ownedFinal(scene, id);
+    assertTransitionVisible(owned.final, bounds, 1, id);
+    assert.equal(
+      scene.paintRecords.some((record) => record.paintRole === "background"),
+      false,
+      id,
+    );
+    assert.equal(
+      (scene.commands ?? []).some((command) => command.matchId?.endsWith("-bg")),
+      false,
+      id,
+    );
+    evidence[id] = {
+      scope: scene.scope,
+      ownerId: owned.node.inspectionId,
+      preCount: scene.paintRecords.length,
+      finalCount: scene.finalPaintRecords.length,
+      bounds: owned.final.bounds,
+    };
+  }
+  evidence.targetsNotCompared = [
+    evidence["slide-out-box"].ownerId,
+    evidence["slide-in-box"].ownerId,
+  ];
+
+  const extraTimes = {};
+  for (const key of ["crossfade", "shared", "slide", "zoom", "wipe", "custom"]) {
+    const base = transitionBase(key);
+    extraTimes[`${key}-p0`] = base + 1;
+    extraTimes[`${key}-p25`] = base + 1.25;
+    extraTimes[`${key}-p75`] = base + 1.75;
+    extraTimes[`${key}-end`] = base + 2;
+  }
+  let browser;
+  let vite;
+  try {
+    vite = await createProofServer({
+      port: TRANSITION_PORT,
+      title: "Lane B native transitions",
+    });
+    browser = await launchProofBrowser();
+    const page = await openProofPage(browser, vite);
+    const browserErrors = page.proofErrors;
+    const captured = await page.evaluate(captureFlatSequence, {
+      modulePath: "/scripts/inspect-fixture/manifest-transition.mjs",
+      inspect: true,
+      timeA: 2.25,
+      timeB: 5.25,
+      extraTimes,
+    });
+    assert.deepEqual(captured.renderErrors, []);
+    assert.deepEqual(browserErrors, []);
+    assert.equal(captured.gpuError, null);
+    const width = TRANSITION_OUTPUT[0];
+    const height = TRANSITION_OUTPUT[1];
+    let pixelAsserts = 0;
+    const color = (pixels, point, expected, label) => {
+      pixelAsserts += 1;
+      assertNear(
+        sampleFramePixel(pixels, point, width),
+        expected,
+        TRANSITION_QUANT,
+        label,
+      );
+    };
+    const assertFullRed = (pixels, label) => {
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++)
+          color(pixels, [x, y], TRANSITION_RED, `${label} ${x},${y}`);
+    };
+    const leafSnapshot = (owned) =>
+      owned && {
+        ownerId: owned.node.inspectionId,
+        pre: owned.pre.bounds,
+        final: owned.final
+          ? { bounds: owned.final.bounds, sceneWeight: owned.final.sceneWeight, geometryVisible: owned.final.geometryVisible }
+          : null,
+      };
+    const assertDirectCapture = (frame, key, label) => {
+      const report = frame.report;
+      const built = report.built;
+      const draw = report.transitionDraw;
+      assert.equal(draw.kind, "direct", `${label} cut/direct`);
+      assert.equal(draw.uniform, null, label);
+      assert.equal(draw.outgoingId, null, label);
+      assert.equal(built.scenes.length, 1, label);
+      assert.equal(built.projection, "partial", label);
+      assert.equal(built.scenes[0].scope, `scene:${key}-in`, label);
+      assert.equal(built.scenes[0].id, `${key}-in`, label);
+      assert.deepEqual(built.scenes[0].finalProjection, { status: "available", scope: "recorded-leaves" }, label);
+      assert.equal(built.scenes[0].finalPaintRecords.present, true, label);
+      assert.equal(built.scenes[0].finalPaintRecords.count, built.scenes[0].paintRecords.count, label);
+      assert.equal(built.scenes[0].finalRecords.length, built.scenes[0].records.length, label);
+      const id = key === "shared" ? "hero" : `${key}-in-box`;
+      const owned = ownedInFrame(built.scenes[0], id, label);
+      assertSourceLeaf(owned.pre, TRANSITION_DIRECT[key], `${label} pre`);
+      assertProjectedLeaf(owned.final, { bounds: TRANSITION_DIRECT[key], weight: 1 }, `${label} final`);
+      assertQuadEqual(owned.pre.bounds, owned.final.bounds, `${label} identity`);
+      return owned;
+    };
+    const assertOverlapCapture = (frame, key, phase, label) => {
+      const report = frame.report;
+      const built = report.built;
+      const draw = report.transitionDraw;
+      const spec = TRANSITION_CASES[key][phase];
+      const time = transitionBase(key) + 1 + spec.progress;
+      assert.equal(report.effectiveTime, time, label);
+      assert.equal(built.scenes.length, 2, label);
+      assert.deepEqual(built.scenes.map((scene) => scene.id), [`${key}-out`, `${key}-in`], label);
+      assert.equal(draw.kind, key, label);
+      assert.deepEqual(draw.output, TRANSITION_OUTPUT, label);
+      assert.deepEqual(draw.uniform, transitionUniformExpected(spec.progress, key), `${label} uniform`);
+      assert.deepEqual(built.scenes[0].clock, { time, localTime: 1 + spec.progress, progress: (1 + spec.progress) / 2 }, `${label} out clock`);
+      assert.deepEqual(built.scenes[1].clock, { time, localTime: spec.progress, progress: spec.progress / 2 }, `${label} in clock`);
+      if (key === "custom") {
+        assert.equal(draw.outgoingId, null, label);
+        assert.equal(draw.incomingId, null, label);
+        assert.equal(built.projection, "unavailable", label);
+        for (const scene of built.scenes) {
+          assert.equal(scene.finalProjection.status, "unavailable", label);
+          assert.match(scene.finalProjection.reason, /Custom transition output is not projected/, label);
+          assert.equal(scene.finalPaintRecords.present, false, label);
+          assert.equal(scene.finalRecords, undefined, `${label} final absent not []`);
+          assert.equal(scene.paintRecords.present, true, label);
+          assert.ok(scene.records.length > 0, label);
+        }
+        const out = ownedInFrame(built.scenes[0], "custom-out-box", label);
+        const inn = ownedInFrame(built.scenes[1], "custom-in-box", label);
+        assert.equal(out.final, undefined, label);
+        assert.equal(inn.final, undefined, label);
+        assertSourceLeaf(out.pre, TRANSITION_BOX, `${label} A pre`);
+        assertSourceLeaf(inn.pre, TRANSITION_BOX, `${label} B pre`);
+        return { out, inn };
+      }
+      assert.equal(draw.outgoingId, `${key}-out`, label);
+      assert.equal(draw.incomingId, `${key}-in`, label);
+      assert.equal(built.projection, "partial", label);
+      for (const scene of built.scenes) {
+        assert.deepEqual(scene.finalProjection, { status: "available", scope: "recorded-leaves" }, label);
+        assert.equal(scene.finalPaintRecords.present, true, label);
+        assert.equal(scene.finalRecords.length, scene.records.length, label);
+        assert.equal(scene.finalPaintRecords.count, scene.paintRecords.count, label);
+        assert.notEqual(scene.finalPaintRecords.count, 0, label);
+      }
+      const outId = key === "shared" ? "hero" : `${key}-out-box`;
+      const inId = key === "shared" ? "hero" : `${key}-in-box`;
+      const out = ownedInFrame(built.scenes[0], outId, label);
+      const inn = ownedInFrame(built.scenes[1], inId, label);
+      assertLeafPair(out.pre, out.final, spec.out, `${label} A`);
+      assertLeafPair(inn.pre, inn.final, spec.in, `${label} B`);
+      if (key === "shared") {
+        assertQuadEqual(out.pre.bounds, inn.pre.bounds, `${label} both hero pre`);
+        assertQuadEqual(out.final.bounds, inn.final.bounds, `${label} both hero final`);
+        if (phase === "p0") {
+          assert.equal(draw.uniform[0], 0, label);
+          assert.equal(out.final.sceneWeight, 1, label);
+          assert.equal(inn.final.sceneWeight, 0, label);
+          assert.equal(out.final.bounds.x, 0, label);
+          assert.equal(inn.final.bounds.x, 0, label);
+        }
+      }
+      return { out, inn };
+    };
+    const claimed = [];
+    for (const key of TRANSITION_KEYS)
+      for (const phase of ["p0", "p25", "p75", "end"])
+        claimed.push({ name: `${key}-${phase}`, key, phase, frame: captured.extras[`${key}-${phase}`] });
+    const seq = captured.frames;
+    claimed.push(
+      { name: "aba-cal", key: "crossfade", phase: "end", frame: seq.cal1 },
+      { name: "aba-cal-repeat", key: "crossfade", phase: "end", frame: seq.cal2 },
+      { name: "aba-seqA", key: "crossfade", phase: "end", frame: seq.seqA },
+      { name: "aba-seqA2", key: "crossfade", phase: "end", frame: seq.seqA2 },
+      { name: "aba-seqB", key: "shared", phase: "end", frame: seq.seqB },
+    );
+    const cases = [];
+    const samples = [];
+    for (const item of claimed) {
+      const { name, key, phase, frame } = item;
+      assert.ok(frame?.report?.built, `${name} captured`);
+      const expectedTime = name.startsWith("aba-")
+        ? key === "shared"
+          ? 5.25
+          : 2.25
+        : phase === "end"
+          ? transitionBase(key) + 2
+          : transitionBase(key) + 1 + TRANSITION_CASES[key][phase].progress;
+      assert.equal(frame.report.effectiveTime, expectedTime, name);
+      assert.equal(frame.report.overlay.present, false, name);
+      assert.equal(JSON.stringify(frame.report).includes(TRANSITION_SHADER), false, name);
+      assert.equal(JSON.stringify(frame.report).includes("fn transition"), false, name);
+      const direct = phase === "end" || name.startsWith("aba-");
+      const leaves = direct
+        ? { inn: assertDirectCapture(frame, key, name) }
+        : assertOverlapCapture(frame, key, phase, name);
+      if (key === "custom" && !direct) assertFullRed(frame.pixels, name);
+      else
+        for (const [point, expected] of TRANSITION_PIXELS[direct && name.startsWith("aba-") ? (key === "shared" ? "shared-end" : "crossfade-end") : `${key}-${phase}`]) {
+          color(frame.pixels, point, expected, `${name} ${point}`);
+          samples.push({ name, point, actual: sampleFramePixel(frame.pixels, point, width), expected });
+        }
+      cases.push({
+        name,
+        key,
+        phase,
+        direct,
+        projection: frame.report.built.projection,
+        sceneIds: frame.report.built.scenes.map((scene) => scene.id),
+        counts: frame.report.built.scenes.map((scene) => ({
+          id: scene.id,
+          pre: scene.paintRecords.count,
+          finalPresent: scene.finalPaintRecords.present,
+          final: scene.finalPaintRecords.count,
+        })),
+        out: leafSnapshot(leaves.out),
+        inn: leafSnapshot(leaves.inn),
+      });
+    }
+    assert.equal(claimed.length, TRANSITION_KEYS.length * 4 + 5, "every claimed capture");
+    assert.ok(maxChannelDelta(seq.seqA.pixels, seq.seqA2.pixels) <= captured.tolerance);
+    assert.ok(maxChannelDelta(seq.seqA.pixels, seq.seqB.pixels) > captured.tolerance);
+    evidence.checks = {
+      claimedCaptures: claimed.length,
+      phases: { p0: 6, p25: 6, p75: 6, end: 6, aba: 5 },
+      recordAsserts: transitionRecordAsserts,
+      pixelAsserts,
+      calibration: captured.tolerance,
+      quant: TRANSITION_QUANT,
+      quantSeparateFromCalibration: true,
+    };
+    evidence.cases = cases;
+    evidence.browser = {
+      userAgent: captured.userAgent,
+      gpu: captured.gpu,
+      calibration: captured.tolerance,
+      quant: TRANSITION_QUANT,
+      sampleCount: samples.length,
+      samples,
+      steps: captured.steps.length,
+    };
+    return evidence;
+  } catch (error) {
+    evidence.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    evidence.finishedAt = new Date().toISOString();
+    await mkdir(reports, { recursive: true });
+    await writeFile(join(reports, "transition-native.json"), JSON.stringify(evidence, null, 2));
+    await browser?.close();
+    await vite?.close();
+  }
 }
 
 const findings = {};
@@ -5128,16 +5943,41 @@ try {
     layout: "exact-rectangle",
     paint: "partial",
   });
-  assert.equal(
-    rawInspection.document.capability.transitions.projection,
-    "unavailable",
-  );
+  assert.equal(rawScene.finalProjection.status, "unavailable");
   assert.match(
-    rawInspection.document.capability.transitions.reason,
-    /G3/,
-    "transition projection must name its pending gate",
+    rawScene.finalProjection.reason,
+    /Scene inspection is unavailable/,
+  );
+  assert.equal(Object.hasOwn(rawScene, "paintRecords"), false);
+  assert.equal(Object.hasOwn(rawScene, "finalPaintRecords"), false);
+  const rawOverlay = rawInspection.document.scenes.find(
+    (scene) => scene.scope === "overlay",
+  );
+  assert.ok(rawOverlay, "raw time retains the project overlay");
+  assert.equal(rawOverlay.inspection, "available");
+  assert.equal(
+    Array.isArray(rawOverlay.paintRecords),
+    true,
+    "project overlay paint is recorded; do not treat a missing collection as []",
+  );
+  assert.ok(rawOverlay.paintRecords.length > 0, "overlay recorded a leaf");
+  assertDirectScene(
+    rawOverlay,
+    rawInspection.document.project.resolution,
+    "raw overlay",
+  );
+  assertPartialTransitionCapability(
+    rawInspection.document,
+    "raw time follows the retained overlay, not the raw scene",
   );
   findings.rawUnavailableReason = rawScene.unavailable;
+  findings.rawRetained = {
+    raw: rawScene.finalProjection,
+    overlay: rawOverlay.finalProjection,
+    overlayRecords: rawOverlay.paintRecords.length,
+    overlayFinalRecords: rawOverlay.finalPaintRecords.length,
+    projection: rawInspection.document.capability.transitions.projection,
+  };
 
   // -------- 4. --fail-on error only changes the code when selected --------
   const failOn = await run([
@@ -5438,6 +6278,7 @@ try {
   findings.clipProof = await proveRectClip();
   findings.maskProof = await proveMaskFamilies();
   findings.surfaceProof = await proveNativeSurfaces();
+  findings.transitionProof = await proveNativeTransitions();
 
   const report = {
     command: "inspect",
@@ -5451,7 +6292,7 @@ try {
       "both active scenes during crossfade overlap",
       "project overlay metadata with the project clock",
       "raw scene unavailable with a reason",
-      "capability states pending transition projection (G3)",
+      "raw scene stays unavailable; retained overlay makes transition projection partial, G3 not complete",
       "structured diagnostics with scoped ids and numeric excess/deficit",
       "legacy warning strings preserved",
       "media and private objects excluded from output",
@@ -5465,7 +6306,7 @@ try {
       "output stays inside the 64 MiB budget",
       "flat Box CLI: partial paint, projected-box-draw-quad, scene-target-pixels, 320x180",
       "target keeps box owner and drops the background sibling",
-      "transition projection unavailable at the non-overlapping sample",
+      "direct box final bounds match pre bounds after output clipping, weight 1",
       "one FrameSource A→B→A pixels within calibration tolerance",
       "clip --fail-on error follows fixed-allocation-deficit, not a clip code",
       "G7 counters left unavailable",
@@ -5487,14 +6328,14 @@ try {
       "one FrameSource; decoded phase interiors within codec tolerance 30, not PNG-exact",
       "rendered A/B interiors within 30 of authored red/blue, not stacked on the decode delta",
       "export artifact records returned H.264 settings; encoder implementation left unknown",
-      "video G7 counters left unavailable; G3 not claimed",
+      "video direct final matches pre after output clipping; G3 not complete",
       "rect clip CLI: each leaf owned by inspection.nodeId, scene-target-pixels, 320x180",
       "surface boundaries are that report's clip command ids, inner first, shape rect, coverage rect-clipped-draw-quad",
       "target literal leaf/a%b keeps ancestors and drops the sibling viewport",
       "percent-encoded target is not decoded",
       "one FrameSource A-repeat and A\u2192B\u2192A within calibrated tolerance",
       "inset samples only; ideal bounds are not GPU edge coverage",
-      "clip G7 counters left unavailable; G3 not claimed",
+      "clip direct final matches pre after output clipping; G3 not complete",
       "mask families CLI: active leaf outer quad, conservative, outer-clipped-draw-quad",
       "mask boundaries are one clip each — rounded, circle, path, image, and image — matched to that report's command and leaf owner",
       "inactive leaf bounds are the zero-width edge, not only a zero area product; active identity swaps between A and B",
@@ -5502,14 +6343,21 @@ try {
       "mask URL and imageMask are not serialized",
       "consumer public and proof-server mask PNG bytes share one sha256",
       "one FrameSource A-repeat and A\u2192B\u2192A; clear-image interior stays background while geometryVisible is true",
-      "mask G7 counters left unavailable; G3 not claimed",
+      "mask direct final matches pre after output clipping; G3 not complete",
       "native Group and Composition CLI: one boundary each, shared composition occurrence within that report, scene-target-pixels",
       "clip, mask, Group, and Composition occurrence ids stay inside the report that allocated them; CLI, target, and browser ids are not required to match",
       "recipe table bounds, not values derived from the report; world moves 10 and overlay does not",
       "target scene:surface#id keeps the surface ancestor; a space-shaped target is rejected",
       "no Group or Composition placeholder paint record",
       "one FrameSource A-repeat and A\u2192B\u2192A; interiors only, not coverage",
-      "surface assets n/a; G7 unavailable; G3 not claimed",
+      "surface direct final matches pre after output clipping; G3 not complete",
+      "native builtins and custom: CLI full report per type, slide targets, one FrameSource pixels",
+      "browser p0/p25/p75/end and ABA records use the static shader table, including both hero scopes",
+      "direct end is identity weight 1, separate from the p0 overlap cutoff",
+      "slide .25/.75 bounds follow the shader correction, not the old empty-A table",
+      "shared pre and final share the interpolated pose; correction is not applied twice",
+      "custom final projection unavailable and finalPaintRecords absent; shader not serialized",
+      "G3 is not complete; G7 is not measured",
     ],
   };
   await writeFile(

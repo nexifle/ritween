@@ -26,7 +26,7 @@ import type {
 } from "../render/renderer";
 
 /** Bumped whenever a published field changes meaning; consumers must reject unknowns. */
-export const INSPECTION_SCHEMA_VERSION = 1;
+export const INSPECTION_SCHEMA_VERSION = 2;
 /** stdout/file budget in UTF-8 bytes. Over the budget the command fails; it never truncates. */
 export const MAX_INSPECTION_BYTES = 64 * 1024 * 1024;
 /** Serialized documents are bounded by budget; safe limit guards against stack overflow. */
@@ -148,6 +148,35 @@ export interface InspectionDiagnostic {
   readonly deficit?: number;
 }
 export type InspectionClockFields = InspectionClock;
+export type InspectionLayoutSpaceKind =
+  | "layout"
+  | "clip-local"
+  | "world"
+  | "composition-overlay";
+export type InspectionSpaceParent =
+  | { readonly status: "known"; readonly id: string }
+  | { readonly status: "unavailable"; readonly reason: string };
+/** This unit publishes no affine. The status is explicit so a consumer cannot read it as a GPU uniform. */
+export type InspectionSpaceMapping = {
+  readonly status: "unavailable";
+  readonly reason: string;
+};
+export interface InspectionSpaceOwner {
+  readonly path: string;
+  readonly id?: string;
+  readonly inspectionId?: number;
+}
+export type InspectionSpaceDescriptor = {
+  readonly id: string;
+  readonly parent: InspectionSpaceParent;
+  readonly mapping: InspectionSpaceMapping;
+} & (
+  | {
+      readonly kind: InspectionLayoutSpaceKind;
+      readonly owner?: InspectionSpaceOwner;
+    }
+  | { readonly kind: "unavailable"; readonly reason: string }
+);
 export interface InspectionScene {
   /** Qualified scope: `scene:<entry id>` or `overlay`. */
   readonly scope: string;
@@ -158,11 +187,8 @@ export interface InspectionScene {
   readonly inspection: "available" | "unavailable";
   /** Why inspection is unavailable. A raw Scene is never published as an empty tree. */
   readonly unavailable?: string;
-  /**
-   * Tree space names this scope uses (`layout`, clip, `<path>/world`, `<path>/overlay`).
-   * A string list, not parent mappings. A composition overlay prefix is not the project overlay scope.
-   */
-  readonly spaces: readonly string[];
+  /** Scoped layout-space descriptors; GPU mappings remain explicitly unavailable. */
+  readonly spaces: readonly InspectionSpaceDescriptor[];
   readonly tree?: InspectionLayoutNode;
   readonly commands?: readonly InspectionCommand[];
   /**
@@ -821,6 +847,11 @@ interface RawTargetScan {
 function overTargetWork(): InspectionSerializationError {
   return new InspectionSerializationError(
     `Layout tree target scan is over its ${MAX_RAW_TARGET_WORK}-unit work limit. Discarded branches spend work units without publishing bytes, so reduce the targeted scope's node count and retry.`,
+  );
+}
+function overProvenanceWork(): InspectionSerializationError {
+  return new InspectionSerializationError(
+    `Layout space provenance is over its ${MAX_RAW_TARGET_WORK}-unit work limit. Reduce the number of space provenance records and retry.`,
   );
 }
 /**
@@ -2224,6 +2255,7 @@ function inspectLayer(
 
   try {
     const frame = layer.frame;
+    const provenance = readSpaceProvenance(frame, context.scope);
     budget?.charge(150);
     budget?.chargeText(context.scope);
     budget?.chargeText(context.id);
@@ -2274,6 +2306,9 @@ function inspectLayer(
     } else {
       tree = constructLayoutTree(rawTree, `${context.scope}.tree`, budget);
     }
+    // Charged with the tree, before commands and paint, so a later field cannot spend bytes
+    // that belong to the space descriptors.
+    const spaces = publishSpaces(tree, provenance, budget);
 
     const {
       retained,
@@ -2453,7 +2488,7 @@ function inspectLayer(
         name: context.name,
         clock: context.clock,
         inspection: "available",
-        spaces: collectSpaces(tree),
+        spaces,
         tree,
         commands,
         ...(records === undefined ? {} : { paintRecords: records }),
@@ -2598,19 +2633,315 @@ export function parseInspectionTarget(source: string): InspectionTarget {
     );
   return { scope, id };
 }
-/** Every coordinate space the tree actually uses, in first-seen order. */
-function collectSpaces(root: InspectionLayoutNode): string[] {
-  const found: string[] = [];
-  const stack: InspectionLayoutNode[] = [root];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    const space = node.space ?? "layout";
-    if (!found.includes(space)) found.push(space);
-    for (let i = node.children.length - 1; i >= 0; i--) {
-      stack.push(node.children[i]);
+const SPACE_KINDS = [
+  "layout",
+  "clip-local",
+  "world",
+  "composition-overlay",
+] as const;
+const LAYOUT_SPACE_ID = "layout";
+const LAYOUT_ROOT_PARENT = "scope layout root";
+const SPACE_MAPPING_REASON =
+  "not a captured GPU uniform; no layout affine is published";
+const SPACE_UNPROVEN =
+  "no evaluation provenance; kind and parent are not inferred from the id";
+const SPACES_KEY = `,"spaces":`.length;
+
+function layoutSpaceDescriptor(): InspectionSpaceDescriptor {
+  return {
+    id: LAYOUT_SPACE_ID,
+    kind: "layout",
+    parent: { status: "unavailable", reason: LAYOUT_ROOT_PARENT },
+    mapping: { status: "unavailable", reason: SPACE_MAPPING_REASON },
+  };
+}
+function unavailableSpaceDescriptor(id: string): InspectionSpaceDescriptor {
+  return {
+    id,
+    kind: "unavailable",
+    reason: SPACE_UNPROVEN,
+    parent: { status: "unavailable", reason: SPACE_UNPROVEN },
+    mapping: { status: "unavailable", reason: SPACE_MAPPING_REASON },
+  };
+}
+interface ProvenanceRecord {
+  readonly id: string;
+  readonly kind: InspectionLayoutSpaceKind;
+  readonly parent: InspectionSpaceParent;
+  readonly owner?: InspectionSpaceOwner;
+}
+function readSpaceOwner(
+  value: unknown,
+  where: string,
+): InspectionSpaceOwner | undefined {
+  if (value === undefined) return undefined;
+  const path = text(read(value, "path", where), `${where}.path`);
+  const id = read(value, "id", where);
+  const inspectionId = read(value, "inspectionId", where);
+  return {
+    path,
+    ...(id === undefined ? {} : { id: text(id, `${where}.id`) }),
+    ...(inspectionId === undefined
+      ? {}
+      : { inspectionId: safeId(inspectionId, `${where}.inspectionId`) }),
+  };
+}
+function readSpaceParent(value: unknown, where: string): InspectionSpaceParent {
+  const status = oneOf(
+    read(value, "status", where),
+    ["known", "unavailable"] as const,
+    `${where}.status`,
+  );
+  if (status === "known")
+    return { status, id: text(read(value, "id", where), `${where}.id`) };
+  return {
+    status,
+    reason: text(read(value, "reason", where), `${where}.reason`),
+  };
+}
+function readProvenanceRecord(value: unknown, where: string): ProvenanceRecord {
+  const id = text(read(value, "id", where), `${where}.id`);
+  const kind = oneOf(
+    read(value, "kind", where),
+    SPACE_KINDS,
+    `${where}.kind`,
+  );
+  const parent = readSpaceParent(read(value, "parent", where), `${where}.parent`);
+  const owner = readSpaceOwner(read(value, "owner", where), `${where}.owner`);
+  return {
+    id,
+    kind,
+    parent,
+    ...(owner === undefined ? {} : { owner }),
+  };
+}
+/**
+ * Whitelist boundary provenance. Kind and parent come from the record, never from the id text.
+ * Count is a work cap, checked before any index read, and is not an output-byte admission:
+ * unreferenced records publish nothing. Exact UTF-8 is charged only for the retained tree's
+ * ancestor closure. Cycle checks visit each id once, so they stay inside that cap.
+ */
+function readSpaceProvenance(
+  frame: unknown,
+  where: string,
+): Map<string, ProvenanceRecord> {
+  const raw = read(frame, "spaceProvenance", where);
+  const map = new Map<string, ProvenanceRecord>();
+  if (raw === undefined) return map;
+  const entries = list(raw, `${where}.spaceProvenance`);
+  const count = size(entries, `${where}.spaceProvenance`);
+  // Work cap only. A length over one million must not touch an index getter.
+  if (count > MAX_RAW_TARGET_WORK) throw overProvenanceWork();
+  for (let index = 0; index < count; index++) {
+    const entryWhere = `${where}.spaceProvenance[${index}]`;
+    const record = readProvenanceRecord(
+      reading(() => entries[index]),
+      entryWhere,
+    );
+    if (map.has(record.id))
+      throw new InspectionSerializationError(
+        `${entryWhere}.id duplicates space "${record.id}".`,
+      );
+    map.set(record.id, record);
+  }
+  for (const record of map.values()) {
+    if (record.parent.status !== "known") continue;
+    if (record.parent.id !== LAYOUT_SPACE_ID && !map.has(record.parent.id))
+      throw new InspectionSerializationError(
+        `${where}.spaceProvenance parent "${record.parent.id}" is not a recorded space.`,
+      );
+  }
+  const done = new Set<string>();
+  const onStack = new Set<string>();
+  const trail: string[] = [];
+  for (const start of map.keys()) {
+    if (done.has(start)) continue;
+    let cursor: string | undefined = start;
+    while (cursor !== undefined && map.has(cursor) && !done.has(cursor)) {
+      if (onStack.has(cursor))
+        throw new InspectionSerializationError(
+          `${where}.spaceProvenance contains a parent cycle at "${cursor}".`,
+        );
+      onStack.add(cursor);
+      trail.push(cursor);
+      const parent: InspectionSpaceParent = map.get(cursor)!.parent;
+      cursor = parent.status === "known" ? parent.id : undefined;
     }
+    for (const id of trail) {
+      onStack.delete(id);
+      done.add(id);
+    }
+    trail.length = 0;
+  }
+  return map;
+}
+/** Space ids the retained tree references, first-seen. Absent `space` is the explicit `layout` contract. */
+function referencedSpaceIds(root: InspectionLayoutNode): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  const stack: { node: InspectionLayoutNode; inherited: string }[] = [
+    { node: root, inherited: LAYOUT_SPACE_ID },
+  ];
+  while (stack.length > 0) {
+    const { node, inherited } = stack.pop()!;
+    const space = node.space ?? inherited;
+    if (!seen.has(space)) {
+      seen.add(space);
+      found.push(space);
+    }
+    for (let i = node.children.length - 1; i >= 0; i--)
+      stack.push({ node: node.children[i], inherited: space });
   }
   return found;
+}
+function descriptorFor(
+  id: string,
+  provenance: ReadonlyMap<string, ProvenanceRecord>,
+): InspectionSpaceDescriptor {
+  const record = provenance.get(id);
+  if (record)
+    return {
+      id: record.id,
+      kind: record.kind,
+      parent: record.parent,
+      ...(record.owner ? { owner: record.owner } : {}),
+      mapping: { status: "unavailable", reason: SPACE_MAPPING_REASON },
+    };
+  if (id === LAYOUT_SPACE_ID) return layoutSpaceDescriptor();
+  return unavailableSpaceDescriptor(id);
+}
+function orderedSpaceDescriptors(
+  referenced: readonly string[],
+  resolve: (id: string) => InspectionSpaceDescriptor | undefined,
+): InspectionSpaceDescriptor[] {
+  const kept: InspectionSpaceDescriptor[] = [];
+  const seen = new Set<string>();
+  const addChain = (id: string) => {
+    const chain: InspectionSpaceDescriptor[] = [];
+    const guard = new Set<string>();
+    let cursor: string | undefined = id;
+    while (cursor && !seen.has(cursor)) {
+      if (guard.has(cursor))
+        throw new InspectionSerializationError(
+          `Space "${cursor}" has a parent cycle.`,
+        );
+      guard.add(cursor);
+      const descriptor = resolve(cursor);
+      if (!descriptor)
+        throw new InspectionSerializationError(
+          `Space "${cursor}" is not recorded in this scope.`,
+        );
+      chain.push(descriptor);
+      cursor =
+        descriptor.kind !== "unavailable" && descriptor.parent.status === "known"
+          ? descriptor.parent.id
+          : undefined;
+    }
+    for (let index = chain.length - 1; index >= 0; index--) {
+      if (seen.has(chain[index].id)) continue;
+      seen.add(chain[index].id);
+      kept.push(chain[index]);
+    }
+  };
+  for (const id of referenced) addChain(id);
+  return kept;
+}
+function chargeJsonKey(
+  budget: InspectionBudget,
+  key: string,
+  first: boolean,
+): void {
+  if (!first) budget.charge(1);
+  budget.chargeText(key);
+  budget.charge(1);
+}
+function chargeJsonString(
+  budget: InspectionBudget,
+  key: string,
+  value: string,
+  first: boolean,
+): void {
+  chargeJsonKey(budget, key, first);
+  budget.chargeText(value);
+}
+function chargeSpaceParent(
+  budget: InspectionBudget,
+  parent: InspectionSpaceParent,
+): void {
+  budget.charge(1);
+  chargeJsonString(budget, "status", parent.status, true);
+  if (parent.status === "known") chargeJsonString(budget, "id", parent.id, false);
+  else chargeJsonString(budget, "reason", parent.reason, false);
+  budget.charge(1);
+}
+function chargeSpaceOwner(
+  budget: InspectionBudget,
+  owner: InspectionSpaceOwner,
+): void {
+  budget.charge(1);
+  chargeJsonString(budget, "path", owner.path, true);
+  if (owner.id !== undefined) chargeJsonString(budget, "id", owner.id, false);
+  if (owner.inspectionId !== undefined) {
+    chargeJsonKey(budget, "inspectionId", false);
+    budget.charge(String(owner.inspectionId).length);
+  }
+  budget.charge(1);
+}
+function chargeSpaceMapping(budget: InspectionBudget): void {
+  budget.charge(1);
+  chargeJsonString(budget, "status", "unavailable", true);
+  chargeJsonString(budget, "reason", SPACE_MAPPING_REASON, false);
+  budget.charge(1);
+}
+/** Exact UTF-8 of one descriptor. Strings go through {@link InspectionBudget.chargeText}; no object stringify. */
+function chargeSpaceDescriptor(
+  budget: InspectionBudget,
+  descriptor: InspectionSpaceDescriptor,
+): void {
+  budget.charge(1);
+  chargeJsonString(budget, "id", descriptor.id, true);
+  chargeJsonString(budget, "kind", descriptor.kind, false);
+  if (descriptor.kind === "unavailable")
+    chargeJsonString(budget, "reason", descriptor.reason, false);
+  chargeJsonKey(budget, "parent", false);
+  chargeSpaceParent(budget, descriptor.parent);
+  if (descriptor.kind !== "unavailable" && descriptor.owner) {
+    chargeJsonKey(budget, "owner", false);
+    chargeSpaceOwner(budget, descriptor.owner);
+  }
+  chargeJsonKey(budget, "mapping", false);
+  chargeSpaceMapping(budget);
+  budget.charge(1);
+}
+function chargePublishedSpaces(
+  budget: InspectionBudget | undefined,
+  spaces: readonly InspectionSpaceDescriptor[],
+): void {
+  if (!budget) return;
+  budget.charge(SPACES_KEY + 1);
+  for (let index = 0; index < spaces.length; index++) {
+    if (index > 0) budget.charge(1);
+    chargeSpaceDescriptor(budget, spaces[index]);
+  }
+  budget.charge(1);
+}
+function publishSpaces(
+  root: InspectionLayoutNode,
+  provenance: ReadonlyMap<string, ProvenanceRecord>,
+  budget?: InspectionBudget,
+): InspectionSpaceDescriptor[] {
+  const spaces = orderedSpaceDescriptors(referencedSpaceIds(root), (id) =>
+    descriptorFor(id, provenance),
+  );
+  chargePublishedSpaces(budget, spaces);
+  return spaces;
+}
+function retainSpaceDescriptors(
+  spaces: readonly InspectionSpaceDescriptor[],
+  referenced: readonly string[],
+): InspectionSpaceDescriptor[] {
+  const byId = new Map(spaces.map((descriptor) => [descriptor.id, descriptor]));
+  return orderedSpaceDescriptors(referenced, (id) => byId.get(id));
 }
 /** Nodes carrying this authored ID. Synthetic path segments never match. */
 function matches(
@@ -2765,7 +3096,7 @@ export function applyInspectionTarget(
     tree,
     commands,
     warnings,
-    spaces: collectSpaces(tree),
+    spaces: retainSpaceDescriptors(scene.spaces, referencedSpaceIds(tree)),
     ...(records === undefined ? {} : { paintRecords: records }),
     ...(finalRecords === undefined
       ? {}

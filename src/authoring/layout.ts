@@ -197,6 +197,19 @@ export interface LayoutDiagnostic {
   readonly excess?: { readonly width: number; readonly height: number };
   readonly deficit?: number;
 }
+/** Boundary space created by this evaluation. Kind and parent are recorded here, never parsed from the id. */
+export interface LayoutSpaceProvenance {
+  readonly id: string;
+  readonly kind: "layout" | "clip-local" | "world" | "composition-overlay";
+  readonly parent:
+    | { readonly status: "known"; readonly id: string }
+    | { readonly status: "unavailable"; readonly reason: string };
+  readonly owner?: {
+    readonly path: string;
+    readonly id?: string;
+    readonly inspectionId?: number;
+  };
+}
 export interface EvaluatedFrame {
   /** Optional world → viewport camera; layout bounds remain in world space. */
   readonly camera?: CameraState;
@@ -208,6 +221,11 @@ export interface EvaluatedFrame {
   readonly diagnostics?: readonly LayoutDiagnostic[];
   /** Internal: paint records collected by the renderer that drew this frame, inspection mode only. */
   readonly paintRecords?: readonly PaintRecord[];
+  /**
+   * Spaces this root evaluation created. Absent on nested command frames so a Clip or
+   * Composition surface does not carry a second copy. Not allocated per ordinary node.
+   */
+  readonly spaceProvenance?: readonly LayoutSpaceProvenance[];
 }
 export type MeasureText = (
   text: string,
@@ -223,8 +241,12 @@ interface Measured {
   height: number;
   children: Measured[];
   text?: TextRun;
+  /** Space this node is measured in. `layout` is the explicit frame default, not a missing value. */
+  diagnosticSpace: string;
   composition?: EvaluatedFrame;
   overlay?: EvaluatedFrame;
+  /** World and overlay provenance, rebased onto this composition; owner id is filled in `place`. */
+  mountedSpaces?: LayoutSpaceProvenance[];
   shape?: ReturnType<typeof shapeGeometry>;
   offeredSize?: LayoutSize;
   allocatedSlotMain?: number;
@@ -242,6 +264,54 @@ export function encodeSpaceSegment(segment: string): string {
  * own scoped prefix, so it is extended instead of replaced; `layout` means "this frame's own". */
 function rebaseSpaceId(space: string, prefix: string): string {
   return space === "layout" ? prefix : `${prefix}/${space}`;
+}
+/** Matches the report fallback. The id `layout` is the explicit scope default, not a parsed path. */
+const LAYOUT_ROOT_PARENT = "scope layout root";
+function layoutSpaceProvenance(): LayoutSpaceProvenance {
+  return {
+    id: "layout",
+    kind: "layout",
+    parent: { status: "unavailable", reason: LAYOUT_ROOT_PARENT },
+  };
+}
+/** Mount one evaluated frame's own layout space as a composition world or overlay. */
+function mountSpaceProvenance(
+  records: readonly LayoutSpaceProvenance[],
+  prefix: string,
+  kind: "world" | "composition-overlay",
+  parentId: string,
+  owner: { readonly path: string; readonly id?: string },
+): LayoutSpaceProvenance[] {
+  return records.map((record) => {
+    const mounted = record.id === "layout" && record.kind === "layout";
+    const parent =
+      mounted
+        ? { status: "known" as const, id: parentId }
+        : record.parent.status === "known"
+          ? {
+              status: "known" as const,
+              id:
+                record.parent.id === "layout"
+                  ? prefix
+                  : `${prefix}/${record.parent.id}`,
+            }
+          : record.parent;
+    return {
+      id: mounted ? prefix : `${prefix}/${record.id}`,
+      kind: mounted ? kind : record.kind,
+      parent,
+      ...(mounted ? { owner } : record.owner ? { owner: record.owner } : {}),
+    };
+  });
+}
+function detachSpaceProvenance(frame: EvaluatedFrame): {
+  frame: EvaluatedFrame;
+  provenance: readonly LayoutSpaceProvenance[];
+} {
+  const provenance = frame.spaceProvenance ?? [layoutSpaceProvenance()];
+  if (frame.spaceProvenance === undefined) return { frame, provenance };
+  const { spaceProvenance: _provenance, ...rest } = frame;
+  return { frame: rest, provenance };
 }
 /** Rebase an existing warning prefix exactly once with the outer composition path. */
 function rebaseWarningPrefix(
@@ -557,6 +627,8 @@ function evaluateViewWithCounter(
   const warnings: string[] = [];
   const diagnostics: LayoutDiagnostic[] = [];
   const commands: DrawCommand[] = [];
+  // Boundary records only. Ordinary nodes keep a space id and do not allocate a descriptor.
+  const provenance: LayoutSpaceProvenance[] = [layoutSpaceProvenance()];
   // `diagnosticSpace` mirrors the space placement stamps on the same node, so a diagnostic keeps
   // the `(space, path)` identity of the node it describes instead of always claiming `layout`.
   function measure(
@@ -574,6 +646,7 @@ function evaluateViewWithCounter(
         node,
         path,
         spacePath,
+        diagnosticSpace,
         width: 0,
         height: 0,
         children: [],
@@ -619,12 +692,28 @@ function evaluateViewWithCounter(
           },
           counter,
         );
+        const worldOwner = {
+          path,
+          ...(node.key ? { id: node.key } : {}),
+        };
+        const detachedWorld = detachSpaceProvenance(frame);
         // Nested geometry is measured in the world's/overlay's own space. Both the tree and the
         // diagnostics are stamped with that space and keep paths relative to it, so `(space, path)`
         // identifies the same node in both. Legacy warning strings keep their historical prefix.
+        m.mountedSpaces = mountSpaceProvenance(
+          detachedWorld.provenance,
+          `${spacePath}/world`,
+          "world",
+          diagnosticSpace,
+          worldOwner,
+        );
         m.composition = {
-          ...frame,
-          tree: rebaseSpace(frame.tree, `${spacePath}/world`, `${path}/world`),
+          ...detachedWorld.frame,
+          tree: rebaseSpace(
+            detachedWorld.frame.tree,
+            `${spacePath}/world`,
+            `${path}/world`,
+          ),
           camera: evaluateCamera(
             typeof settings.camera === "function"
               ? settings.camera(env)
@@ -648,10 +737,20 @@ function evaluateViewWithCounter(
             },
             counter,
           );
+          const detachedOverlay = detachSpaceProvenance(nested);
+          m.mountedSpaces.push(
+            ...mountSpaceProvenance(
+              detachedOverlay.provenance,
+              `${spacePath}/overlay`,
+              "composition-overlay",
+              diagnosticSpace,
+              worldOwner,
+            ),
+          );
           m.overlay = {
-            ...nested,
+            ...detachedOverlay.frame,
             tree: rebaseSpace(
-              nested.tree,
+              detachedOverlay.frame.tree,
               `${spacePath}/overlay`,
               `${path}/overlay`,
             ),
@@ -1029,6 +1128,17 @@ function evaluateViewWithCounter(
     const nodeId = counter ? counter.next++ : undefined;
     const nodeStamp =
       nodeId !== undefined ? { inspectionId: nodeId } : noIdentity;
+    if (m.mountedSpaces) {
+      for (const record of m.mountedSpaces)
+        provenance.push(
+          nodeId !== undefined && record.owner?.path === m.path
+            ? {
+                ...record,
+                owner: { ...record.owner, inspectionId: nodeId },
+              }
+            : record,
+        );
+    }
     // The declared IDs' poses must land on every paint of their chain, or a background and
     // its content drift apart mid-transition. `correctionIds` carries that ordered scope;
     // `matchId` and `sharedId` stay the matching identity, which is why a wrapper ID can
@@ -1080,6 +1190,16 @@ function evaluateViewWithCounter(
         ),
         `${m.spacePath}/clip`,
       );
+      provenance.push({
+        id: `${m.spacePath}/clip`,
+        kind: "clip-local",
+        parent: { status: "known", id: m.diagnosticSpace },
+        owner: {
+          path: m.path,
+          ...(m.node.key ? { id: m.node.key } : {}),
+          ...(nodeId !== undefined ? { inspectionId: nodeId } : {}),
+        },
+      });
       const tree: LayoutNode = {
         path: m.path,
         kind: s.kind,
@@ -1455,5 +1575,6 @@ function evaluateViewWithCounter(
     commands,
     warnings,
     ...(diagnostics.length ? { diagnostics } : {}),
+    spaceProvenance: provenance,
   };
 }

@@ -94,6 +94,7 @@ export type {
   LayoutNode,
   LayoutDiagnostic,
   LayoutDiagnosticCode,
+  LayoutSpaceProvenance,
   EvaluatedFrame,
   MeasureText,
   Transform,

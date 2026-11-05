@@ -38,6 +38,16 @@ import {
 } from "../src/authoring/index";
 import type { EvaluatedFrame, MeasureText } from "../src/authoring/index";
 
+const layoutSpaceDescriptor = {
+  id: "layout",
+  kind: "layout" as const,
+  parent: { status: "unavailable" as const, reason: "scope layout root" },
+  mapping: {
+    status: "unavailable" as const,
+    reason: "not a captured GPU uniform; no layout affine is published",
+  },
+};
+
 const project = {
   name: "Inspection fixture",
   duration: 4,
@@ -109,7 +119,7 @@ test("inspection publishes schema, package, project and clock identities", () =>
   const built = document(
     inspection([{ id: "main", localTime: 0.25, progress: 0.1 }]),
   );
-  assert.equal(built.schemaVersion, 1);
+  assert.equal(built.schemaVersion, 2);
   assert.equal(built.packageVersion, "0.0.0-test");
   assert.deepEqual(built.project, {
     name: "Inspection fixture",
@@ -125,7 +135,7 @@ test("inspection publishes schema, package, project and clock identities", () =>
     progress: 0.1,
   });
   assert.equal(built.scenes[0].inspection, "available");
-  assert.deepEqual(built.scenes[0].spaces, ["layout"]);
+  assert.deepEqual(built.scenes[0].spaces, [layoutSpaceDescriptor]);
   assert.equal(built.scenes[0].tree!.kind, "box");
 });
 
@@ -478,7 +488,7 @@ test("an exact target keeps ancestors, clock, spaces and matching diagnostics on
   });
   assert.equal(targeted.scenes.length, 1);
   assert.deepEqual(targeted.scenes[0].clock, built.scenes[0].clock);
-  assert.deepEqual(targeted.scenes[0].spaces, ["layout"]);
+  assert.deepEqual(targeted.scenes[0].spaces, [layoutSpaceDescriptor]);
   assert.equal(
     targeted.scenes[0].tree!.path,
     "row",

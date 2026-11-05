@@ -5,10 +5,11 @@ import { checkVertexFloat32 } from "./vertex-float32";
 /** Clip mask family taken from the clip spec, not from the emitted mask outline. */
 export type ClipSurfaceShape = "rect" | "rounded" | "circle" | "path" | "image";
 
-/** Inspection-only identity of one tagged surface. Absent on Composition, World, and Overlay. */
+/** Inspection-only identity of one tagged surface. World and Overlay are not surfaces. */
 export type InspectionSurface =
   | { readonly kind: "clip"; readonly shape: ClipSurfaceShape }
-  | { readonly kind: "group" };
+  | { readonly kind: "group" }
+  | { readonly kind: "composition" };
 
 /** Affine matrix in Canvas order `[a, b, c, d, e, f]`. */
 export type Matrix6 = readonly [number, number, number, number, number, number];
@@ -59,7 +60,7 @@ export interface SurfaceTrace {
   readonly parentOccurrenceId?: number;
 }
 
-/** A tagged surface drawn into Composition, World, or Overlay has no scene chain. */
+/** A tagged surface drawn into an untagged parent has no scene chain. */
 export const NON_CLIP_PARENT_REASON =
   "parent surface is not a tagged clip or group; scene mapping is unavailable.";
 
@@ -81,6 +82,10 @@ export function clipInspectionSurface(shape: ClipShape): InspectionSurface {
 
 export function groupInspectionSurface(): InspectionSurface {
   return { kind: "group" };
+}
+
+export function compositionInspectionSurface(): InspectionSurface {
+  return { kind: "composition" };
 }
 
 export function copySurfaceUniform(
@@ -457,7 +462,7 @@ function emit(
 
 export interface SurfaceLevel {
   readonly occurrenceId: number;
-  /** Group adds no mask shape. A clip shape names the outer quad, not fragment coverage. */
+  /** Group and Composition add no mask shape. A clip shape names the outer quad, not fragment coverage. */
   readonly surface: InspectionSurface;
   readonly opacity: number;
   readonly matrix: Matrix6;

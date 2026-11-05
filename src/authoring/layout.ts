@@ -8,6 +8,7 @@ import type { StageContext } from "./stage";
 import type { PaintRecord } from "./renderer";
 import {
   clipInspectionSurface,
+  compositionInspectionSurface,
   groupInspectionSurface,
   type InspectionSurface,
 } from "./surface-projection";
@@ -82,7 +83,7 @@ export type DrawCommand = {
 } & (
   | {
       readonly kind: "composition";
-      /** Set only for a Clip, and only while inspection is on. Not a Composition tag. */
+      /** Set for a Clip or Composition while inspection is on. Composition has no shape. */
       readonly inspectionSurface?: InspectionSurface;
       readonly mask?: PathOutline;
       readonly imageMask?: ImageMask;
@@ -1201,6 +1202,9 @@ function evaluateViewWithCounter(
         sharedId: m.node.key,
         ...stamp,
         ...commandIdentity(counter, nodeId, "surface"),
+        ...(counter
+          ? { inspectionSurface: compositionInspectionSurface() }
+          : {}),
         path: m.path,
         bounds,
         transform: current,

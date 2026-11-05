@@ -274,8 +274,14 @@ test("group chains project descendants from uploaded uniforms, not a second leaf
       Composition(World(() => Group([Box({ width: 8, height: 8, fill: "#111" }).id("inside")]), { size: [40, 24] })).id("world"),
       { design: [40, 24], target: [40, 24] },
     );
-    assert.equal(world.records.some((record) => record.path.includes("inside")), false);
-    assert.equal(world.records.find((record) => record.kind === "composition")?.accuracy, "unavailable");
+    const inside = world.records.find((record) => record.path.includes("inside"));
+    assert.equal(inside?.kind, "box");
+    assert.equal(world.records.some((record) => record.kind === "composition"), false);
+    if (inside && inside.accuracy !== "unavailable")
+      assert.deepEqual(
+        inside.surfaceProjection?.boundaries.map((boundary) => boundary.kind),
+        ["group", "composition"],
+      );
   });
 });
 

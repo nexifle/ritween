@@ -109,14 +109,17 @@ const MAX_TEXT_ENTRIES = 128;
  * corrections are already part of the draw camera, so `space` stays the pre-transition scene
  * target, not final transition output.
  * `accuracy` is the discriminant: `unavailable` means no rectangle this collector can honestly
- * record, so coverage stays partial instead of claiming the paint is out of frame. Nested
- * Composition, World, and Overlay paint is not forwarded. A tagged Clip or Group chain projects
- * the outer draw quad of its Box, Text, and Media leaves into this space. That quad is not mask
- * pixels, an outline, or fragment coverage. This is not a completed G3 projection.
+ * record, so coverage stays partial instead of claiming the paint is out of frame. A tagged
+ * Clip, Group, or Composition chain projects the outer draw quad of its Box, Text, and Media
+ * leaves into this space. Composition is one surface: World then Overlay share its texture and
+ * occurrence. Untagged surfaces are not forwarded. That quad is not mask pixels, an outline,
+ * occlusion, or fragment coverage. Stage and project overlay stay out of scope. This is not a
+ * completed G3 projection.
  */
 /** One tagged surface the leaf quad was clipped through, leaf target first. */
 export type SurfaceBoundary =
   | { readonly occurrenceId: number; readonly kind: "group" }
+  | { readonly occurrenceId: number; readonly kind: "composition" }
   | {
       readonly occurrenceId: number;
       readonly kind: "clip";
@@ -125,7 +128,7 @@ export type SurfaceBoundary =
 /** Viewport/scissor chain of the outer quad. Not fragment coverage or a mask outline. */
 export interface SurfaceProjection {
   readonly boundaries: readonly SurfaceBoundary[];
-  /** `outer-clipped-draw-quad` only when a Clip boundary is non-rect. Group adds no shape. */
+  /** `outer-clipped-draw-quad` only when a Clip boundary is non-rect. Group and Composition add no shape. */
   readonly coverage: "rect-clipped-draw-quad" | "outer-clipped-draw-quad";
 }
 export type PaintRecord = {
@@ -584,18 +587,16 @@ function projectNode(
       );
       continue;
     }
-    const boundaries = chain.map((entry) =>
-      entry.surface.kind === "group"
-        ? {
-            occurrenceId: entry.occurrenceId,
-            kind: "group" as const,
-          }
-        : {
-            occurrenceId: entry.occurrenceId,
-            kind: "clip" as const,
-            shape: entry.surface.shape,
-          },
-    );
+    const boundaries = chain.map((entry): SurfaceBoundary => {
+      const surface = entry.surface;
+      if (surface.kind === "group" || surface.kind === "composition")
+        return { occurrenceId: entry.occurrenceId, kind: surface.kind };
+      return {
+        occurrenceId: entry.occurrenceId,
+        kind: "clip",
+        shape: surface.shape,
+      };
+    });
     const nonRect = boundaries.some(
       (boundary) => boundary.kind === "clip" && boundary.shape !== "rect",
     );
@@ -1285,8 +1286,7 @@ export class ViewRenderer {
             (i * stride) / 4,
           );
           // Collected after the upload, so a record describes the uniforms the GPU receives.
-          // Nested world/overlay surfaces render through forked renderers that get no collector,
-          // so a surface reports itself unsupported instead of forwarding into a tree it skips.
+          // A tagged surface is replaced by its leaves. An untagged surface stays unsupported.
           // Debug outlines are appended to the copy above, so `frame.commands` is only real paint.
           if (book && i < frame.commands.length && isTaggedSurface(c)) {
             // Child traces were accepted before this uniform existed; reconcile only now.

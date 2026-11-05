@@ -686,11 +686,14 @@ test("rotated and sheared quads do not claim AABB area, and unsupported boundari
       }).id("plain"),
       { design: [40, 24], target: [40, 24] },
     );
-    const composition = world.records.find((record) => record.kind === "composition");
-    assert.equal(composition?.accuracy, "unavailable");
-    if (composition?.accuracy === "unavailable")
-      assert.match(composition.unsupported, /composition paint is not collected/);
-    assert.equal(world.records.some((record) => record.path.includes("inside")), false);
+    const inside = world.records.find((record) => record.path.includes("inside"));
+    assert.equal(inside?.kind, "box");
+    assert.equal(world.records.some((record) => record.kind === "composition"), false);
+    if (inside && inside.accuracy !== "unavailable")
+      assert.deepEqual(
+        inside.surfaceProjection?.boundaries.map((boundary) => boundary.kind),
+        ["composition"],
+      );
 
     const blown = await renderOnce(
       Box({ width: 8, height: 8, fill: "#123456" }).scale(1e40, 1, [0, 0]).clip(),

@@ -418,17 +418,13 @@ test("non-Box paints and surfaces report unsupported instead of forwarding into 
     assert.equal(records.some((record) => record.kind === "group"), false);
     assert.equal(nested?.kind, "box");
     assert.equal(nested?.accuracy, "exact-rectangle");
-    assert.equal(world?.kind, "composition");
-    assert.equal(world?.accuracy, "unavailable");
-    if (world?.accuracy !== "unavailable")
-      return assert.fail("expected a composition");
-    assert.match(world.unsupported, /not collected/);
+    const label = records.find((record) => record.path.includes("inner-label"));
+    assert.equal(label?.kind, "text");
+    assert.notEqual(label?.accuracy, "unavailable");
+    assert.equal(records.some((record) => record.kind === "composition"), false);
+    assert.equal(world, undefined);
     assert.equal(mark?.kind, "path");
     assert.equal(mark?.accuracy, "unavailable");
-    assert.equal(
-      records.some((record) => record.path.includes("inner-label")),
-      false,
-    );
     assert.equal(records.length, 4);
   });
 });

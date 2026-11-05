@@ -1471,9 +1471,10 @@ test("G3.4b: inspection off allocates no identity or role; only inspection metad
     "nested is the fixture Composition surface",
   );
   assert.equal("inspectionSurface" in clip!, true);
-  assert.equal("inspectionSurface" in composition!, false);
+  assert.equal(composition?.inspectionSurface?.kind, "composition");
+  assert.equal("shape" in (composition?.inspectionSurface ?? {}), false);
   assert.equal(on.commands[0]?.kind, "composition");
-  assert.equal("inspectionSurface" in on.commands[0]!, false);
+  assert.equal(on.commands[0]?.inspectionSurface?.kind, "composition");
 
   // Only inspection metadata may differ. Every other field — kind, path, bounds,
   // transform, opacity, sharedId, matchId, correctionIds, masks, resources, uniforms

@@ -166,11 +166,12 @@ export interface InspectionScene {
    * nothing. Records are ideal projected top-level Box, Text, and Media draw quads in
    * `scene-target-pixels` before transition projection. A Text quad is the texture/line box,
    * not glyph ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or ink
-   * coverage. A tagged Clip or Group chain adds `surfaceProjection` for those quads:
-   * rect-only and Group-only chains keep `rect-clipped-draw-quad`, and any non-rect Clip
-   * publishes `outer-clipped-draw-quad`. That is still not mask pixels, fragment visibility,
-   * or a GPU rounding guarantee. Composition, World, and Overlay paint stays unavailable.
-   * This is not completed G3.
+   * coverage. A tagged Clip, Group, or nested authoring Composition chain adds
+   * `surfaceProjection` for those quads: rect-only, Group-only, and Composition-only chains
+   * keep `rect-clipped-draw-quad`, and any non-rect Clip publishes `outer-clipped-draw-quad`.
+   * Composition adds no mask shape. That is still not mask pixels, fragment visibility,
+   * occlusion, or a GPU rounding guarantee. Stage overlay, project overlay, and transition
+   * output stay unavailable. This is not completed G3.
    */
   readonly paintRecords?: readonly InspectionPaintRecord[];
   /** Legacy `EvaluatedFrame.warnings` strings, preserved verbatim and in order. */
@@ -195,8 +196,9 @@ export interface InspectionCapability {
      * in `scene-target-pixels` before transition. A Text quad is the texture/line box, not glyph
      * ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or pixel coverage.
      * Nothing here is final visual coverage, fragment visibility, or a GPU rounding guarantee.
-     * Clip and Group leaves record an outer draw quad, not mask pixels. Composition, World,
-     * and Overlay paint stays unrecorded. G3 is not complete.
+     * Clip, Group, and nested authoring Composition leaves record an outer draw quad, not
+     * mask pixels. Composition is not a World or Overlay boundary. Stage overlay, project
+     * overlay, and transition output stay unrecorded. G3 is not complete.
      */
     readonly paint: "partial";
   };
@@ -1165,17 +1167,18 @@ const SURFACE_COVERAGES = [
   "rect-clipped-draw-quad",
   "outer-clipped-draw-quad",
 ] as const;
-const SURFACE_KINDS = ["group", "clip"] as const;
+const SURFACE_KINDS = ["group", "clip", "composition"] as const;
 const SURFACE_SHAPES = ["rect", "rounded", "circle", "path", "image"] as const;
 export type InspectionSurfaceBoundary =
   | { readonly occurrenceId: number; readonly kind: "group" }
+  | { readonly occurrenceId: number; readonly kind: "composition" }
   | {
       readonly occurrenceId: number;
       readonly kind: "clip";
       readonly shape: (typeof SURFACE_SHAPES)[number];
     };
 export interface InspectionSurfaceProjection {
-  /** Leaf target first. Group boundaries carry no mask shape. */
+  /** Leaf target first. Group and Composition boundaries carry no mask shape. */
   readonly boundaries: readonly InspectionSurfaceBoundary[];
   readonly coverage: (typeof SURFACE_COVERAGES)[number];
 }
@@ -1218,10 +1221,10 @@ function surfaceProjection(
       `${itemWhere}.kind`,
     );
     budget?.charge(kind.length + 2);
-    if (kind === "group") {
+    if (kind === "group" || kind === "composition") {
       if (read(entry, "shape", itemWhere) !== undefined)
         throw new InspectionSerializationError(
-          `${itemWhere}.shape must be absent when kind is "group".`,
+          `${itemWhere}.shape must be absent when kind is "${kind}".`,
         );
       boundaries.push({ occurrenceId, kind });
       continue;
@@ -1918,7 +1921,7 @@ export function buildInspectionDocument(options: {
       transitions: {
         projection: "unavailable",
         reason:
-          "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. A tagged Clip or Group chain records the outer draw quad, not mask pixels or fragment coverage. Composition, World, Overlay, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
+          "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, occlusion, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. A tagged Clip, Group, or nested authoring Composition chain records the outer draw quad, not mask pixels or fragment coverage. Composition adds no mask shape and is not a World or Overlay boundary. Stage overlay, project overlay, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
       },
     },
     scenes: targetScene ? [targetScene] : scenes,

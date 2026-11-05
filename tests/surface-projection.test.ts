@@ -543,7 +543,7 @@ test("duplicate semantic ids keep distinct occurrence traces", async () => {
   });
 });
 
-test("clip shapes are tagged from the spec and a plain composition stays unsupported", async () => {
+test("clip shapes are tagged from the spec and a composition is one surface", async () => {
   await withGpuGlobals(async () => {
     const mask = {
       kind: "image" as const,
@@ -612,32 +612,32 @@ test("clip shapes are tagged from the spec and a plain composition stays unsuppo
     );
     assert.equal(world?.kind, "composition");
     if (world?.kind !== "composition") return;
-    assert.equal(world.inspectionSurface, undefined);
+    assert.deepEqual(world.inspectionSurface, { kind: "composition" });
     assert.equal(world.overlay !== undefined, true);
-    const worldRecord = rendered.records.find((record) =>
-      record.path.endsWith("plain-world"),
-    );
-    assert.equal(worldRecord?.kind, "composition");
-    assert.equal(worldRecord?.accuracy, "unavailable");
-    if (worldRecord?.accuracy !== "unavailable") return;
-    assert.match(worldRecord.unsupported, /composition paint is not collected/);
     assert.equal(
-      rendered.records.some((record) => record.path.includes("inside")),
+      rendered.records.some((record) => record.path.endsWith("plain-world")),
       false,
     );
+    const insideRecord = rendered.records.find((record) =>
+      record.path.includes("inside"),
+    );
+    const overRecord = rendered.records.find((record) => record.path === "over");
+    assert.equal(insideRecord?.kind, "box");
+    assert.equal(overRecord?.kind, "box");
     assert.equal(
-      rendered.records.some((record) => record.path.includes("over")),
-      false,
+      rendered.records.filter((record) => record.kind === "composition").length,
+      0,
+    );
+    const compositionTrace = rendered.traces.find((trace) =>
+      trace.path.endsWith("plain-world"),
     );
     const inside = rendered.traces.find((trace) =>
       trace.path.endsWith("inside"),
     );
-    assert.ok(inside);
-    assert.equal(inside.projection.status, "unavailable");
-    if (inside.projection.status !== "unavailable") return;
-    assert.equal(inside.projection.reason, NON_CLIP_PARENT_REASON);
-    assert.equal(inside.parentOccurrenceId, undefined);
-    assert.equal("childPixelsToParent" in inside.projection, false);
+    assert.ok(compositionTrace && inside);
+    assert.equal(compositionTrace.surface.kind, "composition");
+    assert.equal(inside.projection.status, "mapped");
+    assert.equal(inside.parentOccurrenceId, compositionTrace.occurrenceId);
     const off = evaluateView(Box({ width: 4, height: 4 }).clip(), {
       time: 0,
       width: 20,

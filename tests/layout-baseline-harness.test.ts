@@ -15,6 +15,12 @@ import {
   assertPixelCalibration,
   benchmarkLayoutCpu,
   instrumentedMeasurer,
+  installCanvas2dMeasureTextProbe,
+  canvas2dProbeEnabled,
+  assembleCanvas2dReport,
+  unavailableCanvas2dMeasureText,
+  frameTimingDistribution,
+  runHarness,
 } from "../scripts/layout-baseline-harness";
 import type { GpuCounters } from "../scripts/layout-baseline-harness";
 
@@ -252,4 +258,230 @@ test("benchmarkLayoutCpu counts measurer calls for both fixtures", () => {
     assert.equal(measurer.state.count - before, result.measureCalls);
     assert.ok(result.medianMs >= 0);
   }
+});
+
+function fakeMeasurePrototype() {
+  const calls: { receiver: unknown; args: unknown[] }[] = [];
+  const metrics = { width: 12 };
+  function measureText(this: unknown, ...args: unknown[]) {
+    calls.push({ receiver: this, args });
+    return metrics;
+  }
+  const proto = { measureText };
+  return { proto, calls, metrics, measureText };
+}
+
+test("canvas2d measureText probe forwards, counts, and restores the descriptor", () => {
+  const { proto, calls, metrics, measureText } = fakeMeasurePrototype();
+  const descriptor = Object.getOwnPropertyDescriptor(proto, "measureText")!;
+  const receiver = Object.create(proto);
+  const probe = installCanvas2dMeasureTextProbe(proto);
+  try {
+    assert.throws(
+      () => installCanvas2dMeasureTextProbe(proto),
+      /nested wrappers/,
+    );
+    assert.throws(
+      () => installCanvas2dMeasureTextProbe({ measureText() {} }),
+      /Concurrent probes/,
+    );
+    const returned = receiver.measureText("hello", 1);
+    assert.equal(returned, metrics);
+    assert.equal(calls[0].receiver, receiver);
+    assert.deepEqual(calls[0].args, ["hello", 1]);
+    receiver.measureText("Mg");
+    const during = probe.take();
+    assert.equal(during.canvas2dMeasureTextCalls, 2);
+    assert.equal(during.rasterMgCalls, 1);
+    receiver.measureText("Mg ");
+    receiver.measureText("after");
+    assert.equal(probe.snapshot().canvas2dMeasureTextCalls, 2);
+    assert.equal(probe.snapshot().rasterMgCalls, 0);
+  } finally {
+    probe.restore();
+  }
+  assert.equal(proto.measureText, measureText);
+  const restored = Object.getOwnPropertyDescriptor(proto, "measureText")!;
+  assert.equal(restored.value, descriptor.value);
+  assert.equal(restored.enumerable, descriptor.enumerable);
+  assert.equal(restored.writable, descriptor.writable);
+  assert.equal(restored.configurable, descriptor.configurable);
+  probe.restore();
+  const again = installCanvas2dMeasureTextProbe(proto);
+  again.restore();
+  assert.equal(proto.measureText, measureText);
+});
+
+test("canvas2d measureText probe preserves the thrown exception and receiver", () => {
+  const failure = new Error("measure failed");
+  const seen: unknown[] = [];
+  const proto = {
+    measureText(this: unknown, text: string) {
+      seen.push(this);
+      if (text === "boom") throw failure;
+      return { width: text.length, text };
+    },
+  };
+  const native = proto.measureText;
+  const probe = installCanvas2dMeasureTextProbe(proto);
+  const receiver = Object.create(proto);
+  try {
+    const value = receiver.measureText("ok");
+    assert.equal(value.text, "ok");
+    assert.equal(seen[0], receiver);
+    assert.throws(
+      () => receiver.measureText("boom"),
+      (error) => error === failure,
+    );
+    assert.equal(probe.snapshot().canvas2dMeasureTextCalls, 2);
+    assert.equal(probe.snapshot().rasterMgCalls, 0);
+  } finally {
+    probe.restore();
+  }
+  assert.equal(proto.measureText, native);
+  const frozen = probe.snapshot().canvas2dMeasureTextCalls;
+  receiver.measureText("later");
+  assert.equal(probe.snapshot().canvas2dMeasureTextCalls, frozen);
+});
+
+test("canvas2d measureText probe restores an inherited method without leaving an own shadow", () => {
+  const parent = {
+    measureText(text: string) {
+      return text;
+    },
+  };
+  const proto = Object.create(parent) as {
+    measureText?: (text: string) => string;
+  };
+  const probe = installCanvas2dMeasureTextProbe(proto);
+  try {
+    assert.equal(Object.hasOwn(proto, "measureText"), true);
+    assert.equal(proto.measureText?.("Mg"), "Mg");
+    assert.equal(probe.snapshot().rasterMgCalls, 1);
+    throw Error("render failed");
+  } catch (error) {
+    assert.equal((error as Error).message, "render failed");
+  } finally {
+    probe.restore();
+  }
+  assert.equal(Object.hasOwn(proto, "measureText"), false);
+  assert.equal(proto.measureText, parent.measureText);
+});
+
+test("canvas2d phase report keeps intervals apart and does not invent unavailable counts", () => {
+  const report = assembleCanvas2dReport({
+    setup: { canvas2dMeasureTextCalls: 5, rasterMgCalls: 0 },
+    warmup: [
+      { canvas2dMeasureTextCalls: 8, rasterMgCalls: 3 },
+      { canvas2dMeasureTextCalls: 2, rasterMgCalls: 0 },
+    ],
+    measured: [
+      { canvas2dMeasureTextCalls: 4, rasterMgCalls: 0 },
+      { canvas2dMeasureTextCalls: 4, rasterMgCalls: 1 },
+      { canvas2dMeasureTextCalls: 6, rasterMgCalls: 0 },
+    ],
+    capture: [],
+  });
+  assert.equal(
+    report.semantics.includes("Not a ViewRenderer.measureText count"),
+    true,
+  );
+  assert.equal(report.setup.canvas2dMeasureTextCalls, 5);
+  assert.equal(report.measured.frames, 3);
+  assert.equal(report.measured.totalCanvas2dMeasureTextCalls, 14);
+  assert.equal(report.measured.totalRasterMgCalls, 1);
+  assert.deepEqual(
+    report.measured.perFrame.map((frame) => frame.canvas2dMeasureTextCalls),
+    [4, 4, 6],
+  );
+  assert.equal(report.measured.callsSummary.median, 4);
+  assert.equal(
+    "frames" in report.warmup && report.warmup.totalCanvas2dMeasureTextCalls,
+    10,
+  );
+  assert.equal(report.capture.available, false);
+  assert.equal(report.layoutMeasurerCalls.available, false);
+  assert.equal(report.rootMeasurementCanvasCalls.available, false);
+  assert.equal(report.textReuse.available, false);
+  assert.equal("count" in report.layoutMeasurerCalls, false);
+  assert.equal("count" in report.textReuse, false);
+
+  const off = unavailableCanvas2dMeasureText();
+  assert.equal(off.available, false);
+  assert.equal("canvas2dMeasureTextCalls" in off, false);
+
+  const instrumented = frameTimingDistribution(true);
+  assert.equal(instrumented.comparableToFrozenUninstrumentedBaseline, false);
+  assert.equal(instrumented.performanceGate, "not-applicable");
+  assert.match(instrumented.reason, /overhead/);
+  assert.match(instrumented.reason, /performance improvement/);
+  assert.match(instrumented.reason, /passing G7 gate/);
+  const plain = frameTimingDistribution(false);
+  assert.equal(plain.distribution, "uninstrumented");
+  assert.equal(plain.performanceGate, "not-applicable");
+});
+
+test("canvas2d probe stays off unless the harness option is explicitly true", () => {
+  assert.equal(canvas2dProbeEnabled({}), false);
+  assert.equal(canvas2dProbeEnabled({ canvas2dProbe: undefined }), false);
+  assert.equal(canvas2dProbeEnabled({ canvas2dProbe: false }), false);
+  assert.equal(canvas2dProbeEnabled({ canvas2dProbe: true }), true);
+
+  const proto = {
+    measureText(text: string) {
+      return text;
+    },
+  };
+  const before = Object.getOwnPropertyDescriptor(proto, "measureText");
+  for (const options of [
+    {},
+    { canvas2dProbe: undefined },
+    { canvas2dProbe: false as const },
+  ]) {
+    assert.equal(canvas2dProbeEnabled(options), false);
+    const off = unavailableCanvas2dMeasureText();
+    assert.equal(off.available, false);
+    assert.equal("setup" in off, false);
+    assert.equal("canvas2dMeasureTextCalls" in off, false);
+    assert.equal(off.layoutMeasurerCalls.available, false);
+    assert.equal(off.textReuse.available, false);
+    assert.equal("count" in off.layoutMeasurerCalls, false);
+    assert.equal("count" in off.textReuse, false);
+    const timing = frameTimingDistribution(canvas2dProbeEnabled(options));
+    assert.equal(timing.distribution, "uninstrumented");
+    assert.equal(timing.comparableToFrozenUninstrumentedBaseline, true);
+    assert.equal(timing.performanceGate, "not-applicable");
+  }
+  assert.deepEqual(
+    Object.getOwnPropertyDescriptor(proto, "measureText"),
+    before,
+  );
+  assert.match(runHarness.toString(), /canvas2dProbeEnabled\(options\)/);
+  assert.doesNotMatch(runHarness.toString(), /canvas2dProbe !== false/);
+
+  const probe = canvas2dProbeEnabled({ canvas2dProbe: true })
+    ? installCanvas2dMeasureTextProbe(proto)
+    : undefined;
+  assert.ok(probe);
+  try {
+    assert.notEqual(
+      Object.getOwnPropertyDescriptor(proto, "measureText")?.value,
+      before?.value,
+    );
+    assert.equal(proto.measureText("Mg"), "Mg");
+    const timing = frameTimingDistribution(
+      canvas2dProbeEnabled({ canvas2dProbe: true }),
+    );
+    assert.equal(
+      timing.distribution,
+      "instrumented-canvas2d-measureText-wrapper",
+    );
+    assert.equal(timing.comparableToFrozenUninstrumentedBaseline, false);
+  } finally {
+    probe.restore();
+  }
+  assert.deepEqual(
+    Object.getOwnPropertyDescriptor(proto, "measureText"),
+    before,
+  );
 });

@@ -11,9 +11,16 @@
  *   same fixture font as the frames. Canvas2D measurement needs no GPU setup,
  *   so this never touches a device (the frame device is already disposed).
  *   Explicitly NOT a frame phase and never added to endToEndMs.
- * - measureCalls at frame level: UNAVAILABLE (Stage's measurer is internal to
- *   its own ViewRenderer; observing it requires production instrumentation).
- *   The microbenchmark carries its own explicit counts.
+ * - measureCalls at frame level: UNAVAILABLE. Stage's measurer is an instance
+ *   field on its own ViewRenderer. canvas2dMeasureText counts every
+ *   CanvasRenderingContext2D.measureText call during FrameSource.render,
+ *   including rasterization, and is not that metric. A root-canvas filter is
+ *   UNAVAILABLE: measurement and raster share one canvas, with no exact seam.
+ *   Text reuse stays UNAVAILABLE. The microbenchmark carries its own counts.
+ * - frameTiming names the instrumented or uninstrumented distribution.
+ *   Instrumented endToEndMs includes wrapper overhead and is not comparable
+ *   to the frozen uninstrumented baseline, not a performance improvement,
+ *   and not a G7 pass. G7 remains incomplete.
  * - gpu.beginRenderPasses: counted by proxying the command encoder handed to
  *   scene render (benchmark-only proxy; production objects untouched). The
  *   device wrapper stays installed for creation, every measured frame, capture
@@ -48,6 +55,20 @@ export interface HarnessRunOptions {
   frameTime?: number;
   /** Project-time samples for pixel proof; A→B→A order included. */
   pixelStates?: readonly number[];
+  /**
+   * Benchmark-only Canvas 2D measureText probe, installed before
+   * FrameSource.create and restored in finally. Default off. Only an explicit
+   * true installs it. Omitted and false keep the uninstrumented timing
+   * distribution and do not invent zero call counts.
+   */
+  canvas2dProbe?: boolean;
+}
+
+/** Probe stays off unless the caller opts in. Baseline run and replay omit this. */
+export function canvas2dProbeEnabled(
+  options: Pick<HarnessRunOptions, "canvas2dProbe">,
+): boolean {
+  return options.canvas2dProbe === true;
 }
 
 export interface HarnessRunResult {
@@ -61,6 +82,16 @@ export interface HarnessRunResult {
   layoutCpuMicrobenchmark: LayoutCpuMicrobenchmark;
   measureCalls:
     { available: true; count: number } | { available: false; reason: string };
+  /**
+   * Canvas 2D measureText during FrameSource.create and each
+   * FrameSource.render. Not ViewRenderer.measureText.
+   */
+  canvas2dMeasureText:
+    Canvas2dMeasureTextReport | Canvas2dMeasureTextUnavailable;
+  /** Which timing distribution endToEndMs belongs to. Not a G7 gate. */
+  frameTiming: FrameTimingDistribution;
+  /** This harness unit does not close G7. */
+  g7: { complete: false };
   /** Decoded-RGBA A→B→A calibration verdict for this run. */
   pixelProof: PixelProof;
   gpu: {
@@ -156,6 +187,232 @@ export function restoreProperty(captured: CapturedProperty): void {
   if (captured.descriptor)
     Object.defineProperty(captured.target, captured.key, captured.descriptor);
   else Reflect.deleteProperty(captured.target, captured.key);
+}
+
+export const CANVAS2D_MEASURE_TEXT_SEMANTICS =
+  "CanvasRenderingContext2D.measureText calls during the named interval, including text rasterization. Not a ViewRenderer.measureText count.";
+
+export const RASTER_MG_SEMANTICS =
+  'Calls whose first argument is exactly "Mg". Diagnostic only: layout text can also be "Mg", so this is not a rasterization count.';
+
+const LAYOUT_MEASURER_UNAVAILABLE = {
+  available: false as const,
+  reason:
+    "ViewRenderer.measureText is an instance field on Stage's internal renderer. Canvas 2D totals include rasterization and are not this count.",
+};
+
+const ROOT_CANVAS_UNAVAILABLE = {
+  available: false as const,
+  reason:
+    "No exact canvas seam separates measurement from rasterization: each ViewRenderer uses one canvas for both measureText and rasterText. A filtered root-canvas count is not reported.",
+};
+
+const TEXT_REUSE_UNAVAILABLE = {
+  available: false as const,
+  reason:
+    "Text and surface reuse per path is internal to ViewRenderer. Creation deltas are not reuse, and a zero is not reported.",
+};
+
+export interface UnavailableMetric {
+  available: false;
+  reason: string;
+}
+
+/** One observed Canvas 2D measureText interval. Zero is an observation. */
+export interface Canvas2dFrameCount {
+  canvas2dMeasureTextCalls: number;
+  /** Diagnostic only. Not a rasterization count. */
+  rasterMgCalls: number;
+}
+
+export interface Canvas2dPhase {
+  frames: number;
+  /** Raw per-frame counts. Not mixed with warmup, capture, or the microbenchmark. */
+  perFrame: Canvas2dFrameCount[];
+  totalCanvas2dMeasureTextCalls: number;
+  totalRasterMgCalls: number;
+  callsSummary: Statistics & { available: true };
+}
+
+export interface Canvas2dMeasureTextReport {
+  available: true;
+  semantics: typeof CANVAS2D_MEASURE_TEXT_SEMANTICS;
+  rasterMgSemantics: typeof RASTER_MG_SEMANTICS;
+  setup: Canvas2dFrameCount;
+  warmup: Canvas2dPhase | UnavailableMetric;
+  measured: Canvas2dPhase;
+  capture: Canvas2dPhase | UnavailableMetric;
+  layoutMeasurerCalls: UnavailableMetric;
+  rootMeasurementCanvasCalls: UnavailableMetric;
+  textReuse: UnavailableMetric;
+}
+
+export interface Canvas2dMeasureTextUnavailable extends UnavailableMetric {
+  layoutMeasurerCalls: UnavailableMetric;
+  rootMeasurementCanvasCalls: UnavailableMetric;
+  textReuse: UnavailableMetric;
+}
+
+export interface FrameTimingDistribution {
+  distribution: "instrumented-canvas2d-measureText-wrapper" | "uninstrumented";
+  comparableToFrozenUninstrumentedBaseline: boolean;
+  performanceGate: "not-applicable";
+  reason: string;
+}
+
+export interface Canvas2dMeasureTextProbe {
+  snapshot(): Canvas2dFrameCount;
+  reset(): void;
+  /** Returns the count since the last reset or take, then resets. */
+  take(): Canvas2dFrameCount;
+  restore(): void;
+}
+
+let activeCanvas2dProbe: Canvas2dMeasureTextProbe | undefined;
+
+function canvas2dPrototype(): object {
+  const ctor = (
+    globalThis as { CanvasRenderingContext2D?: { prototype: object } }
+  ).CanvasRenderingContext2D;
+  if (!ctor) throw Error("CanvasRenderingContext2D is unavailable.");
+  return ctor.prototype;
+}
+
+/**
+ * Benchmark-only wrapper around CanvasRenderingContext2D.prototype.measureText.
+ * Forwards the receiver, arguments, return value, and exception. A second
+ * install is rejected so probes cannot nest.
+ */
+export function installCanvas2dMeasureTextProbe(
+  target: object = canvas2dPrototype(),
+): Canvas2dMeasureTextProbe {
+  if (activeCanvas2dProbe)
+    throw Error(
+      "Canvas 2D measureText probe is already installed. Concurrent probes and nested wrappers are rejected.",
+    );
+  const captured = captureProperty(target, "measureText");
+  const native = (captured.descriptor?.value ??
+    Reflect.get(target, "measureText")) as unknown;
+  if (typeof native !== "function")
+    throw Error(
+      "CanvasRenderingContext2D.prototype.measureText is not a function.",
+    );
+  const observed = { canvas2dMeasureTextCalls: 0, rasterMgCalls: 0 };
+  const wrapped = function measureText(
+    this: unknown,
+    ...args: unknown[]
+  ): unknown {
+    observed.canvas2dMeasureTextCalls += 1;
+    if (args[0] === "Mg") observed.rasterMgCalls += 1;
+    return Reflect.apply(native, this, args);
+  };
+  let restored = false;
+  const probe: Canvas2dMeasureTextProbe = {
+    snapshot: () => ({ ...observed }),
+    reset() {
+      observed.canvas2dMeasureTextCalls = 0;
+      observed.rasterMgCalls = 0;
+    },
+    take() {
+      const snap = probe.snapshot();
+      probe.reset();
+      return snap;
+    },
+    restore() {
+      if (restored) return;
+      restoreProperty(captured);
+      restored = true;
+      if (activeCanvas2dProbe === probe) activeCanvas2dProbe = undefined;
+    },
+  };
+  Object.defineProperty(target, "measureText", {
+    configurable: true,
+    enumerable: captured.descriptor?.enumerable ?? false,
+    writable: true,
+    value: wrapped,
+  });
+  activeCanvas2dProbe = probe;
+  return probe;
+}
+
+function canvas2dPhase(
+  perFrame: readonly Canvas2dFrameCount[],
+): Canvas2dPhase | UnavailableMetric {
+  if (!perFrame.length)
+    return {
+      available: false,
+      reason: "no frames in this phase; call count is not zero",
+    };
+  return {
+    frames: perFrame.length,
+    perFrame: perFrame.map((frame) => ({ ...frame })),
+    totalCanvas2dMeasureTextCalls: perFrame.reduce(
+      (sum, frame) => sum + frame.canvas2dMeasureTextCalls,
+      0,
+    ),
+    totalRasterMgCalls: perFrame.reduce(
+      (sum, frame) => sum + frame.rasterMgCalls,
+      0,
+    ),
+    callsSummary: {
+      available: true,
+      ...summarize(perFrame.map((frame) => frame.canvas2dMeasureTextCalls)),
+    },
+  };
+}
+
+export function assembleCanvas2dReport(phases: {
+  setup: Canvas2dFrameCount;
+  warmup: readonly Canvas2dFrameCount[];
+  measured: readonly Canvas2dFrameCount[];
+  capture: readonly Canvas2dFrameCount[];
+}): Canvas2dMeasureTextReport {
+  const measured = canvas2dPhase(phases.measured);
+  if (!("frames" in measured))
+    throw Error("Measured phase has no frames; call count is not zero.");
+  return {
+    available: true,
+    semantics: CANVAS2D_MEASURE_TEXT_SEMANTICS,
+    rasterMgSemantics: RASTER_MG_SEMANTICS,
+    setup: { ...phases.setup },
+    warmup: canvas2dPhase(phases.warmup),
+    measured,
+    capture: canvas2dPhase(phases.capture),
+    layoutMeasurerCalls: LAYOUT_MEASURER_UNAVAILABLE,
+    rootMeasurementCanvasCalls: ROOT_CANVAS_UNAVAILABLE,
+    textReuse: TEXT_REUSE_UNAVAILABLE,
+  };
+}
+
+export function unavailableCanvas2dMeasureText(): Canvas2dMeasureTextUnavailable {
+  return {
+    available: false,
+    reason:
+      "Canvas 2D measureText probe was not installed. Call counts are not reported as zero.",
+    layoutMeasurerCalls: LAYOUT_MEASURER_UNAVAILABLE,
+    rootMeasurementCanvasCalls: ROOT_CANVAS_UNAVAILABLE,
+    textReuse: TEXT_REUSE_UNAVAILABLE,
+  };
+}
+
+export function frameTimingDistribution(
+  instrumented: boolean,
+): FrameTimingDistribution {
+  if (instrumented)
+    return {
+      distribution: "instrumented-canvas2d-measureText-wrapper",
+      comparableToFrozenUninstrumentedBaseline: false,
+      performanceGate: "not-applicable",
+      reason:
+        "endToEndMs and the layout CPU microbenchmark include Canvas 2D measureText wrapper overhead. Do not compare this distribution to the frozen uninstrumented baseline, and do not read a delta as a performance improvement or a passing G7 gate.",
+    };
+  return {
+    distribution: "uninstrumented",
+    comparableToFrozenUninstrumentedBaseline: true,
+    performanceGate: "not-applicable",
+    reason:
+      "No Canvas 2D measureText wrapper. This is the uninstrumented distribution, not a G7 gate and not a performance improvement claim. Frozen baseline artifacts were not modified.",
+  };
 }
 
 // RENDER_ATTACHMENT flag bit; defined in the browser, constant in Node tests.
@@ -375,7 +632,12 @@ export async function runHarness(options: HarnessRunOptions): Promise<{
   // Only disposal is needed outside the try block; FrameSource is a dynamic
   // import so its type cannot be referenced before the scope below.
   let source: { dispose(): void } | undefined;
+  const canvas2dProbe = canvas2dProbeEnabled(options);
+  let measureProbe: Canvas2dMeasureTextProbe | undefined;
   try {
+    // Before FrameSource.create, including its setup measureText calls. Font
+    // proof already ran and is outside this interval.
+    if (canvas2dProbe) measureProbe = installCanvas2dMeasureTextProbe();
     const resolution =
       options.fixture === "stress"
         ? ([1200, 900] as const)
@@ -418,33 +680,44 @@ export async function runHarness(options: HarnessRunOptions): Promise<{
         },
       ],
     };
+    measureProbe?.reset();
     const frameSource = await FrameSource.create(project, {
       width: resolution[0],
       height: resolution[1],
     });
     source = frameSource;
+    const setupCanvas2d = measureProbe?.take();
 
     const frameTime = options.frameTime ?? 0;
 
     const renderOnce = async (time: number) => {
       const passesBefore = counters.beginRenderPasses;
       const renderStart = performance.now();
+      // Reset at the await boundary so warmup, measured, and capture stay apart.
+      measureProbe?.reset();
       await frameSource.render(time);
       return {
         endToEndMs: performance.now() - renderStart,
         beginRenderPasses: counters.beginRenderPasses - passesBefore,
+        canvas2d: measureProbe?.take(),
       };
     };
 
-    for (let i = 0; i < options.warmup; i++) await renderOnce(frameTime);
+    const warmupCanvas2d: Canvas2dFrameCount[] = [];
+    for (let i = 0; i < options.warmup; i++) {
+      const frame = await renderOnce(frameTime);
+      if (frame.canvas2d) warmupCanvas2d.push(frame.canvas2d);
+    }
     const renderTargetsAtMeasuredStart = counters.renderTargetTexturesCreated;
 
     const measuredEndToEnd: number[] = [];
     const measuredPasses: number[] = [];
+    const measuredCanvas2d: Canvas2dFrameCount[] = [];
     for (let i = 0; i < options.measured; i++) {
       const frame = await renderOnce(frameTime);
       measuredEndToEnd.push(frame.endToEndMs);
       measuredPasses.push(frame.beginRenderPasses);
+      if (frame.canvas2d) measuredCanvas2d.push(frame.canvas2d);
     }
     const creationsAtMeasuredEnd = counters.renderTargetTexturesCreated;
 
@@ -454,8 +727,12 @@ export async function runHarness(options: HarnessRunOptions): Promise<{
     const pixelStates = options.pixelStates ?? [0, 2.4, 0];
     const creationsBeforeCapture = counters.renderTargetTexturesCreated;
     const frames: { time: number; pngBase64: string }[] = [];
+    const captureCanvas2d: Canvas2dFrameCount[] = [];
     for (const time of pixelStates) {
+      measureProbe?.reset();
       const frameCanvas = await frameSource.render(time);
+      const canvas2d = measureProbe?.take();
+      if (canvas2d) captureCanvas2d.push(canvas2d);
       const blob = await frameCanvas.convertToBlob({ type: "image/png" });
       frames.push({
         time,
@@ -528,6 +805,17 @@ export async function runHarness(options: HarnessRunOptions): Promise<{
       creationsAtMeasuredEnd - renderTargetsAtMeasuredStart,
     );
 
+    if (canvas2dProbe) {
+      const measuredCalls = measuredCanvas2d.reduce(
+        (sum, frame) => sum + frame.canvas2dMeasureTextCalls,
+        0,
+      );
+      if (measuredCalls <= 0)
+        throw Error(
+          "Canvas 2D measureText probe recorded zero calls across measured frames of a text fixture; instrumentation was not active.",
+        );
+    }
+
     return {
       result: {
         fixture: options.fixture,
@@ -540,13 +828,24 @@ export async function runHarness(options: HarnessRunOptions): Promise<{
         // Scene-level CPU microbenchmark, explicitly NOT a frame phase and
         // never added to endToEndMs.
         layoutCpuMicrobenchmark: micro,
-        // Frame-level measurer calls happen inside Stage's own ViewRenderer
-        // and are not observable without production changes: unavailable.
+        // Exact ViewRenderer.measureText calls are still unavailable. The
+        // canvas total is a different metric and is not stored here.
         measureCalls: {
           available: false as const,
           reason:
-            "Stage measurer is internal to ViewRenderer; observed via separate CPU microbenchmark only",
+            "ViewRenderer.measureText is an instance field on Stage's internal renderer. canvas2dMeasureText includes rasterization and is not this count.",
         },
+        canvas2dMeasureText:
+          canvas2dProbe && setupCanvas2d
+            ? assembleCanvas2dReport({
+                setup: setupCanvas2d,
+                warmup: warmupCanvas2d,
+                measured: measuredCanvas2d,
+                capture: captureCanvas2d,
+              })
+            : unavailableCanvas2dMeasureText(),
+        frameTiming: frameTimingDistribution(canvas2dProbe),
+        g7: { complete: false as const },
         pixelProof,
         gpu: {
           beginRenderPasses: summarize(measuredPasses),
@@ -589,11 +888,15 @@ export async function runHarness(options: HarnessRunOptions): Promise<{
       frames,
     };
   } finally {
-    // Restore the native environment even if disposal throws.
+    // Restore the native environment even if disposal or descriptor restore throws.
     try {
       source?.dispose();
     } finally {
-      restoreEnvironment();
+      try {
+        restoreEnvironment();
+      } finally {
+        measureProbe?.restore();
+      }
     }
   }
 }

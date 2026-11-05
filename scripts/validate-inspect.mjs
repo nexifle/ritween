@@ -55,7 +55,20 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { createServer as createViteServer } from "vite";
+import { INSPECTION_SCHEMA_VERSION } from "ritween";
 import { nodeCli } from "./node-cli.mjs";
+
+/** Published schema 2. No schema 1 string-list alias. */
+const SPACE_MAPPING_REASON =
+  "not a captured GPU uniform; no layout affine is published";
+const LAYOUT_ROOT_PARENT = "scope layout root";
+const SPACE_KINDS = [
+  "layout",
+  "clip-local",
+  "world",
+  "composition-overlay",
+  "unavailable",
+];
 
 /** Must match `scripts/inspect-fixture/manifest-box.mjs`. Checked against that file before use. */
 const OUTPUT = [320, 180];
@@ -487,7 +500,89 @@ async function inspectJson(args) {
     false,
     `successful inspect must not log an error: ${result.stderr}`,
   );
-  return { document: JSON.parse(result.stdout), raw: result.stdout, ...result };
+  const document = JSON.parse(result.stdout);
+  assertInspectionSchema(document, args.join(" "));
+  return { document, raw: result.stdout, ...result };
+}
+
+function assertInspectionSchema(document, label) {
+  assert.equal(INSPECTION_SCHEMA_VERSION, 2, label);
+  assert.equal(document.schemaVersion, INSPECTION_SCHEMA_VERSION, label);
+}
+
+function assertMappingUnavailable(mapping, label) {
+  assert.equal(mapping?.status, "unavailable", label);
+  assert.equal(mapping?.reason, SPACE_MAPPING_REASON, label);
+  assert.equal("matrix" in mapping, false, label);
+  assert.deepEqual(Object.keys(mapping).sort(), ["reason", "status"], label);
+}
+
+function assertLayoutSpace(descriptor, label) {
+  assert.deepEqual(
+    descriptor,
+    {
+      id: "layout",
+      kind: "layout",
+      parent: { status: "unavailable", reason: LAYOUT_ROOT_PARENT },
+      mapping: { status: "unavailable", reason: SPACE_MAPPING_REASON },
+    },
+    label,
+  );
+}
+
+function spaceDescriptor(spaces, id, label) {
+  const found = spaces.filter((space) => space?.id === id);
+  assert.equal(found.length, 1, `${label} space ${id}`);
+  return found[0];
+}
+
+/** Each node.space string (absent means layout) closes over descriptor parent.id fields. */
+function assertSpaceClosure(scene, label) {
+  assert.equal(Array.isArray(scene.spaces), true, label);
+  const byId = new Map();
+  for (const descriptor of scene.spaces) {
+    assert.equal(typeof descriptor?.id, "string", label);
+    assert.equal(byId.has(descriptor.id), false, `${label} duplicate ${descriptor.id}`);
+    byId.set(descriptor.id, descriptor);
+    assert.equal(SPACE_KINDS.includes(descriptor.kind), true, `${label} ${descriptor.id}`);
+    assertMappingUnavailable(descriptor.mapping, `${label} ${descriptor.id}`);
+    if (descriptor.id === "layout") assertLayoutSpace(descriptor, label);
+    if (descriptor.parent?.status === "known") {
+      assert.equal(typeof descriptor.parent.id, "string", `${label} ${descriptor.id}`);
+      assert.notEqual(descriptor.parent.id, descriptor.id, label);
+    } else {
+      assert.equal(descriptor.parent?.status, "unavailable", `${label} ${descriptor.id}`);
+      assert.equal(typeof descriptor.parent?.reason, "string", label);
+    }
+    if (descriptor.kind === "unavailable")
+      assert.equal(typeof descriptor.reason, "string", label);
+  }
+  if (scene.inspection !== "available" || scene.tree === undefined) {
+    assert.equal(scene.spaces.length, 0, label);
+    return;
+  }
+  const referenced = new Set();
+  const visit = (node) => {
+    referenced.add(node.space ?? "layout");
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(scene.tree);
+  const closed = new Set();
+  for (const id of referenced) {
+    let cursor = id;
+    const guard = new Set();
+    while (cursor !== undefined && !closed.has(cursor)) {
+      assert.equal(guard.has(cursor), false, `${label} parent cycle ${cursor}`);
+      guard.add(cursor);
+      const descriptor = byId.get(cursor);
+      assert.ok(descriptor, `${label} missing descriptor for ${cursor}`);
+      closed.add(cursor);
+      cursor =
+        descriptor.parent.status === "known" ? descriptor.parent.id : undefined;
+    }
+  }
+  for (const id of byId.keys())
+    assert.equal(closed.has(id), true, `${label} extra space ${id}`);
 }
 
 /** A geometry value with a fractional part cannot come from the 10px stub measurer. */
@@ -1236,6 +1331,8 @@ async function proveFlatBoxes() {
       0,
       `flat boxes have no error diagnostic: ${quiet.stderr}`,
     );
+    const quietDocument = JSON.parse(quiet.stdout);
+    assertInspectionSchema(quietDocument, "box quiet --fail-on");
     assert.equal(
       stateA.document.diagnostics.some((entry) => entry.severity === "error"),
       false,
@@ -1282,6 +1379,7 @@ async function proveFlatBoxes() {
     assert.equal(failOn.code, 1, failOn.stderr);
     assert.match(failOn.stderr, /error diagnostic/);
     const failedDocument = JSON.parse(failOn.stdout);
+    assertInspectionSchema(failedDocument, "box --fail-on");
     assert.ok(
       failedDocument.diagnostics.some(
         (entry) =>
@@ -2095,6 +2193,8 @@ async function proveFlatImages() {
       "error",
     ]);
     assert.equal(quiet.code, 0, quiet.stderr);
+    const quietDocument = JSON.parse(quiet.stdout);
+    assertInspectionSchema(quietDocument, "image quiet --fail-on");
 
     vite = await createProofServer({
       port: IMAGE_PORT,
@@ -4890,8 +4990,15 @@ async function proveNativeSurfaces() {
       assert.equal(records.length, SURFACE_CARDS.length, label);
       const world = nodeById(scene.tree, "world-card");
       const overlay = nodeById(scene.tree, "overlay-card");
-      assert.ok(scene.spaces.includes(world.space), label);
-      assert.ok(scene.spaces.includes(overlay.space), label);
+      assertSpaceClosure(scene, label);
+      const worldSpace = spaceDescriptor(scene.spaces, world.space, label);
+      const overlaySpace = spaceDescriptor(scene.spaces, overlay.space, label);
+      assert.equal(worldSpace.kind, "world", label);
+      assert.equal(overlaySpace.kind, "composition-overlay", label);
+      assert.equal(worldSpace.parent.status, "known", label);
+      assert.equal(overlaySpace.parent.status, "known", label);
+      spaceDescriptor(scene.spaces, worldSpace.parent.id, label);
+      spaceDescriptor(scene.spaces, overlaySpace.parent.id, label);
       const leaves = assertFullSurfaceReport(scene, atB, label);
       return {
         clock: scene.clock,
@@ -5945,7 +6052,7 @@ try {
     "1.5",
   ]);
   const { document } = overlap;
-  assert.equal(document.schemaVersion, 1);
+  assertInspectionSchema(document, "overlap");
   assert.match(document.packageVersion, /^\d+\.\d+\.\d+/);
   assert.equal(document.project.name, "G1b inspection consumer");
   assert.deepEqual(document.time, { requested: 1.5, effective: 1.5 });
@@ -5972,25 +6079,25 @@ try {
       hasFractionalGeometry(scene.tree),
       `${scene.scope} geometry must come from the real Inter font, not the integer stub`,
     );
-    // Published spaces are the ones the tree actually uses, not a fixed guess.
-    const used = new Set();
-    const collect = (node) => {
-      used.add(node.space ?? "layout");
-      node.children.forEach(collect);
-    };
-    collect(scene.tree);
-    assert.deepEqual([...scene.spaces].sort(), [...used].sort(), scene.scope);
+    // Descriptor closure of this scope's node.space strings. Kind is a field, not a path suffix.
+    assertSpaceClosure(scene, scene.scope);
   }
 
-  // The first scene embeds a Composition, so it must publish a second, scoped space.
+  // The first scene embeds a Composition, so it must publish layout plus that world's descriptor.
   const firstSpaces = first.spaces;
-  assert.equal(firstSpaces.length, 2, `nested space missing: ${firstSpaces}`);
-  assert.equal(firstSpaces[0], "layout");
-  assert.match(
-    firstSpaces[1],
-    /\/world$/,
-    "the nested space extends the composition path",
+  assert.equal(
+    firstSpaces.length,
+    2,
+    `nested space missing: ${JSON.stringify(firstSpaces)}`,
   );
+  assertLayoutSpace(firstSpaces[0], first.scope);
+  const nestedSpace = firstSpaces[1];
+  assert.equal(nestedSpace.kind, "world", first.scope);
+  assert.deepEqual(nestedSpace.parent, { status: "known", id: "layout" });
+  assertMappingUnavailable(nestedSpace.mapping, first.scope);
+  const worldStack = nodeById(first.tree, "world-stack");
+  assert.equal(worldStack.space, nestedSpace.id);
+  assert.notEqual(worldStack.space, "layout");
   findings.nestedSpaces = firstSpaces;
 
   // Nested authored IDs are targetable by ID, and their diagnostics resolve in-space.
@@ -6169,6 +6276,7 @@ try {
   assert.equal(rawScene.scope, "scene:raw");
   assert.equal(rawScene.inspection, "unavailable");
   assert.equal(rawScene.tree, undefined, "a raw scene is never an empty tree");
+  assert.deepEqual(rawScene.spaces, []);
   assert.match(rawScene.unavailable, /does not implement/);
   assert.equal(
     rawInspection.document.diagnostics[0].code,
@@ -6226,8 +6334,11 @@ try {
   ]);
   assert.equal(failOn.code, 1, "an error diagnostic must fail --fail-on error");
   assert.match(failOn.stderr, /error diagnostic/);
-  assert.doesNotThrow(
-    () => JSON.parse(failOn.stdout),
+  const failedDocument = JSON.parse(failOn.stdout);
+  assertInspectionSchema(failedDocument, "--fail-on error");
+  assert.deepEqual(
+    failedDocument,
+    document,
     "--fail-on still publishes the full document",
   );
   const withoutFailOn = await run([
@@ -6238,6 +6349,13 @@ try {
     "1.5",
   ]);
   assert.equal(withoutFailOn.code, 0, "plain diagnostics keep exit 0");
+  const withoutFailOnDocument = JSON.parse(withoutFailOn.stdout);
+  assertInspectionSchema(withoutFailOnDocument, "without --fail-on");
+  assert.deepEqual(
+    withoutFailOnDocument,
+    document,
+    "omitting --fail-on publishes the same document",
+  );
 
   // -------- 5. --target keeps ancestor and space context, fails on bad targets --------
   const targeted = await inspectJson([
@@ -6252,7 +6370,15 @@ try {
   assert.equal(targeted.document.scenes.length, 1);
   assert.equal(targeted.document.scenes[0].scope, "scene:first");
   assert.deepEqual(targeted.document.scenes[0].clock, first.clock);
-  assert.deepEqual(targeted.document.scenes[0].spaces, ["layout"]);
+  assert.deepEqual(targeted.document.scenes[0].spaces, [
+    {
+      id: "layout",
+      kind: "layout",
+      parent: { status: "unavailable", reason: LAYOUT_ROOT_PARENT },
+      mapping: { status: "unavailable", reason: SPACE_MAPPING_REASON },
+    },
+  ]);
+  assertSpaceClosure(targeted.document.scenes[0], "chips target");
   assert.deepEqual(targeted.document.time, document.time);
   assert.deepEqual(targeted.document.target, {
     scope: "scene:first",
@@ -6313,9 +6439,12 @@ try {
   ]);
   assert.equal(written.code, 0, written.stderr);
   assert.equal(written.stdout, "", "--output keeps stdout clean");
-  const savedBytes = (await readFile(reportPath, "utf8")).length;
+  const saved = await readFile(reportPath, "utf8");
+  const savedBytes = saved.length;
+  const savedDocument = JSON.parse(saved);
+  assertInspectionSchema(savedDocument, "--output");
   assert.deepEqual(
-    JSON.parse(await readFile(reportPath, "utf8")),
+    savedDocument,
     document,
     "the file must match stdout content",
   );
@@ -6369,8 +6498,10 @@ try {
     before.size,
     "--force must actually replace the file",
   );
-  const leftovers = (await readFile(reportPath, "utf8")).length;
-  assert.equal(leftovers > 0, true);
+  const forcedText = await readFile(reportPath, "utf8");
+  assert.equal(forcedText.length > 0, true);
+  const forcedDocument = JSON.parse(forcedText);
+  assertInspectionSchema(forcedDocument, "--force");
   findings.fileBytes = savedBytes;
 
   // -------- 7. Exit codes and cancellation --------
@@ -6401,8 +6532,10 @@ try {
     0,
     `inspect must reuse existing project discovery: ${discovered.stderr}`,
   );
+  const discoveredDocument = JSON.parse(discovered.stdout);
+  assertInspectionSchema(discoveredDocument, "project discovery");
   assert.equal(
-    JSON.parse(discovered.stdout).project.name,
+    discoveredDocument.project.name,
     "G1b inspection consumer",
   );
   findings.discovery = "current directory, matching frame/export";

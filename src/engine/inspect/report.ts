@@ -22,6 +22,7 @@ import type {
   FrameInspection,
   InspectedLayer,
   InspectionClock,
+  TransitionDraw,
 } from "../render/renderer";
 
 /** Bumped whenever a published field changes meaning; consumers must reject unknowns. */
@@ -170,13 +171,72 @@ export interface InspectionScene {
    * `surfaceProjection` for those quads: rect-only, Group-only, and Composition-only chains
    * keep `rect-clipped-draw-quad`, and any non-rect Clip publishes `outer-clipped-draw-quad`.
    * Composition adds no mask shape. That is still not mask pixels, fragment visibility,
-   * occlusion, or a GPU rounding guarantee. Stage overlay, project overlay, and transition
-   * output stay unavailable. This is not completed G3.
+   * occlusion, or a GPU rounding guarantee. Output projection for this unit is
+   * `finalPaintRecords`. Stage overlay stays unrecorded. This is not completed G3.
    */
   readonly paintRecords?: readonly InspectionPaintRecord[];
+  /**
+   * Absent when the provider supplied no `paintRecords`, or when this unit cannot project the
+   * draw. `[]` means the collection was present and empty. Output-pixel scene contribution, not
+   * leaf opacity or pixel proof. Each record's bounds are the ideal projected recorded draw quad,
+   * not fragment coverage or the full clamp-to-edge sampling contribution.
+   */
+  readonly finalPaintRecords?: readonly FinalPaintRecord[];
+  readonly finalProjection: FinalProjection;
   /** Legacy `EvaluatedFrame.warnings` strings, preserved verbatim and in order. */
   readonly warnings?: readonly string[];
 }
+export type FinalProjection =
+  | { readonly status: "available"; readonly scope: "recorded-leaves" }
+  | { readonly status: "unavailable"; readonly reason: string };
+/**
+ * Output-pixel contribution of one recorded leaf. `sceneWeight` is the mix factor, not leaf opacity.
+ * `bounds` is the ideal projected recorded draw quad clipped to the shader-selected rectangle, not
+ * fragment coverage or the full sampling contribution. `accuracy: "exact-rectangle"` names only
+ * that ideal quad. Clamp-to-edge sampling can contribute outside it; this record does not include
+ * that raster coverage.
+ */
+export type FinalPaintRecord = {
+  readonly path: string;
+  readonly inspection?: NonNullable<InspectionPaintRecord["inspection"]>;
+  readonly paintRole: "content" | "background";
+  readonly space: "output-pixels";
+  readonly resolution: readonly [number, number];
+  readonly sceneWeight: number;
+} & (
+  | {
+      readonly kind: "box";
+      readonly accuracy: "exact-rectangle" | "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance: "projected-box-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
+    }
+  | {
+      readonly kind: "text";
+      readonly accuracy: "exact-rectangle" | "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance: "projected-text-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
+    }
+  | {
+      readonly kind: "media";
+      readonly accuracy: "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance:
+        | "projected-image-draw-quad"
+        | "projected-video-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
+    }
+  | {
+      readonly kind: string;
+      readonly accuracy: "unavailable";
+      readonly unsupported: string;
+      readonly geometryVisible: false;
+    }
+);
 /** Matching node of an exact `--target` filter, with its ancestor context retained. */
 export interface InspectionTargetResult {
   readonly scope: string;
@@ -203,7 +263,8 @@ export interface InspectionCapability {
     readonly paint: "partial";
   };
   readonly transitions: {
-    readonly projection: "unavailable";
+    /** `partial` is recorded-leaf output only. All built-ins are covered there; not full visibility, not custom, and not a GPU rounding guarantee. */
+    readonly projection: "partial" | "unavailable";
     readonly reason: string;
   };
 }
@@ -1411,6 +1472,521 @@ export function paintRecord(
     ...projected,
   };
 }
+/** Frames with no projectable layer keep this byte-for-byte so existing budgets stay put. */
+const TRANSITION_UNAVAILABLE_REASON =
+  "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, occlusion, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. A tagged Clip, Group, or nested authoring Composition chain records the outer draw quad, not mask pixels or fragment coverage. Composition adds no mask shape and is not a World or Overlay boundary. Stage overlay, project overlay, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.";
+const TRANSITION_PARTIAL_REASON =
+  "Recorded-leaf output projection is partial, not full visibility and not a GPU rounding guarantee. All built-ins are covered at recorded-leaf level. Direct, crossfade, and shared kind-0 leaves use the uploaded float32 mix factor and an identity clip to the output viewport. Zoom uses that mix factor with a center scale. Slide and wipe use weight 1 inside the shader-selected region and 0 where that leaf is absent; that is not the crossfade or zoom mix factor. sceneWeight is potential scene contribution, not leaf opacity, glyph ink, media alpha, occlusion, fragment visibility, or a GPU rounding guarantee. Conservative bounds stay conservative. Published bounds are the ideal projected recorded draw quad, not fragment coverage or the full sampling contribution. accuracy exact-rectangle names only that ideal quad. Clamp-to-edge sampling can contribute outside it; these bounds do not include that raster coverage. Custom shaders are not projected. Stage overlay remains unrecorded. Project overlay is identity only when its provider recorded paint, using the project clock and no scene mix. G3 is not complete.";
+const FINAL_UNCAPTURED =
+  "Transition draw was not captured, so output projection is not published.";
+const FINAL_SCENE =
+  "Scene inspection is unavailable, so transition output is not projected.";
+const FINAL_CUSTOM =
+  "Custom transition output is not projected; pre-transition paint records remain available. G3 is not complete.";
+const FINAL_BRANCH =
+  "Uploaded transition controls do not match a rectangular recorded-leaf branch, so output projection is not published.";
+const FINAL_OVERFLOW =
+  "Transition projection is not finite, so output projection is not published.";
+const FINAL_CONTROLS =
+  "Uploaded transition controls are not finite, so output projection is not published.";
+const FINAL_OUTPUT =
+  "Output resolution is not a finite viewport, so output projection is not published.";
+const FINAL_ENDPOINT =
+  "Scene is not an endpoint of the captured transition, so output projection is not published.";
+const FINAL_KIND =
+  "Transition kind is not a recorded-leaf projection this unit can publish.";
+const FINAL_DRAW_READ =
+  "Transition draw metadata could not be read, so output projection is not published.";
+const FINAL_OMITTED =
+  "Scope was omitted by the target filter, so output projection is not published.";
+const FINAL_PAINT_RECORDS_STRUCTURE = `,"finalPaintRecords":[]`.length;
+const FINAL_PROJECTION_PREFIX = `,"finalProjection":`.length;
+const DRAW_KINDS = [
+  "direct",
+  "crossfade",
+  "shared",
+  "slide",
+  "zoom",
+  "wipe",
+  "custom",
+] as const;
+type DrawRead =
+  | { readonly ok: true; readonly draw?: TransitionDraw }
+  | { readonly ok: false; readonly reason: string };
+type OutputRect = {
+  readonly x0: number;
+  readonly y0: number;
+  readonly x1: number;
+  readonly y1: number;
+};
+type AvailablePlan = {
+  readonly status: "available";
+  readonly weight: number;
+  readonly output: readonly [number, number];
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly translateX: number;
+  readonly translateY: number;
+  readonly selection: OutputRect;
+  /** Slide/wipe: 1 inside the selection, 0 where absent. Not a mix factor. */
+  readonly mask: boolean;
+};
+type LayerPlan =
+  | AvailablePlan
+  | { readonly status: "unavailable"; readonly reason: string };
+function chargeJson(
+  budget: InspectionBudget | undefined,
+  prefix: number,
+  value: unknown,
+) {
+  budget?.charge(
+    prefix + new TextEncoder().encode(JSON.stringify(value)).length,
+  );
+}
+function finishProjection(
+  projection: FinalProjection,
+  budget?: InspectionBudget,
+): FinalProjection {
+  chargeJson(budget, FINAL_PROJECTION_PREFIX, projection);
+  return projection;
+}
+function finitePair(value: unknown): readonly [number, number] | undefined {
+  if (!isArray(value)) return undefined;
+  const count = reading(() => value.length);
+  if (count !== 2) return undefined;
+  const width = reading(() => value[0]);
+  const height = reading(() => value[1]);
+  if (typeof width !== "number" || typeof height !== "number") return undefined;
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width < 0 ||
+    height < 0
+  )
+    return undefined;
+  return [width, height];
+}
+function finiteUniform(
+  value: unknown,
+): readonly [number, number, number, number] | undefined {
+  if (!isArray(value)) return undefined;
+  const count = reading(() => value.length);
+  if (count !== 4) return undefined;
+  const uniform = [0, 1, 2, 3].map((index) => reading(() => value[index]));
+  if (uniform.some((entry) => typeof entry !== "number" || !Number.isFinite(entry)))
+    return undefined;
+  // Finite JS values such as 1e100 become non-finite in float32; reject those too.
+  const rounded = [
+    Math.fround(uniform[0] as number),
+    Math.fround(uniform[1] as number),
+    Math.fround(uniform[2] as number),
+    Math.fround(uniform[3] as number),
+  ] as const;
+  if (rounded.some((entry) => !Number.isFinite(entry))) return undefined;
+  return rounded;
+}
+/** Whitelist the renderer-owned draw. Direct draws do not read uniforms or shaders. */
+function readTransitionDraw(frame: FrameInspection): DrawRead {
+  let raw: unknown;
+  try {
+    raw = (frame as { transitionDraw?: unknown }).transitionDraw;
+  } catch (error) {
+    return { ok: false, reason: `${FINAL_DRAW_READ} ${describe(error)}` };
+  }
+  if (raw === undefined) return { ok: true };
+  if (typeof raw !== "object" || raw === null)
+    return { ok: false, reason: FINAL_KIND };
+  try {
+    const kind = (raw as { kind?: unknown }).kind;
+    if (
+      typeof kind !== "string" ||
+      !(DRAW_KINDS as readonly string[]).includes(kind)
+    )
+      return { ok: false, reason: FINAL_KIND };
+    const output = finitePair((raw as { output?: unknown }).output);
+    if (!output) return { ok: false, reason: FINAL_OUTPUT };
+    if (kind === "direct") return { ok: true, draw: { kind: "direct", output } };
+    const uniform = finiteUniform((raw as { uniform?: unknown }).uniform);
+    if (!uniform) return { ok: false, reason: FINAL_CONTROLS };
+    if (kind === "custom") return { ok: true, draw: { kind, output, uniform } };
+    if (
+      kind === "crossfade" ||
+      kind === "shared" ||
+      kind === "slide" ||
+      kind === "zoom" ||
+      kind === "wipe"
+    ) {
+      const outgoingId = (raw as { outgoingId?: unknown }).outgoingId;
+      const incomingId = (raw as { incomingId?: unknown }).incomingId;
+      if (typeof outgoingId !== "string" || typeof incomingId !== "string")
+        return { ok: false, reason: FINAL_ENDPOINT };
+      return {
+        ok: true,
+        draw: { kind, output, uniform, outgoingId, incomingId },
+      };
+    }
+    return { ok: false, reason: FINAL_KIND };
+  } catch (error) {
+    return { ok: false, reason: `${FINAL_DRAW_READ} ${describe(error)}` };
+  }
+}
+function finiteF32(value: number): number | undefined {
+  const rounded = Math.fround(value);
+  return Number.isFinite(rounded) ? rounded : undefined;
+}
+function fullSelection(output: readonly [number, number]): OutputRect {
+  return { x0: 0, y0: 0, x1: output[0], y1: output[1] };
+}
+function emptySelection(): OutputRect {
+  return { x0: 0, y0: 0, x1: 0, y1: 0 };
+}
+function identityPlan(
+  weight: number,
+  output: readonly [number, number],
+): AvailablePlan {
+  return {
+    status: "available",
+    weight,
+    output,
+    scaleX: 1,
+    scaleY: 1,
+    translateX: 0,
+    translateY: 0,
+    selection: fullSelection(output),
+    mask: false,
+  };
+}
+/** Same cuts as the compositor fragment `if`s. Undefined is the kind-0 mix, not a provider tag. */
+function shaderBranch(kind: number): "wipe" | "slide" | "zoom" | undefined {
+  if (kind > 0.5 && kind < 1.5) return "wipe";
+  if (kind > 1.5 && kind < 2.5) return "slide";
+  if (kind > 2.5) return "zoom";
+  return undefined;
+}
+function endpointRole(
+  id: string,
+  outgoingId: string,
+  incomingId: string,
+): "outgoing" | "incoming" | undefined {
+  if (outgoingId === incomingId) return undefined;
+  if (id === incomingId) return "incoming";
+  if (id === outgoingId) return "outgoing";
+  return undefined;
+}
+function axisSpan(min: number, max: number): { min: number; max: number } {
+  return max > min ? { min, max } : { min: 0, max: 0 };
+}
+/** Closed bounds of the positive-area complement. A zero-area mask does not cover. */
+function complementRect(mask: OutputRect, output: readonly [number, number]): OutputRect | undefined {
+  const width = output[0];
+  const height = output[1];
+  if (!(mask.x1 > mask.x0 && mask.y1 > mask.y0))
+    return { x0: 0, y0: 0, x1: width, y1: height };
+  if (mask.x0 <= 0 && mask.y0 <= 0 && mask.x1 >= width && mask.y1 >= height)
+    return emptySelection();
+  const fullWidth = mask.x0 <= 0 && mask.x1 >= width;
+  const fullHeight = mask.y0 <= 0 && mask.y1 >= height;
+  if (fullHeight && mask.x0 <= 0 && mask.x1 < width)
+    return { x0: mask.x1, y0: 0, x1: width, y1: height };
+  if (fullHeight && mask.x1 >= width && mask.x0 > 0)
+    return { x0: 0, y0: 0, x1: mask.x0, y1: height };
+  if (fullWidth && mask.y0 <= 0 && mask.y1 < height)
+    return { x0: 0, y0: mask.y1, x1: width, y1: height };
+  if (fullWidth && mask.y1 >= height && mask.y0 > 0)
+    return { x0: 0, y0: 0, x1: width, y1: mask.y0 };
+  return undefined;
+}
+function slidePlacement(
+  role: "outgoing" | "incoming",
+  progress: number,
+  dx: number,
+  dy: number,
+  output: readonly [number, number],
+): { readonly selection: OutputRect; readonly translateX: number; readonly translateY: number } | { readonly error: string } {
+  // A diagonal complement is not one rectangle; do not publish an invented AABB.
+  if (dx !== 0 && dy !== 0) return { error: FINAL_BRANCH };
+  const remaining = finiteF32(1 - progress);
+  if (remaining === undefined) return { error: FINAL_OVERFLOW };
+  const shiftX = finiteF32(dx * remaining * output[0]);
+  const shiftY = finiteF32(dy * remaining * output[1]);
+  const translateX = finiteF32(role === "outgoing" ? dx * progress * output[0] : -(shiftX ?? Number.NaN));
+  const translateY = finiteF32(role === "outgoing" ? dy * progress * output[1] : -(shiftY ?? Number.NaN));
+  if (
+    shiftX === undefined ||
+    shiftY === undefined ||
+    translateX === undefined ||
+    translateY === undefined
+  )
+    return { error: FINAL_OVERFLOW };
+  const x = axisSpan(Math.max(0, -shiftX), Math.min(output[0], output[0] - shiftX));
+  const y = axisSpan(Math.max(0, -shiftY), Math.min(output[1], output[1] - shiftY));
+  const incoming = { x0: x.min, y0: y.min, x1: x.max, y1: y.max };
+  const selection = role === "incoming" ? incoming : complementRect(incoming, output);
+  if (!selection) return { error: FINAL_BRANCH };
+  return { selection, translateX, translateY };
+}
+function wipeSelection(
+  role: "outgoing" | "incoming",
+  progress: number,
+  dx: number,
+  dy: number,
+  output: readonly [number, number],
+): OutputRect | { readonly error: string } {
+  const horizontal = Math.abs(dx) > 0.5;
+  const extent = horizontal ? output[0] : output[1];
+  const positive = dx + dy > 0;
+  let incomingMin = 0;
+  let incomingMax = 0;
+  let outgoingMin = 0;
+  let outgoingMax = extent;
+  // p=0 and p=1 are lines in the shader, not a float sliver of area.
+  if (extent === 0 || progress === 0) {
+    incomingMin = 0;
+    incomingMax = 0;
+    outgoingMin = 0;
+    outgoingMax = extent;
+  } else if (progress === 1) {
+    incomingMin = 0;
+    incomingMax = extent;
+    outgoingMin = 0;
+    outgoingMax = 0;
+  } else {
+    const mark = finiteF32(positive ? progress * extent : (1 - progress) * extent);
+    if (mark === undefined) return { error: FINAL_OVERFLOW };
+    const cut = Math.min(Math.max(mark, 0), extent);
+    if (positive) {
+      incomingMin = 0;
+      incomingMax = cut;
+      outgoingMin = cut;
+      outgoingMax = extent;
+    } else {
+      incomingMin = cut;
+      incomingMax = extent;
+      outgoingMin = 0;
+      outgoingMax = cut;
+    }
+  }
+  const span = axisSpan(
+    role === "incoming" ? incomingMin : outgoingMin,
+    role === "incoming" ? incomingMax : outgoingMax,
+  );
+  return horizontal
+    ? { x0: span.min, y0: 0, x1: span.max, y1: output[1] }
+    : { x0: 0, y0: span.min, x1: output[0], y1: span.max };
+}
+function layerPlan(drawRead: DrawRead, scope: string, id: string): LayerPlan {
+  if (!drawRead.ok) return { status: "unavailable", reason: drawRead.reason };
+  const draw = drawRead.draw;
+  if (!draw) return { status: "unavailable", reason: FINAL_UNCAPTURED };
+  if (scope === "overlay" || draw.kind === "direct")
+    return identityPlan(1, draw.output);
+  if (draw.kind === "custom")
+    return { status: "unavailable", reason: FINAL_CUSTOM };
+  if (draw.kind !== "crossfade" && draw.kind !== "shared" && draw.kind !== "slide" && draw.kind !== "zoom" && draw.kind !== "wipe")
+    return { status: "unavailable", reason: FINAL_KIND };
+  const progress = draw.uniform[0];
+  const role = endpointRole(id, draw.outgoingId, draw.incomingId);
+  if (draw.kind === "crossfade" || draw.kind === "shared") {
+    if (shaderBranch(draw.uniform[1]) !== undefined)
+      return { status: "unavailable", reason: FINAL_BRANCH };
+    if (!role) return { status: "unavailable", reason: FINAL_ENDPOINT };
+    const weight = role === "incoming" ? progress : finiteF32(1 - progress);
+    if (weight === undefined) return { status: "unavailable", reason: FINAL_OVERFLOW };
+    return identityPlan(weight, draw.output);
+  }
+  if (shaderBranch(draw.uniform[1]) !== draw.kind)
+    return { status: "unavailable", reason: FINAL_BRANCH };
+  if (!role) return { status: "unavailable", reason: FINAL_ENDPOINT };
+  if (draw.kind === "zoom") {
+    const scale = finiteF32(role === "outgoing" ? 1 + progress : 0.5 + 0.5 * progress);
+    const weight = role === "incoming" ? progress : finiteF32(1 - progress);
+    if (scale === undefined || weight === undefined)
+      return { status: "unavailable", reason: FINAL_OVERFLOW };
+    const translateX = finiteF32(((1 - scale) * draw.output[0]) / 2);
+    const translateY = finiteF32(((1 - scale) * draw.output[1]) / 2);
+    if (translateX === undefined || translateY === undefined)
+      return { status: "unavailable", reason: FINAL_OVERFLOW };
+    return {
+      status: "available",
+      weight,
+      output: draw.output,
+      scaleX: scale,
+      scaleY: scale,
+      translateX,
+      translateY,
+      selection: fullSelection(draw.output),
+      mask: false,
+    };
+  }
+  const dx = draw.uniform[2];
+  const dy = draw.uniform[3];
+  if (draw.kind === "slide") {
+    const placed = slidePlacement(role, progress, dx, dy, draw.output);
+    if ("error" in placed) return { status: "unavailable", reason: placed.error };
+    return {
+      status: "available",
+      weight: 1,
+      output: draw.output,
+      scaleX: 1,
+      scaleY: 1,
+      translateX: placed.translateX,
+      translateY: placed.translateY,
+      selection: placed.selection,
+      mask: true,
+    };
+  }
+  const selection = wipeSelection(role, progress, dx, dy, draw.output);
+  if ("error" in selection) return { status: "unavailable", reason: selection.error };
+  return {
+    status: "available",
+    weight: 1,
+    output: draw.output,
+    scaleX: 1,
+    scaleY: 1,
+    translateX: 0,
+    translateY: 0,
+    selection,
+    mask: true,
+  };
+}
+function mapBounds(
+  bounds: InspectionBounds,
+  plan: AvailablePlan,
+): { x0: number; y0: number; x1: number; y1: number } | undefined {
+  const left = Math.min(bounds.x, bounds.x + bounds.width);
+  const right = Math.max(bounds.x, bounds.x + bounds.width);
+  const top = Math.min(bounds.y, bounds.y + bounds.height);
+  const bottom = Math.max(bounds.y, bounds.y + bounds.height);
+  const xs = [left, right].map((x) => plan.scaleX * x + plan.translateX);
+  const ys = [top, bottom].map((y) => plan.scaleY * y + plan.translateY);
+  if (![...xs, ...ys].every(Number.isFinite)) return undefined;
+  return {
+    x0: Math.min(xs[0], xs[1]),
+    y0: Math.min(ys[0], ys[1]),
+    x1: Math.max(xs[0], xs[1]),
+    y1: Math.max(ys[0], ys[1]),
+  };
+}
+function clipMapped(
+  mapped: { x0: number; y0: number; x1: number; y1: number },
+  clip: OutputRect,
+): InspectionBounds | undefined {
+  const x = Math.max(mapped.x0, clip.x0);
+  const y = Math.max(mapped.y0, clip.y0);
+  const right = Math.min(mapped.x1, clip.x1);
+  const bottom = Math.min(mapped.y1, clip.y1);
+  const width = right - x;
+  const height = bottom - y;
+  if (![x, y, width, height].every(Number.isFinite)) return undefined;
+  if (width > 0 && height > 0) return { x, y, width, height };
+  return { x, y, width: 0, height: 0 };
+}
+/**
+ * Shared leaf correction is already in the record. Slide and wipe weights are
+ * regional, not the crossfade/zoom mix factor. No inverse of a zero extent.
+ */
+function projectRecord(
+  record: InspectionPaintRecord,
+  plan: AvailablePlan,
+): FinalPaintRecord | undefined {
+  const output = plan.output;
+  if (record.accuracy === "unavailable") {
+    const sceneWeight = plan.mask ? 0 : plan.weight;
+    if (!Number.isFinite(sceneWeight)) return undefined;
+    return {
+      path: record.path,
+      ...(record.inspection ? { inspection: record.inspection } : {}),
+      paintRole: record.paintRole,
+      space: "output-pixels",
+      resolution: [output[0], output[1]],
+      sceneWeight,
+      kind: record.kind,
+      accuracy: "unavailable",
+      unsupported: record.unsupported,
+      geometryVisible: false,
+    };
+  }
+  const mapped = mapBounds(record.bounds, plan);
+  if (!mapped) return undefined;
+  const bounds = plan.mask
+    ? clipMapped(mapped, plan.selection)
+    : clipMapped(mapped, {
+        x0: 0,
+        y0: 0,
+        x1: output[0],
+        y1: output[1],
+      });
+  if (!bounds) return undefined;
+  const sceneWeight = plan.mask
+    ? bounds.width > 0 && bounds.height > 0
+      ? 1
+      : 0
+    : plan.weight;
+  if (!Number.isFinite(sceneWeight)) return undefined;
+  const geometryVisible =
+    record.geometryVisible &&
+    sceneWeight !== 0 &&
+    bounds.width > 0 &&
+    bounds.height > 0;
+  const shared = {
+    path: record.path,
+    ...(record.inspection ? { inspection: record.inspection } : {}),
+    paintRole: record.paintRole,
+    space: "output-pixels" as const,
+    resolution: [output[0], output[1]] as const,
+    sceneWeight,
+  };
+  const surface =
+    record.surfaceProjection === undefined
+      ? {}
+      : { surfaceProjection: record.surfaceProjection };
+  if (record.kind === "media")
+    return {
+      ...shared,
+      kind: "media",
+      accuracy: "conservative",
+      provenance: record.provenance,
+      bounds,
+      geometryVisible,
+      ...surface,
+    };
+  if (record.kind === "text")
+    return {
+      ...shared,
+      kind: "text",
+      accuracy: record.accuracy,
+      provenance: record.provenance,
+      bounds,
+      geometryVisible,
+      ...surface,
+    };
+  return {
+    ...shared,
+    kind: "box",
+    accuracy: record.accuracy,
+    provenance: record.provenance,
+    bounds,
+    geometryVisible,
+    ...surface,
+  };
+}
+function ownedRecords<
+  T extends { readonly inspection?: { readonly nodeId: number } },
+>(
+  records: readonly T[] | undefined,
+  ownerIds: ReadonlySet<number>,
+  ownerCounts: ReadonlyMap<number, number> | undefined,
+): T[] | undefined {
+  if (records === undefined) return undefined;
+  return records.filter((record) => {
+    const nodeId = record.inspection?.nodeId;
+    return (
+      nodeId !== undefined &&
+      ownerIds.has(nodeId) &&
+      ownerCounts?.get(nodeId) === 1
+    );
+  });
+}
 /**
  * Whether a targeted report may keep one raw record: its identity must name a retained node, and
  * that ID must belong to exactly one node of the full source tree. Paths and spaces are never a
@@ -1448,6 +2024,7 @@ function readPaintRecords(
   count: number,
   budget: InspectionBudget | undefined,
   keeps: (record: unknown, where: string) => boolean,
+  onKept?: (record: InspectionPaintRecord) => void,
 ): InspectionPaintRecord[] {
   budget?.charge(PAINT_RECORDS_STRUCTURE);
   const out: InspectionPaintRecord[] = [];
@@ -1459,7 +2036,9 @@ function readPaintRecords(
     const rawRecord = reading(() => entries[index]);
     if (!keeps(rawRecord, recordWhere)) continue;
     if (separator) budget?.charge(1);
-    out.push(reading(() => paintRecord(rawRecord, recordWhere, budget)));
+    const published = reading(() => paintRecord(rawRecord, recordWhere, budget));
+    out.push(published);
+    onKept?.(published);
   }
   return out;
 }
@@ -1560,6 +2139,7 @@ interface LayerContext {
 function unavailableScene(
   context: LayerContext,
   reason: string,
+  budget?: InspectionBudget,
 ): { scene: InspectionScene; diagnostics: InspectionDiagnostic[] } {
   return {
     scene: {
@@ -1570,6 +2150,10 @@ function unavailableScene(
       inspection: "unavailable",
       unavailable: reason,
       spaces: [],
+      finalProjection: finishProjection(
+        { status: "unavailable", reason: FINAL_SCENE },
+        budget,
+      ),
     },
     diagnostics: [
       {
@@ -1591,6 +2175,7 @@ function inspectLayer(
   options?: {
     budget?: InspectionBudget;
     target?: InspectionTarget;
+    drawRead?: DrawRead;
   },
 ): {
   scene: InspectionScene;
@@ -1598,7 +2183,7 @@ function inspectLayer(
   targetMatchInfo?: { path: string };
 } {
   if (layer.frame === undefined)
-    return unavailableScene(context, layer.unavailable);
+    return unavailableScene(context, layer.unavailable, options?.budget);
   const budget = options?.budget;
   const isTargetedScope =
     options?.target && options.target.scope === context.scope;
@@ -1623,6 +2208,10 @@ function inspectLayer(
         },
         commands: [],
         warnings: [],
+        finalProjection: finishProjection(
+          { status: "unavailable", reason: FINAL_OMITTED },
+          budget,
+        ),
       },
       diagnostics: [],
     };
@@ -1791,6 +2380,22 @@ function inspectLayer(
       }
     }
 
+    const plan = layerPlan(
+      options?.drawRead ?? { ok: true },
+      context.scope,
+      context.id,
+    );
+    // Charge before paint records so a budget that already includes this field cannot
+    // read the next record with bytes that belong to the projection status.
+    const chargedProjection = finishProjection(
+      plan.status === "available"
+        ? { status: "available", scope: "recorded-leaves" }
+        : { status: "unavailable", reason: plan.reason },
+      budget,
+    );
+    const projecting = plan.status === "available" && paintEntries !== undefined;
+    const pending: FinalPaintRecord[] = [];
+    let overflow = false;
     let records: InspectionPaintRecord[] | undefined;
     if (paintEntries !== undefined) {
       records = readPaintRecords(
@@ -1802,7 +2407,38 @@ function inspectLayer(
           ? (record, recordWhere) =>
               keepsPaintRecord(record, recordWhere, ownerIds, rawOwnerCounts)
           : () => true,
+        projecting
+          ? (record) => {
+              if (overflow || plan.status !== "available") return;
+              const projected = projectRecord(record, plan);
+              if (!projected) {
+                overflow = true;
+                return;
+              }
+              pending.push(projected);
+            }
+          : undefined,
       );
+    }
+    let finalProjection = chargedProjection;
+    let finalRecords: FinalPaintRecord[] | undefined;
+    if (overflow) {
+      const rejected = {
+        status: "unavailable" as const,
+        reason: FINAL_OVERFLOW,
+      };
+      budget?.charge(
+        new TextEncoder().encode(JSON.stringify(rejected)).length -
+          new TextEncoder().encode(JSON.stringify(chargedProjection)).length,
+      );
+      finalProjection = rejected;
+    } else if (projecting) {
+      budget?.charge(FINAL_PAINT_RECORDS_STRUCTURE);
+      pending.forEach((projected, index) => {
+        if (index > 0) budget?.charge(1);
+        chargeJson(budget, 0, projected);
+      });
+      finalRecords = pending;
     }
 
     return {
@@ -1816,6 +2452,8 @@ function inspectLayer(
         tree,
         commands,
         ...(records === undefined ? {} : { paintRecords: records }),
+        ...(finalRecords === undefined ? {} : { finalPaintRecords: finalRecords }),
+        finalProjection,
         warnings,
       },
       diagnostics: layerDiagnostics,
@@ -1826,6 +2464,7 @@ function inspectLayer(
       return unavailableScene(
         context,
         `${context.name} inspection failed: ${error.message}`,
+        budget,
       );
     throw error;
   }
@@ -1850,6 +2489,7 @@ export function buildInspectionDocument(options: {
   const scenes: InspectionScene[] = [];
   const all: InspectionDiagnostic[] = [];
   let targetResult: InspectionTargetResult | undefined;
+  const drawRead = readTransitionDraw(frame);
 
   frame.scenes.forEach((inspected) => {
     const built = inspectLayer(
@@ -1864,7 +2504,7 @@ export function buildInspectionDocument(options: {
           progress: inspected.progress,
         },
       },
-      { budget, target },
+      { budget, target, drawRead },
     );
     scenes.push(built.scene);
     all.push(...built.diagnostics);
@@ -1890,7 +2530,7 @@ export function buildInspectionDocument(options: {
           progress: frame.overlay.progress,
         },
       },
-      { budget, target },
+      { budget, target, drawRead },
     );
     scenes.push(built.scene);
     all.push(...built.diagnostics);
@@ -1906,6 +2546,14 @@ export function buildInspectionDocument(options: {
   const targetScene = target
     ? scenes.find((s) => s.scope === target.scope)
     : undefined;
+  const published = targetScene ? [targetScene] : scenes;
+  const transitions = transitionCapability(published);
+  if (transitions.projection !== "unavailable")
+    budget.charge(transitions.projection.length - "unavailable".length);
+  if (transitions.reason !== TRANSITION_UNAVAILABLE_REASON)
+    budget.charge(
+      transitions.reason.length - TRANSITION_UNAVAILABLE_REASON.length,
+    );
   const document: InspectionDocument = {
     schemaVersion: INSPECTION_SCHEMA_VERSION,
     packageVersion: options.packageVersion,
@@ -1918,13 +2566,9 @@ export function buildInspectionDocument(options: {
     capability: {
       inspection: "structural-snapshot",
       geometry: { layout: "exact-rectangle", paint: "partial" },
-      transitions: {
-        projection: "unavailable",
-        reason:
-          "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, occlusion, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. A tagged Clip, Group, or nested authoring Composition chain records the outer draw quad, not mask pixels or fragment coverage. Composition adds no mask shape and is not a World or Overlay boundary. Stage overlay, project overlay, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
-      },
+      transitions,
     },
-    scenes: targetScene ? [targetScene] : scenes,
+    scenes: published,
     diagnostics: all,
     ...(targetResult ? { target: targetResult } : {}),
   };
@@ -2101,32 +2745,34 @@ export function applyInspectionTarget(
     ),
   );
   // Uniqueness is decided on the full tree, before `prune` drops the twin branches.
-  const ownerCounts = scene.paintRecords?.length
-    ? countOwnerIds(scene.tree, ownerIds)
-    : undefined;
-  const records =
-    scene.paintRecords === undefined
-      ? undefined
-      : scene.paintRecords.filter((record) => {
-          const nodeId = record.inspection?.nodeId;
-          return (
-            nodeId !== undefined &&
-            ownerIds.has(nodeId) &&
-            ownerCounts?.get(nodeId) === 1
-          );
-        });
+  const ownerCounts =
+    scene.paintRecords?.length || scene.finalPaintRecords?.length
+      ? countOwnerIds(scene.tree, ownerIds)
+      : undefined;
+  const records = ownedRecords(scene.paintRecords, ownerIds, ownerCounts);
+  const finalRecords = ownedRecords(
+    scene.finalPaintRecords,
+    ownerIds,
+    ownerCounts,
+  );
+  const retainedScene: InspectionScene = {
+    ...scene,
+    tree,
+    commands,
+    warnings,
+    spaces: collectSpaces(tree),
+    ...(records === undefined ? {} : { paintRecords: records }),
+    ...(finalRecords === undefined
+      ? {}
+      : { finalPaintRecords: finalRecords }),
+  };
   return {
     ...document,
-    scenes: [
-      {
-        ...scene,
-        tree,
-        commands,
-        warnings,
-        spaces: collectSpaces(tree),
-        ...(records === undefined ? {} : { paintRecords: records }),
-      },
-    ],
+    capability: {
+      ...document.capability,
+      transitions: transitionCapability([retainedScene]),
+    },
+    scenes: [retainedScene],
     diagnostics,
     target: {
       scope: target.scope,
@@ -2135,6 +2781,17 @@ export function applyInspectionTarget(
       matches: 1,
     },
   };
+}
+/** Published retained scenes only. A full-report capability must not survive a narrower target. */
+function transitionCapability(
+  scenes: readonly InspectionScene[],
+): InspectionCapability["transitions"] {
+  const available = scenes.some(
+    (scene) => scene.finalProjection.status === "available",
+  );
+  return available
+    ? { projection: "partial", reason: TRANSITION_PARTIAL_REASON }
+    : { projection: "unavailable", reason: TRANSITION_UNAVAILABLE_REASON };
 }
 function overBudget(
   bytes: number,

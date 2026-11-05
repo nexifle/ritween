@@ -10,6 +10,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Renderer } from "../src/engine/render/renderer";
+import { transitionUniform } from "../src/engine/render/transition";
 import { FrameSource } from "../src/engine/render/frame-source";
 import {
   Box,
@@ -149,7 +150,16 @@ function harness(overlay?: Scene) {
     context: { getCurrentTexture: () => output },
     resolution: [100, 100],
     format: "rgba8unorm",
-    transition: { targets, render: () => {}, dispose() {} },
+    transition: {
+      targets,
+      render(
+        _context: unknown,
+        transition: Parameters<typeof transitionUniform>[0],
+      ) {
+        return transitionUniform(transition);
+      },
+      dispose() {},
+    },
   });
   return {
     renderer,

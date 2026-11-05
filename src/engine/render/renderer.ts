@@ -19,6 +19,30 @@ export interface InspectionClock {
 /** One active scene of the last successful frame, in paint order. */
 export type InspectedScene = InspectionClock &
   InspectedLayer & { readonly id: string; readonly name: string };
+/**
+ * Draw path captured at submit. `uniform` is an owned copy of the four uploaded
+ * float32 controls, never the Transition object or a custom shader.
+ * Built-in draws keep the outgoing and incoming scene ids from that submit.
+ * `shared` is the kind-0 crossfade shader; leaf correction is already in the records.
+ * Custom draws do not carry endpoint ids and are not a shader capture.
+ */
+export type TransitionDraw =
+  | {
+      readonly kind: "direct";
+      readonly output: readonly [number, number];
+    }
+  | {
+      readonly kind: "crossfade" | "shared" | "slide" | "zoom" | "wipe";
+      readonly output: readonly [number, number];
+      readonly uniform: readonly [number, number, number, number];
+      readonly outgoingId: string;
+      readonly incomingId: string;
+    }
+  | {
+      readonly kind: "custom";
+      readonly output: readonly [number, number];
+      readonly uniform: readonly [number, number, number, number];
+    };
 /** Snapshot of the last successful frame; inspection is opt-in metadata, never pixels. */
 export interface FrameInspection {
   /** Time passed to the successful render call, before timeline clamping. */
@@ -27,6 +51,8 @@ export interface FrameInspection {
   readonly effectiveTime: number;
   readonly scenes: readonly InspectedScene[];
   readonly overlay?: InspectionClock & InspectedLayer;
+  /** Present only when inspection captured the draw. Absent means do not project. */
+  readonly transitionDraw?: TransitionDraw;
 }
 /** Whether a returned value carries the structural frame data inspection promises. */
 function isSceneInspection(value: unknown): value is SceneInspection {
@@ -37,6 +63,24 @@ function isSceneInspection(value: unknown): value is SceneInspection {
     Array.isArray(frame.commands) &&
     Array.isArray(frame.warnings)
   );
+}
+/** Owned float32 copy of the uploaded controls. Reads indexes only, never a shader. */
+function transitionDrawFrom(
+  type: "crossfade" | "wipe" | "slide" | "zoom" | "shared" | "custom",
+  uploaded: ArrayLike<number>,
+  resolution: readonly [number, number],
+  active: readonly { readonly entry: { readonly id: string } }[],
+): TransitionDraw {
+  const output: readonly [number, number] = [resolution[0], resolution[1]];
+  const uniform = [uploaded[0], uploaded[1], uploaded[2], uploaded[3]] as const;
+  if (type === "custom") return { kind: "custom", output, uniform };
+  return {
+    kind: type,
+    output,
+    uniform,
+    outgoingId: active[0]?.entry.id ?? "",
+    incomingId: active[1]?.entry.id ?? "",
+  };
 }
 /** Read the capability once, with its receiver, because scenes may reuse the name for other data.
  * The property read, the call, and the shape check of the returned value (whose properties may
@@ -337,6 +381,7 @@ export class Renderer {
   private captureFrame(
     evaluation: ReturnType<typeof evaluateActive>,
     requestedTime: number,
+    transitionDraw: TransitionDraw,
   ): FrameInspection {
     const scenes = evaluation.active.map((active): InspectedScene => ({
       id: active.entry.id,
@@ -354,6 +399,7 @@ export class Renderer {
         ...this.overlayTiming(evaluation.primary.time),
         ...readLayer(this.overlay, "Project overlay"),
       },
+      transitionDraw,
     };
   }
 
@@ -378,6 +424,7 @@ export class Renderer {
     attempt: number,
     requestedTime: number,
   ) {
+    let transitionDraw: TransitionDraw | undefined;
     const encoder = this.device.createCommandEncoder();
     const target = this.context.getCurrentTexture();
     const context = {
@@ -432,18 +479,30 @@ export class Renderer {
           ...(this.inspectionEnabled ? { inspection: true } : {}),
         });
       });
-      this.transition.render(
+      const uploaded = this.transition.render(
         { ...context, ...evaluation.primary },
         evaluation.transition,
       );
-    } else
-      this.scenes
-        .get(evaluation.primary.entry.id)!
-        .render({
-          ...context,
-          ...evaluation.primary,
-          ...(this.inspectionEnabled ? { inspection: true } : {}),
-        });
+      // Copy only while inspection is on. The upload array itself is the draw's one allocation.
+      if (this.inspectionEnabled)
+        transitionDraw = transitionDrawFrom(
+          evaluation.transition.type,
+          uploaded,
+          this.resolution,
+          evaluation.active,
+        );
+    } else {
+      this.scenes.get(evaluation.primary.entry.id)!.render({
+        ...context,
+        ...evaluation.primary,
+        ...(this.inspectionEnabled ? { inspection: true } : {}),
+      });
+      if (this.inspectionEnabled)
+        transitionDraw = {
+          kind: "direct",
+          output: [this.resolution[0], this.resolution[1]],
+        };
+    }
     this.overlay?.render({
       ...context,
       ...this.overlayTiming(evaluation.primary.time),
@@ -453,8 +512,12 @@ export class Renderer {
     // Capture at this frame's submit so a later preparation or scene swap cannot rewrite it. An
     // older attempt still completes (queued work stays ordered) but must not publish over a newer
     // one. The captured frame references the provider's object, so providers must not mutate it.
-    if (this.inspectionEnabled && attempt === this.attempt)
-      this.lastFrame = this.captureFrame(evaluation, requestedTime);
+    if (this.inspectionEnabled && attempt === this.attempt && transitionDraw)
+      this.lastFrame = this.captureFrame(
+        evaluation,
+        requestedTime,
+        transitionDraw,
+      );
   }
   dispose() {
     if (this.disposed) return;

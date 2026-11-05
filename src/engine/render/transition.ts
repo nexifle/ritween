@@ -179,12 +179,10 @@ export class TransitionRenderer {
   render(
     context: RenderContext,
     transition: Exclude<Transition, { type: "cut" }> & { progress: number },
-  ) {
-    context.device.queue.writeBuffer(
-      this.uniform,
-      0,
-      transitionUniform(transition),
-    );
+  ): Float32Array<ArrayBuffer> {
+    // One array for the upload. Inspection copies the four floats; do not rebuild them.
+    const uploaded = transitionUniform(transition);
+    context.device.queue.writeBuffer(this.uniform, 0, uploaded);
     const pass = context.encoder.beginRenderPass({
       colorAttachments: [
         {
@@ -204,6 +202,7 @@ export class TransitionRenderer {
     pass.setBindGroup(0, this.bind);
     pass.draw(3);
     pass.end();
+    return uploaded;
   }
   dispose() {
     this.targets.forEach((t) => t.destroy());

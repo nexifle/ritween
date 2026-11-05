@@ -24,6 +24,7 @@ export type {
   InspectedScene,
   InspectedLayer,
   InspectionClock,
+  TransitionDraw,
 } from "./engine/render/renderer";
 export { Renderer } from "./engine/render/renderer";
 export {
@@ -48,6 +49,8 @@ export type {
   InspectionLayoutNode,
   InspectionScene,
   InspectionSeverity,
+  FinalPaintRecord,
+  FinalProjection,
   InspectionTarget,
   InspectionTargetResult,
 } from "./engine/inspect/report";

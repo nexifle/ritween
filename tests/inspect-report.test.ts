@@ -136,7 +136,9 @@ test("capability states exact layout geometry and the pending paint/transition l
     paint: "partial",
   });
   assert.equal(capability.transitions.projection, "unavailable");
-  assert.match(capability.transitions.reason, /G3/);
+  assert.match(capability.transitions.reason, /Text draw quads/);
+  assert.match(capability.transitions.reason, /G3 is not complete/);
+  assert.equal(capability.geometry.paint, "partial");
 });
 
 test("a raw scene is unavailable with its reason, never an empty tree", () => {
@@ -2189,6 +2191,32 @@ test("paint records are whitelisted field by field and never read private object
   assert.equal(whitelisted.accuracy, "unavailable");
   assert.equal(whitelisted.unsupported, "text paint is not collected.");
   assert.ok(!("bounds" in whitelisted), "unavailable carries no bounds");
+  // A Text quad publishes the line-box bounds and never reads the raw text run.
+  const textQuad = Object.defineProperties(
+    record({
+      kind: "text",
+      path: "label",
+      paintRole: "content",
+      space: "scene-target-pixels",
+      resolution: [320, 180],
+      accuracy: "exact-rectangle",
+      bounds: { x: 1, y: 2, width: 20, height: 50 },
+      provenance: "projected-text-draw-quad",
+      geometryVisible: true,
+    }),
+    { text: { get: forbidden, enumerable: true } },
+  );
+  assert.deepEqual(paintRecord(textQuad, "paint"), {
+    kind: "text",
+    path: "label",
+    paintRole: "content",
+    space: "scene-target-pixels",
+    resolution: [320, 180],
+    accuracy: "exact-rectangle",
+    bounds: { x: 1, y: 2, width: 20, height: 50 },
+    provenance: "projected-text-draw-quad",
+    geometryVisible: true,
+  });
 });
 
 test("malformed paint record values and unreadable getters keep their own error kinds", () => {
@@ -2239,8 +2267,25 @@ test("malformed paint record values and unreadable getters keep their own error 
     { provenance: "layout-box" },
     /provenance must be "projected-box-draw-quad"/,
   );
+  rejected(
+    { provenance: "projected-text-draw-quad" },
+    /provenance must be "projected-box-draw-quad"/,
+  );
+  rejected(
+    { kind: "text", provenance: "projected-box-draw-quad" },
+    /provenance must be "projected-text-draw-quad"/,
+  );
+  rejected(
+    {
+      kind: "text",
+      provenance: "projected-text-draw-quad",
+      bounds: { x: 0, y: 0, width: Number.NaN, height: 10 },
+    },
+    /bounds\.width must be a finite number/,
+  );
   rejected({ geometryVisible: "yes" }, /geometryVisible must be a boolean/);
-  rejected({ kind: "text" }, /kind must be "box"/);
+  rejected({ kind: "media" }, /kind must be "box" or "text"/);
+  rejected({ kind: "group" }, /kind must be "box" or "text"/);
 
   assert.throws(
     () =>
@@ -2292,6 +2337,15 @@ test("paint record budget covers every published field before the record is buil
   const branches = {
     "geometry without identity": paintFields(),
     "geometry with identity": paintFields({ inspection: identity }),
+    "text geometry without identity": paintFields({
+      kind: "text",
+      provenance: "projected-text-draw-quad",
+    }),
+    "text geometry with identity": paintFields({
+      kind: "text",
+      provenance: "projected-text-draw-quad",
+      inspection: identity,
+    }),
     "unavailable without identity": paintFields({
       kind: "text",
       accuracy: "unavailable",
@@ -3175,6 +3229,54 @@ test("both target paths attribute paint records by owner identity, never by path
   );
 });
 
+test("target filtering keeps a Text draw quad only for a uniquely retained owner", () => {
+  const kept = paintFields({
+    kind: "text",
+    path: "root/card",
+    provenance: "projected-text-draw-quad",
+    inspection: owner(2),
+  });
+  const droppedSibling = paintFields({
+    kind: "text",
+    path: "root/sibling",
+    provenance: "projected-text-draw-quad",
+    inspection: owner(7),
+  });
+  const untagged = paintFields({
+    kind: "text",
+    path: "root/card",
+    provenance: "projected-text-draw-quad",
+  });
+  const frame = recordsFrame(twoRoomTree(), [kept, droppedSibling, untagged]);
+  const target = { scope: "scene:main", id: "target" };
+  const initial = buildInspectionDocument({
+    packageVersion: "0.0.0-test",
+    project,
+    frame,
+    target,
+  });
+  const secondPass = applyInspectionTarget(document(frame), target);
+  assert.deepEqual(recordKeys(initial.scenes[0].paintRecords!), [
+    "2|scene-target-pixels|root/card",
+  ]);
+  const published = initial.scenes[0].paintRecords![0];
+  assert.equal(published.kind, "text");
+  if (published.accuracy === "unavailable")
+    assert.fail("a retained Text quad must keep its geometry");
+  assert.equal(published.provenance, "projected-text-draw-quad");
+  assert.deepEqual(
+    initial.scenes[0].paintRecords,
+    secondPass.scenes[0].paintRecords,
+  );
+  const full = document(frame).scenes[0].paintRecords!;
+  assert.equal(
+    full.length,
+    3,
+    "an untargeted report still publishes every Text record",
+  );
+  assert.ok(!full.includes(kept as never), "published records are copies");
+});
+
 test("a duplicate node inspection ID makes its paint records unattributable on both paths", () => {
   const tree = twoRoomTree() as { children: { children: unknown[] }[] };
   // A second node carrying ID 2 outside the target's retained subtree: the ID no longer names
@@ -4024,7 +4126,11 @@ test("a paint separator is checked before the next candidate and returned when f
   });
   const filteredFrame = recordsFrame(tree, filteredRecords);
   assert.doesNotThrow(() => build(filteredFrame, one + 1));
-  assert.equal(reads.index, 1, "one spare byte is checked before the index getter");
+  assert.equal(
+    reads.index,
+    1,
+    "one spare byte is checked before the index getter",
+  );
   assert.equal(
     reads.inspection,
     1,
@@ -4086,10 +4192,7 @@ test("an ambiguous deep chain reports matches without copying ancestor arrays", 
       assert.ok(error instanceof InspectionTargetError, String(error));
       assert.match(error.message, new RegExp(`${depth} nodes have ID "same"`));
       assert.match(error.message, /clip:n0(?!\d)/);
-      assert.match(
-        error.message,
-        new RegExp(`layout:n${depth - 1}(?!\\d)`),
-      );
+      assert.match(error.message, new RegExp(`layout:n${depth - 1}(?!\\d)`));
       return true;
     },
   );

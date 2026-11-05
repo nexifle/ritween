@@ -163,8 +163,10 @@ export interface InspectionScene {
   readonly commands?: readonly InspectionCommand[];
   /**
    * Absent when the provider supplies no collection at all; `[]` when it collected and found
-   * nothing. Records are ideal projected top-level Box draw quads in `scene-target-pixels` before
-   * transition projection, never final output, fragment visibility or a GPU rounding guarantee.
+   * nothing. Records are ideal projected top-level Box and Text draw quads in
+   * `scene-target-pixels` before transition projection. A Text quad is the texture/line box,
+   * not glyph ink. Nothing here is final output, fragment visibility, or a GPU rounding
+   * guarantee. Nested Group/Composition paint stays unrecorded. This is not completed G3.
    */
   readonly paintRecords?: readonly InspectionPaintRecord[];
   /** Legacy `EvaluatedFrame.warnings` strings, preserved verbatim and in order. */
@@ -185,9 +187,10 @@ export interface InspectionCapability {
     /** Placed node rectangles from `evaluateView`, in that scene's layout space. */
     readonly layout: "exact-rectangle";
     /**
-     * `partial`: only top-level Box draw quads are recorded, as their ideal projection in
-     * `scene-target-pixels` before transition. Nothing here is final output, fragment visibility,
-     * or a GPU rounding guarantee, and nested paint stays unrecorded.
+     * `partial`: only top-level Box and Text draw quads are recorded, as their ideal projection
+     * in `scene-target-pixels` before transition. A Text quad is the texture/line box, not glyph
+     * ink. Nothing here is final output, fragment visibility, or a GPU rounding guarantee.
+     * Nested Group/Composition, clip, media, and path paint stay unrecorded. G3 is not complete.
      */
     readonly paint: "partial";
   };
@@ -1085,12 +1088,11 @@ function command(
 }
 /**
  * Whitelisted form of one `PaintRecord` (`src/authoring/renderer.ts`): the published metadata,
- * never the record's owner objects. `bounds` keeps that type's meaning — the ideal projected
- * Box draw quad in scene-target pixels, not pixel visibility or GPU rounding — and is absent
- * exactly when `accuracy` is `unavailable`.
+ * never the record's owner objects. `bounds` is the ideal projected draw quad in scene-target
+ * pixels — Box fill quad or Text texture/line box, not glyph ink, pixel visibility, or GPU
+ * rounding — and is absent exactly when `accuracy` is `unavailable`.
  */
 export type InspectionPaintRecord = {
-  readonly kind: string;
   readonly path: string;
   /** Present only when the frame was evaluated with inspection enabled. */
   readonly inspection?: {
@@ -1103,12 +1105,24 @@ export type InspectionPaintRecord = {
   readonly resolution: readonly [number, number];
 } & (
   | {
+      readonly kind: "box";
       readonly accuracy: "exact-rectangle" | "conservative";
       readonly bounds: InspectionBounds;
       readonly provenance: "projected-box-draw-quad";
       readonly geometryVisible: boolean;
     }
-  | { readonly accuracy: "unavailable"; readonly unsupported: string }
+  | {
+      readonly kind: "text";
+      readonly accuracy: "exact-rectangle" | "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance: "projected-text-draw-quad";
+      readonly geometryVisible: boolean;
+    }
+  | {
+      readonly kind: string;
+      readonly accuracy: "unavailable";
+      readonly unsupported: string;
+    }
 );
 /** JSON structure of a paint record minus its values, charged before the first field is read. */
 const PAINT_RECORD_STRUCTURE = 65;
@@ -1207,9 +1221,9 @@ export function paintRecord(
         budget,
       ),
     };
-  if (kindVal !== "box")
+  if (kindVal !== "box" && kindVal !== "text")
     throw new InspectionSerializationError(
-      `${where}.kind must be "box" when accuracy is "${accuracyVal}", received "${kindVal}": only Box draw quads have projected geometry.`,
+      `${where}.kind must be "box" or "text" when accuracy is "${accuracyVal}", received "${kindVal}": only top-level Box and Text draw quads have projected geometry.`,
     );
   const geometryVisibleVal = read(value, "geometryVisible", where);
   if (typeof geometryVisibleVal !== "boolean")
@@ -1217,6 +1231,30 @@ export function paintRecord(
       `${where}.geometryVisible must be a boolean, received ${typeof geometryVisibleVal}.`,
     );
   budget?.charge(geometryVisibleVal ? 4 : 5);
+  // The discriminator is charged by its published length, so the longer Text token is not free.
+  const geometry = {
+    path: pathVal,
+    ...(inspectionVal === undefined ? {} : { inspection: inspectionVal }),
+    paintRole: paintRoleVal,
+    space: spaceVal,
+    resolution: resolutionVal,
+    accuracy: accuracyVal,
+    geometryVisible: geometryVisibleVal,
+  };
+  if (kindVal === "text") {
+    const provenanceVal = oneOf(
+      read(value, "provenance", where),
+      ["projected-text-draw-quad"] as const,
+      `${where}.provenance`,
+    );
+    budget?.charge(provenanceVal.length + 2);
+    return {
+      ...geometry,
+      kind: "text",
+      provenance: provenanceVal,
+      bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+    };
+  }
   const provenanceVal = oneOf(
     read(value, "provenance", where),
     ["projected-box-draw-quad"] as const,
@@ -1224,11 +1262,10 @@ export function paintRecord(
   );
   budget?.charge(provenanceVal.length + 2);
   return {
-    ...identity,
-    accuracy: accuracyVal,
-    bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+    ...geometry,
+    kind: "box",
     provenance: provenanceVal,
-    geometryVisible: geometryVisibleVal,
+    bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
   };
 }
 /**
@@ -1741,7 +1778,7 @@ export function buildInspectionDocument(options: {
       transitions: {
         projection: "unavailable",
         reason:
-          "Built-in transition projection and paint geometry are pending G3; inspect a non-overlapping time for exact results.",
+          "Top-level Box and Text draw quads are ideal pre-transition projections in scene-target pixels, not glyph ink, fragment visibility, or GPU rounding. Nested Group and Composition paint, clip, media, path, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
       },
     },
     scenes: targetScene ? [targetScene] : scenes,

@@ -83,14 +83,15 @@ const MAX_TEXT_ENTRIES = 128;
  * One paint record for an internal collector. `bounds` is the projected draw quad: the
  * mathematical image of the float32 uniforms the renderer uploaded, computed here in binary64.
  * It is not a pixel bound and not a model of GPU rounding, so it never proves which fragments
- * the shader painted: radius, stroke width, color alpha, antialiasing, scissor, occlusion, and
- * compositing all live inside that quad. Shared-element corrections are already part of the draw
- * camera, so `space` stays the pre-transition scene target, not final transition output.
+ * the shader painted. For Text the quad is the uploaded texture/line box before transition,
+ * not glyph ink. Radius, stroke, color alpha, antialiasing, scissor, occlusion, and compositing
+ * all live inside that quad. Shared-element corrections are already part of the draw camera, so
+ * `space` stays the pre-transition scene target, not final transition output.
  * `accuracy` is the discriminant: `unavailable` means no rectangle this collector can honestly
- * record, so coverage stays partial instead of claiming the paint is out of frame.
+ * record, so coverage stays partial instead of claiming the paint is out of frame. Nested
+ * Group/Composition paint is not forwarded. This is not a completed G3 projection.
  */
 export type PaintRecord = {
-  readonly kind: DrawCommand["kind"];
   readonly path: string;
   /** Present only when the frame was evaluated with inspection enabled. */
   readonly inspection?: InspectionIdentity;
@@ -99,6 +100,7 @@ export type PaintRecord = {
   readonly resolution: readonly [number, number];
 } & (
   | {
+      readonly kind: "box";
       /**
        * `exact-rectangle` when the ideal projection keeps the quad axis-aligned; `conservative`
        * carries its AABB. Neither encloses GPU rounding.
@@ -115,6 +117,16 @@ export type PaintRecord = {
       readonly unsupported?: never;
     }
   | {
+      readonly kind: "text";
+      readonly accuracy: "exact-rectangle" | "conservative";
+      /** Ideal projected texture/line-box AABB, not glyph ink or a raster-texture pixel size. */
+      readonly bounds: Bounds;
+      readonly provenance: "projected-text-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly unsupported?: never;
+    }
+  | {
+      readonly kind: DrawCommand["kind"];
       readonly accuracy: "unavailable";
       readonly unsupported: string;
       readonly bounds?: never;
@@ -194,9 +206,9 @@ function paintRecord(
     accuracy: "unavailable",
     unsupported: reason,
   });
-  if (command.kind !== "box")
+  if (command.kind !== "box" && command.kind !== "text")
     return unsupported(
-      `${command.kind} paint is not collected; only top-level Box draw quads are.`,
+      `${command.kind} paint is not collected; only top-level Box and Text draw quads are.`,
     );
   // Only the fields quad projection and `geometryVisible` read: radius, stroke, colors, UV,
   // padding, and texture flags never change either.
@@ -258,13 +270,31 @@ function paintRecord(
       `draw quad is not finite: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  return {
-    ...identity,
-    accuracy:
-      projected.accuracy === "exact" ? "exact-rectangle" : "conservative",
+  const accuracy: "exact-rectangle" | "conservative" =
+    projected.accuracy === "exact" ? "exact-rectangle" : "conservative";
+  const paintRole: "content" | "background" = command.paintRole ?? "content";
+  const shared = {
+    path: command.path,
+    ...(command.inspection ? { inspection: { ...command.inspection } } : {}),
+    paintRole,
+    space: "scene-target-pixels" as const,
+    resolution,
+    accuracy,
     bounds: projected.bounds,
-    provenance: "projected-box-draw-quad",
     geometryVisible: projected.visible,
+  };
+  // Provenance names which draw this uniform block was. Text uses the same uploaded `b`
+  // as the texture quad (line box), not measured glyph advances.
+  if (command.kind === "text")
+    return {
+      ...shared,
+      kind: "text" as const,
+      provenance: "projected-text-draw-quad" as const,
+    };
+  return {
+    ...shared,
+    kind: "box" as const,
+    provenance: "projected-box-draw-quad" as const,
   };
 }
 

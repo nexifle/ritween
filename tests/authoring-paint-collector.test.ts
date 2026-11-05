@@ -1,10 +1,11 @@
 /**
- * Internal flat-Box paint collector on the actual `ViewRenderer`.
+ * Internal flat Box and Text paint collector on the actual `ViewRenderer`.
  *
  * Records are asserted against the uniforms the renderer really uploaded, never against a
  * second projection implementation: the fixture reads each command's 144-byte uniform block
  * and replays the vertex-shader placement over those float32 fields in binary64. That replay is
- * the ideal placement of the packed uniforms, not a model of GPU rounding.
+ * the ideal placement of the packed uniforms, not a model of GPU rounding. A Text quad is that
+ * uploaded line box, not glyph ink or the raster texture's pixel size.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -12,8 +13,11 @@ import { ViewRenderer, type PaintRecord } from "../src/authoring/renderer";
 import {
   Box,
   Camera,
+  Composition,
   Group,
+  Path,
   Text,
+  World,
   ZStack,
   evaluateCamera,
   evaluateView,
@@ -388,23 +392,40 @@ test("non-Box paints and surfaces report unsupported instead of forwarding into 
       Group([Box({ width: 5, height: 5, fill: "#654321" }).id("nested")]).id(
         "surface",
       ),
-      Text("hi").id("label"),
+      Composition(
+        World(() => Text("inside").id("inner-label"), { size: [40, 20] }),
+      ).id("world"),
+      Path([["M", 0, 0], ["L", 10, 0], ["L", 10, 10], ["Z"]], {
+        width: 10,
+        height: 10,
+        fill: "#111111",
+      }).id("mark"),
     ]);
     const { frame, records } = await renderOnce(view);
     assert.equal(records.length, frame.commands.length);
     const byPath = new Map(records.map((record) => [record.path, record]));
     const surface = byPath.get("root/surface");
-    const label = byPath.get("root/label");
+    const world = byPath.get("root/world");
+    const mark = byPath.get("root/mark");
     assert.equal(surface?.accuracy, "unavailable");
     assert.equal(surface?.kind, "group");
     if (surface?.accuracy !== "unavailable")
       return assert.fail("expected a group");
-    assert.match(surface.unsupported, /not collected/);
-    assert.equal(label?.kind, "text");
-    assert.equal(label?.accuracy, "unavailable");
-    // The nested Box renders inside a forked renderer that receives no collector.
+    assert.match(surface.unsupported, /group paint is not collected/);
+    assert.equal(world?.kind, "composition");
+    assert.equal(world?.accuracy, "unavailable");
+    if (world?.accuracy !== "unavailable")
+      return assert.fail("expected a composition");
+    assert.match(world.unsupported, /not collected/);
+    assert.equal(mark?.kind, "path");
+    assert.equal(mark?.accuracy, "unavailable");
+    // Nested Text renders inside a forked renderer that receives no collector.
     assert.equal(byPath.has("root/surface/nested"), false);
-    assert.equal(records.length, 3);
+    assert.equal(
+      records.some((record) => record.path.includes("inner-label")),
+      false,
+    );
+    assert.equal(records.length, 4);
   });
 });
 
@@ -590,5 +611,158 @@ test("records snapshot inspection and resolution against later source mutation",
     assert.equal(surface.accuracy, "unavailable");
     assert.deepEqual(surface.resolution, [100, 100]);
     assert.equal(surface.inspection?.id >= 0, true);
+  });
+});
+
+function textCommand(frame: EvaluatedFrame) {
+  const command = frame.commands.find((entry) => entry.kind === "text");
+  assert.ok(command && command.kind === "text", "expected one text command");
+  return command;
+}
+
+test("collector projects a top-level Text quad from the uploaded line box, not glyph measures", async () => {
+  await withGpuGlobals(async () => {
+    const view = ZStack([Text("aa\nb").id("label")]);
+    const rendered = await renderOnce(view);
+    const command = textCommand(rendered.frame);
+    assert.equal(rendered.records.length, rendered.frame.commands.length);
+    assert.equal(rendered.records.length, 1);
+    assert.ok(command.text.lines.length > 1);
+    assert.ok(command.text.lines.join("").length > 1);
+    const record = quadRecord(rendered.records[0], "label");
+    assert.equal(record.kind, "text");
+    assert.equal(record.provenance, "projected-text-draw-quad");
+    assert.equal(record.accuracy, "exact-rectangle");
+    assert.equal(record.geometryVisible, true);
+    assert.equal(record.space, "scene-target-pixels");
+    assertQuad(record.bounds, rendered.uniforms[0], "label");
+    const uploadedWidth = rendered.uniforms[0][2];
+    const uploadedHeight = rendered.uniforms[0][3];
+    const measuredSum = command.text.widths.reduce(
+      (sum, width) => sum + width,
+      0,
+    );
+    assert.equal(uploadedWidth, Math.fround(command.bounds.width));
+    assert.equal(uploadedHeight, Math.fround(command.bounds.height));
+    assert.notEqual(
+      uploadedWidth,
+      measuredSum,
+      "the quad is not the sum of line advances",
+    );
+    assert.notEqual(
+      uploadedWidth,
+      Math.min(...command.text.widths),
+      "the quad is not the shortest measured line",
+    );
+    assert.notEqual(uploadedHeight, 20, "the quad is not the canvas font box");
+    assert.equal(record.bounds.width, uploadedWidth);
+    assert.equal(record.bounds.height, uploadedHeight);
+    const plain = await renderOnce(view, { collect: false });
+    assert.deepEqual(plain.uniforms, rendered.uniforms);
+    const outlined = await renderOnce(view, { debug: true });
+    assert.equal(outlined.records.length, outlined.frame.commands.length);
+    assert.ok(outlined.draws > outlined.records.length);
+  });
+});
+
+test("Text quads follow translation, negative scale, rotated cameras, and zero opacity", async () => {
+  await withGpuGlobals(async () => {
+    const moved = await renderOnce(
+      ZStack([Text("hi").offset(12, -4).id("moved")]),
+    );
+    const movedRecord = quadRecord(moved.records[0], "moved text");
+    assert.equal(movedRecord.provenance, "projected-text-draw-quad");
+    assertQuad(movedRecord.bounds, moved.uniforms[0], "moved text");
+    assert.equal(moved.uniforms[0][6], Math.fround(12));
+    assert.equal(movedRecord.bounds.x, Math.fround(12));
+
+    const mirrored = await renderOnce(
+      ZStack([Text("hi").scale(-2, 3, [0, 0]).id("mirrored")]),
+    );
+    const mirroredRecord = quadRecord(mirrored.records[0], "mirrored text");
+    assertQuad(mirroredRecord.bounds, mirrored.uniforms[0], "mirrored text");
+    assert.equal(mirroredRecord.accuracy, "exact-rectangle");
+    assert.ok(
+      mirroredRecord.bounds.width > 0 && mirroredRecord.bounds.height > 0,
+    );
+    assert.ok(
+      mirroredRecord.bounds.x < 0,
+      "negative scale flips the text quad",
+    );
+
+    const rotated = evaluateCamera(
+      Camera({ rotation: Math.PI / 5 }),
+      0,
+      [100, 100],
+    );
+    const turned = await renderOnce(ZStack([Text("hi")]), { camera: rotated });
+    const turnedRecord = quadRecord(turned.records[0], "rotated text");
+    assertQuad(turnedRecord.bounds, turned.uniforms[0], "rotated text");
+    assert.equal(turnedRecord.accuracy, "conservative");
+    assert.equal(turnedRecord.provenance, "projected-text-draw-quad");
+
+    const hidden = await renderOnce(
+      ZStack([Text("hi").opacity(0).id("hidden")]),
+    );
+    const hiddenRecord = quadRecord(hidden.records[0], "hidden text");
+    assert.equal(hidden.uniforms[0][20], 0);
+    assertQuad(hiddenRecord.bounds, hidden.uniforms[0], "hidden text");
+    assert.equal(hiddenRecord.geometryVisible, false);
+    assert.ok(hiddenRecord.bounds.width > 0 && hiddenRecord.bounds.height > 0);
+
+    const collapsed = await renderOnce(
+      ZStack([Text("hi").scale(0, 0, [0, 0]).id("collapsed")]),
+    );
+    const collapsedRecord = quadRecord(collapsed.records[0], "zero-scale text");
+    assert.equal(collapsed.uniforms[0][4], 0);
+    assertQuad(
+      collapsedRecord.bounds,
+      collapsed.uniforms[0],
+      "zero-scale text",
+    );
+    assert.equal(collapsedRecord.bounds.width, 0);
+    assert.equal(collapsedRecord.bounds.height, 0);
+    assert.equal(collapsedRecord.geometryVisible, false);
+  });
+});
+
+test("an unavailable Text quad does not drop a sibling Box, and overflow stays isolated", async () => {
+  await withGpuGlobals(async () => {
+    const view = ZStack([
+      Box({ width: 20, height: 10, fill: "#123456" }).id("card"),
+      Text("hi").scale(1e40).id("blown"),
+      Group([Text("nested").id("inside")]).id("surface"),
+    ]);
+    const { frame, records, uniforms } = await renderOnce(view);
+    assert.equal(records.length, frame.commands.length);
+    assert.equal(records.length, 3);
+    const box = quadRecord(
+      records.find((record) => record.kind === "box"),
+      "sibling box",
+    );
+    assert.equal(box.provenance, "projected-box-draw-quad");
+    assertQuad(box.bounds, uniforms[0], "sibling box");
+    const text = records.find((record) => record.kind === "text");
+    assert.equal(text?.accuracy, "unavailable");
+    if (text?.accuracy !== "unavailable") return;
+    assert.match(text.unsupported, /not finite/);
+    const surface = records.find((record) => record.kind === "group");
+    assert.equal(surface?.accuracy, "unavailable");
+    assert.equal(
+      records.some((record) => record.path.includes("inside")),
+      false,
+    );
+
+    const staged = await renderOnce(
+      ZStack([Text("hi").scale(1e38, 1e38, [0, 0])]),
+    );
+    assert.equal(staged.records.length, 1);
+    assert.equal(staged.records[0].accuracy, "unavailable");
+    if (staged.records[0].accuracy !== "unavailable") return;
+    assert.match(
+      staged.records[0].unsupported,
+      /overflows float32 vertex stages/,
+    );
+    assert.ok(Number.isFinite(staged.uniforms[0][4]));
   });
 });

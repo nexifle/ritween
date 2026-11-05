@@ -1,5 +1,28 @@
 import type { RenderContext, SetupContext, Transition } from "../types";
 
+const directions = {
+  left: [-1, 0],
+  right: [1, 0],
+  up: [0, -1],
+  down: [0, 1],
+} as const;
+
+/** [progress, kind, dx, dy]. shared/custom stay kind 0; that is not their visual. */
+export function transitionUniform(
+  transition: Exclude<Transition, { type: "cut" }> & { progress: number },
+): Float32Array<ArrayBuffer> {
+  const [dx, dy] = directions[transition.direction ?? "left"];
+  return new Float32Array([
+    transition.progress,
+    Math.max(
+      0,
+      ["crossfade", "wipe", "slide", "zoom"].indexOf(transition.type),
+    ),
+    dx,
+    dy,
+  ]);
+}
+
 const code = `
 struct Controls { progress: f32, kind: f32, dx: f32, dy: f32 };
 @group(0) @binding(0) var outgoing: texture_2d<f32>;
@@ -157,25 +180,10 @@ export class TransitionRenderer {
     context: RenderContext,
     transition: Exclude<Transition, { type: "cut" }> & { progress: number },
   ) {
-    const directions = {
-      left: [-1, 0],
-      right: [1, 0],
-      up: [0, -1],
-      down: [0, 1],
-    };
-    const [dx, dy] = directions[transition.direction ?? "left"];
     context.device.queue.writeBuffer(
       this.uniform,
       0,
-      new Float32Array([
-        transition.progress,
-        Math.max(
-          0,
-          ["crossfade", "wipe", "slide", "zoom"].indexOf(transition.type),
-        ),
-        dx,
-        dy,
-      ]),
+      transitionUniform(transition),
     );
     const pass = context.encoder.beginRenderPass({
       colorAttachments: [

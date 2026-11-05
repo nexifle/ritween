@@ -137,7 +137,10 @@ test("capability states exact layout geometry and the pending paint/transition l
   });
   assert.equal(capability.transitions.projection, "unavailable");
   assert.match(capability.transitions.reason, /Text draw quads/);
+  assert.match(capability.transitions.reason, /Media texture quads/);
+  assert.match(capability.transitions.reason, /stays conservative/);
   assert.match(capability.transitions.reason, /G3 is not complete/);
+  assert.doesNotMatch(capability.transitions.reason, /clip, media, path/);
   assert.equal(capability.geometry.paint, "partial");
 });
 
@@ -2284,8 +2287,35 @@ test("malformed paint record values and unreadable getters keep their own error 
     /bounds\.width must be a finite number/,
   );
   rejected({ geometryVisible: "yes" }, /geometryVisible must be a boolean/);
-  rejected({ kind: "media" }, /kind must be "box" or "text"/);
-  rejected({ kind: "group" }, /kind must be "box" or "text"/);
+  rejected(
+    { kind: "media", accuracy: "exact-rectangle" },
+    /accuracy must be "conservative" when kind is "media"/,
+  );
+  rejected(
+    {
+      kind: "media",
+      accuracy: "conservative",
+      provenance: "projected-box-draw-quad",
+    },
+    /provenance must be "projected-image-draw-quad" or "projected-video-draw-quad"/,
+  );
+  rejected(
+    {
+      kind: "media",
+      accuracy: "conservative",
+      provenance: "projected-text-draw-quad",
+    },
+    /provenance must be "projected-image-draw-quad" or "projected-video-draw-quad"/,
+  );
+  rejected(
+    { provenance: "projected-image-draw-quad" },
+    /provenance must be "projected-box-draw-quad"/,
+  );
+  rejected(
+    { kind: "text", provenance: "projected-video-draw-quad" },
+    /provenance must be "projected-text-draw-quad"/,
+  );
+  rejected({ kind: "group" }, /kind must be "box" or "text" or "media"/);
 
   assert.throws(
     () =>
@@ -2344,6 +2374,17 @@ test("paint record budget covers every published field before the record is buil
     "text geometry with identity": paintFields({
       kind: "text",
       provenance: "projected-text-draw-quad",
+      inspection: identity,
+    }),
+    "image media geometry": paintFields({
+      kind: "media",
+      accuracy: "conservative",
+      provenance: "projected-image-draw-quad",
+    }),
+    "video media geometry with identity": paintFields({
+      kind: "media",
+      accuracy: "conservative",
+      provenance: "projected-video-draw-quad",
       inspection: identity,
     }),
     "unavailable without identity": paintFields({
@@ -4226,4 +4267,178 @@ test("an ambiguous deep chain reports matches without copying ancestor arrays", 
   }
   assert.equal(node.id, "target");
   assert.equal(levels, chain, "the unique match keeps every ancestor once");
+});
+
+function mediaPaint(provenance: string, patch: Record<string, unknown> = {}) {
+  return paintFields({
+    kind: "media",
+    accuracy: "conservative",
+    provenance,
+    ...patch,
+  });
+}
+
+test("media paint records whitelist both provenances and do not alias or read private fields", () => {
+  const forbidden = () => {
+    throw Error("non-whitelisted media field was read");
+  };
+  for (const provenance of [
+    "projected-image-draw-quad",
+    "projected-video-draw-quad",
+  ] as const) {
+    const bounds = { x: 1.5, y: 2, width: 3, height: 4 };
+    const resolution = [320, 180];
+    const inspection = { id: 3, nodeId: 4, role: "content" as const };
+    const raw = Object.defineProperties(
+      mediaPaint(provenance, { bounds, resolution, inspection }),
+      {
+        source: { get: forbidden, enumerable: true },
+        texture: { get: forbidden, enumerable: true },
+        uv: { get: forbidden, enumerable: true },
+      },
+    );
+    const published = paintRecord(raw, "paint");
+    assert.equal(published.kind, "media");
+    if (published.accuracy === "unavailable")
+      assert.fail(`${provenance}: media geometry must stay available`);
+    assert.equal(published.accuracy, "conservative");
+    assert.equal(published.provenance, provenance);
+    assert.deepEqual(published.bounds, bounds);
+    assert.notEqual(published.bounds, bounds);
+    assert.deepEqual(published.resolution, resolution);
+    assert.notEqual(published.resolution, resolution);
+    assert.deepEqual(published.inspection, inspection);
+    assert.notEqual(published.inspection, inspection);
+    assert.notEqual(published, raw);
+  }
+  const unavailable = Object.defineProperties(
+    mediaPaint("projected-image-draw-quad", {
+      accuracy: "unavailable",
+      unsupported: "media paint is not finite.",
+    }),
+    {
+      bounds: { get: forbidden, enumerable: true },
+      provenance: { get: forbidden, enumerable: true },
+    },
+  );
+  const hidden = paintRecord(unavailable, "paint");
+  assert.equal(hidden.accuracy, "unavailable");
+  assert.equal(hidden.unsupported, "media paint is not finite.");
+  assert.equal("bounds" in hidden, false);
+  assert.equal("provenance" in hidden, false);
+});
+
+test("media paint rejects non-finite geometry and hostile getters without coercing them", () => {
+  assert.throws(
+    () =>
+      paintRecord(
+        mediaPaint("projected-image-draw-quad", {
+          bounds: { x: 0, y: 0, width: Number.NaN, height: 1 },
+        }),
+        "paint",
+      ),
+    (error: unknown) =>
+      error instanceof InspectionSerializationError &&
+      /bounds\.width must be a finite number/.test(error.message),
+  );
+  assert.throws(
+    () =>
+      paintRecord(
+        Object.defineProperties(mediaPaint("projected-video-draw-quad"), {
+          provenance: {
+            enumerable: true,
+            get: () => {
+              throw Error("media provenance getter exploded");
+            },
+          },
+        }),
+        "paint",
+      ),
+    (error: unknown) =>
+      error instanceof InspectionReadError &&
+      /media provenance getter exploded/.test(error.message),
+  );
+});
+
+test("targeted media records follow retained, orphan, and duplicate owners on both routes", () => {
+  for (const provenance of [
+    "projected-image-draw-quad",
+    "projected-video-draw-quad",
+  ]) {
+    const kept = mediaPaint(provenance, {
+      path: "root/card",
+      inspection: owner(2),
+    });
+    const orphan = mediaPaint(provenance, {
+      path: "root/card",
+      inspection: owner(99),
+    });
+    const untagged = mediaPaint(provenance, { path: "root/card" });
+    const frame = recordsFrame(twoRoomTree(), [kept, orphan, untagged]);
+    const target = { scope: "scene:main", id: "target" };
+    const initial = buildInspectionDocument({
+      packageVersion: "0.0.0-test",
+      project,
+      frame,
+      target,
+    });
+    const secondPass = applyInspectionTarget(document(frame), target);
+    assert.deepEqual(recordKeys(initial.scenes[0].paintRecords!), [
+      "2|scene-target-pixels|root/card",
+    ]);
+    assert.deepEqual(
+      initial.scenes[0].paintRecords,
+      secondPass.scenes[0].paintRecords,
+      provenance,
+    );
+    const published = initial.scenes[0].paintRecords![0];
+    assert.equal(published.kind, "media");
+    if (published.accuracy === "unavailable")
+      assert.fail("retained media must keep conservative geometry");
+    assert.equal(published.provenance, provenance);
+    assert.notEqual(published, kept);
+    const full = document(frame).scenes[0].paintRecords!;
+    assert.equal(full.length, 3, "untargeted media still publishes orphans");
+    assert.ok(!full.includes(kept as never));
+
+    const tree = twoRoomTree() as { children: { children: unknown[] }[] };
+    tree.children[1].children.push({
+      path: "root/row-b/duplicate",
+      kind: "box",
+      space: "b",
+      inspectionId: 2,
+      bounds: { x: 0, y: 0, width: 10, height: 10 },
+      transform: [1, 1, 0, 0],
+      children: [],
+    });
+    const duplicated = recordsFrame(tree, [kept]);
+    const dropped = buildInspectionDocument({
+      packageVersion: "0.0.0-test",
+      project,
+      frame: duplicated,
+      target,
+    });
+    const droppedAgain = applyInspectionTarget(document(duplicated), target);
+    assert.equal(
+      recordKeys(dropped.scenes[0].paintRecords!).includes(
+        "2|scene-target-pixels|root/card",
+      ),
+      false,
+      provenance,
+    );
+    assert.deepEqual(
+      dropped.scenes[0].paintRecords,
+      droppedAgain.scenes[0].paintRecords,
+    );
+  }
+});
+
+test("public inspection exports do not gain a media paint alias", async () => {
+  const api = await import("../src/index.ts");
+  assert.equal("paintRecord" in api, false);
+  assert.equal("InspectionPaintRecord" in api, false);
+  assert.equal("PaintRecord" in api, false);
+  assert.equal(typeof api.Image, "function");
+  assert.equal(typeof api.Video, "function");
+  assert.equal(typeof api.buildInspectionDocument, "function");
 });

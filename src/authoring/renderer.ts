@@ -84,9 +84,12 @@ const MAX_TEXT_ENTRIES = 128;
  * mathematical image of the float32 uniforms the renderer uploaded, computed here in binary64.
  * It is not a pixel bound and not a model of GPU rounding, so it never proves which fragments
  * the shader painted. For Text the quad is the uploaded texture/line box before transition,
- * not glyph ink. Radius, stroke, color alpha, antialiasing, scissor, occlusion, and compositing
- * all live inside that quad. Shared-element corrections are already part of the draw camera, so
- * `space` stays the pre-transition scene target, not final transition output.
+ * not glyph ink. For Media it is the fitted texture rectangle already packed into that uniform
+ * after contain, cover, or crop; crop UVs, image alpha, and mask coverage are not ink or pixel
+ * bounds, and the quad stays `conservative` even when axis-aligned. Radius, stroke, color alpha,
+ * antialiasing, scissor, occlusion, and compositing all live inside that quad. Shared-element
+ * corrections are already part of the draw camera, so `space` stays the pre-transition scene
+ * target, not final transition output.
  * `accuracy` is the discriminant: `unavailable` means no rectangle this collector can honestly
  * record, so coverage stays partial instead of claiming the paint is out of frame. Nested
  * Group/Composition paint is not forwarded. This is not a completed G3 projection.
@@ -122,6 +125,18 @@ export type PaintRecord = {
       /** Ideal projected texture/line-box AABB, not glyph ink or a raster-texture pixel size. */
       readonly bounds: Bounds;
       readonly provenance: "projected-text-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly unsupported?: never;
+    }
+  | {
+      readonly kind: "media";
+      /** Always conservative: an axis-aligned texture quad is not proven pixel or ink coverage. */
+      readonly accuracy: "conservative";
+      /** Ideal projected texture-quad AABB after fitting, not a UV crop or alpha bound. */
+      readonly bounds: Bounds;
+      readonly provenance:
+        | "projected-image-draw-quad"
+        | "projected-video-draw-quad";
       readonly geometryVisible: boolean;
       readonly unsupported?: never;
     }
@@ -206,9 +221,13 @@ function paintRecord(
     accuracy: "unavailable",
     unsupported: reason,
   });
-  if (command.kind !== "box" && command.kind !== "text")
+  if (
+    command.kind !== "box" &&
+    command.kind !== "text" &&
+    command.kind !== "media"
+  )
     return unsupported(
-      `${command.kind} paint is not collected; only top-level Box and Text draw quads are.`,
+      `${command.kind} paint is not collected; only top-level Box, Text, and Media draw quads are.`,
     );
   // Only the fields quad projection and `geometryVisible` read: radius, stroke, colors, UV,
   // padding, and texture flags never change either.
@@ -270,8 +289,12 @@ function paintRecord(
       `draw quad is not finite: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  // Media stays conservative even when the texture quad is axis-aligned: the rectangle is the
+  // ideal fitted uniform, not alpha, ink, or fragment coverage.
   const accuracy: "exact-rectangle" | "conservative" =
-    projected.accuracy === "exact" ? "exact-rectangle" : "conservative";
+    command.kind === "media" || projected.accuracy !== "exact"
+      ? "conservative"
+      : "exact-rectangle";
   const paintRole: "content" | "background" = command.paintRole ?? "content";
   const shared = {
     path: command.path,
@@ -284,12 +307,23 @@ function paintRecord(
     geometryVisible: projected.visible,
   };
   // Provenance names which draw this uniform block was. Text uses the same uploaded `b`
-  // as the texture quad (line box), not measured glyph advances.
+  // as the texture quad (line box), not measured glyph advances. Media provenance comes from
+  // the typed command source, not from path text or a second fit.
   if (command.kind === "text")
     return {
       ...shared,
       kind: "text" as const,
       provenance: "projected-text-draw-quad" as const,
+    };
+  if (command.kind === "media")
+    return {
+      ...shared,
+      kind: "media" as const,
+      accuracy: "conservative",
+      provenance:
+        command.source.kind === "video"
+          ? "projected-video-draw-quad"
+          : "projected-image-draw-quad",
     };
   return {
     ...shared,

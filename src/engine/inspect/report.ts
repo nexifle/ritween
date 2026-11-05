@@ -163,9 +163,10 @@ export interface InspectionScene {
   readonly commands?: readonly InspectionCommand[];
   /**
    * Absent when the provider supplies no collection at all; `[]` when it collected and found
-   * nothing. Records are ideal projected top-level Box and Text draw quads in
+   * nothing. Records are ideal projected top-level Box, Text, and Media draw quads in
    * `scene-target-pixels` before transition projection. A Text quad is the texture/line box,
-   * not glyph ink. Nothing here is final output, fragment visibility, or a GPU rounding
+   * not glyph ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or ink
+   * coverage. Nothing here is final output, fragment visibility, or a GPU rounding
    * guarantee. Nested Group/Composition paint stays unrecorded. This is not completed G3.
    */
   readonly paintRecords?: readonly InspectionPaintRecord[];
@@ -187,10 +188,11 @@ export interface InspectionCapability {
     /** Placed node rectangles from `evaluateView`, in that scene's layout space. */
     readonly layout: "exact-rectangle";
     /**
-     * `partial`: only top-level Box and Text draw quads are recorded, as their ideal projection
+     * `partial`: top-level Box, Text, and Media draw quads are recorded, as their ideal projection
      * in `scene-target-pixels` before transition. A Text quad is the texture/line box, not glyph
-     * ink. Nothing here is final output, fragment visibility, or a GPU rounding guarantee.
-     * Nested Group/Composition, clip, media, and path paint stay unrecorded. G3 is not complete.
+     * ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or pixel coverage.
+     * Nothing here is final visual coverage, fragment visibility, or a GPU rounding guarantee.
+     * Nested Group/Composition, clip, mask, and path paint stay unrecorded. G3 is not complete.
      */
     readonly paint: "partial";
   };
@@ -1089,8 +1091,9 @@ function command(
 /**
  * Whitelisted form of one `PaintRecord` (`src/authoring/renderer.ts`): the published metadata,
  * never the record's owner objects. `bounds` is the ideal projected draw quad in scene-target
- * pixels — Box fill quad or Text texture/line box, not glyph ink, pixel visibility, or GPU
- * rounding — and is absent exactly when `accuracy` is `unavailable`.
+ * pixels — Box fill quad, Text texture/line box, or Media fitted texture quad, not glyph ink,
+ * media alpha, crop-UV coverage, pixel visibility, or GPU rounding — and is absent exactly when
+ * `accuracy` is `unavailable`. Media accuracy is only `conservative`.
  */
 export type InspectionPaintRecord = {
   readonly path: string;
@@ -1116,6 +1119,15 @@ export type InspectionPaintRecord = {
       readonly accuracy: "exact-rectangle" | "conservative";
       readonly bounds: InspectionBounds;
       readonly provenance: "projected-text-draw-quad";
+      readonly geometryVisible: boolean;
+    }
+  | {
+      readonly kind: "media";
+      readonly accuracy: "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance:
+        | "projected-image-draw-quad"
+        | "projected-video-draw-quad";
       readonly geometryVisible: boolean;
     }
   | {
@@ -1221,9 +1233,9 @@ export function paintRecord(
         budget,
       ),
     };
-  if (kindVal !== "box" && kindVal !== "text")
+  if (kindVal !== "box" && kindVal !== "text" && kindVal !== "media")
     throw new InspectionSerializationError(
-      `${where}.kind must be "box" or "text" when accuracy is "${accuracyVal}", received "${kindVal}": only top-level Box and Text draw quads have projected geometry.`,
+      `${where}.kind must be "box" or "text" or "media" when accuracy is "${accuracyVal}", received "${kindVal}": only top-level Box, Text, and Media draw quads have projected geometry.`,
     );
   const geometryVisibleVal = read(value, "geometryVisible", where);
   if (typeof geometryVisibleVal !== "boolean")
@@ -1241,6 +1253,25 @@ export function paintRecord(
     accuracy: accuracyVal,
     geometryVisible: geometryVisibleVal,
   };
+  if (kindVal === "media") {
+    if (accuracyVal !== "conservative")
+      throw new InspectionSerializationError(
+        `${where}.accuracy must be "conservative" when kind is "media", received "${accuracyVal}": a media quad is the ideal texture rectangle, not proven pixel or ink coverage.`,
+      );
+    const provenanceVal = oneOf(
+      read(value, "provenance", where),
+      ["projected-image-draw-quad", "projected-video-draw-quad"] as const,
+      `${where}.provenance`,
+    );
+    budget?.charge(provenanceVal.length + 2);
+    return {
+      ...geometry,
+      kind: "media",
+      accuracy: "conservative",
+      provenance: provenanceVal,
+      bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+    };
+  }
   if (kindVal === "text") {
     const provenanceVal = oneOf(
       read(value, "provenance", where),
@@ -1778,7 +1809,7 @@ export function buildInspectionDocument(options: {
       transitions: {
         projection: "unavailable",
         reason:
-          "Top-level Box and Text draw quads are ideal pre-transition projections in scene-target pixels, not glyph ink, fragment visibility, or GPU rounding. Nested Group and Composition paint, clip, media, path, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
+          "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. Nested Group and Composition paint, clip, mask, path, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.",
       },
     },
     scenes: targetScene ? [targetScene] : scenes,

@@ -10,13 +10,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ViewRenderer, type PaintRecord } from "../src/authoring/renderer";
+import { mediaKey } from "../src/authoring/media-runtime";
+import type { ImageTexture } from "../src/engine/render/visual";
+import type { MediaSpec } from "../src/authoring/media";
 import {
   Box,
   Camera,
   Composition,
   Group,
+  Image,
   Path,
   Text,
+  Video,
   World,
   ZStack,
   evaluateCamera,
@@ -144,6 +149,9 @@ interface RenderOptions {
   sharedTransforms?: ReadonlyMap<string, readonly number[]>;
   debug?: boolean;
   collect?: boolean;
+  time?: number;
+  /** Prepared textures keyed by `mediaKey(source)`. Absent means nothing is prepared. */
+  media?: ReadonlyMap<string, ImageTexture>;
 }
 
 /** Runs one real `ViewRenderer.render` and returns its collector output plus drawn uniforms. */
@@ -157,8 +165,9 @@ async function renderOnce(view: ViewNode, options: RenderOptions = {}) {
     format: "bgra8unorm",
     resolution: target,
   });
+  const time = options.time ?? 0;
   const evaluated = evaluateView(view, {
-    time: 0,
+    time,
     width: design[0],
     height: design[1],
     measureText: measure,
@@ -185,8 +194,8 @@ async function renderOnce(view: ViewNode, options: RenderOptions = {}) {
             end() {},
           }),
         } as unknown as GPUCommandEncoder,
-        time: 0,
-        localTime: 0,
+        time,
+        localTime: time,
         progress: 0,
         ...(options.sharedTransforms
           ? { sharedTransforms: options.sharedTransforms }
@@ -197,7 +206,7 @@ async function renderOnce(view: ViewNode, options: RenderOptions = {}) {
       options.debug ?? false,
       1,
       true,
-      new Map(),
+      options.media ?? new Map(),
       options.collect === false ? undefined : (record) => records.push(record),
     );
   } finally {
@@ -764,5 +773,288 @@ test("an unavailable Text quad does not drop a sibling Box, and overflow stays i
       /overflows float32 vertex stages/,
     );
     assert.ok(Number.isFinite(staged.uniforms[0][4]));
+  });
+});
+
+const RESOURCE = { width: 40, height: 100 };
+const CLIP = {
+  id: "reel",
+  name: "Reel",
+  url: "reel.mp4",
+  start: 1,
+  duration: 2,
+};
+
+function prepared(source: MediaSpec): Map<string, ImageTexture> {
+  return new Map([
+    [
+      mediaKey(source),
+      {
+        texture: { createView: () => ({}) } as GPUTexture,
+        width: RESOURCE.width,
+        height: RESOURCE.height,
+        dispose() {},
+      },
+    ],
+  ]);
+}
+
+function uniformRect(block: Float32Array) {
+  return Array.from(block.subarray(0, 4));
+}
+
+function uniformUv(block: Float32Array) {
+  return Array.from(block.subarray(32, 36));
+}
+
+test("collector records fitted Image and Video quads from the uploaded uniform, not a second fit", async () => {
+  await withGpuGlobals(async () => {
+    const image = {
+      kind: "image" as const,
+      url: "photo.png",
+      style: { width: 100, height: 80 },
+    };
+    const video = {
+      kind: "video" as const,
+      clip: CLIP,
+      style: { width: 100, height: 80 },
+    };
+    const fits = [undefined, "contain", "cover"] as const;
+    for (const fit of fits) {
+      for (const source of [image, video]) {
+        const node =
+          source.kind === "image"
+            ? Image({ url: source.url, width: 100, height: 80, fit })
+            : Video(source.clip, { width: 100, height: 80, fit });
+        const rendered = await renderOnce(ZStack([node.id("frame")]), {
+          time: source.kind === "video" ? 1.5 : 0.4,
+          media: prepared({ ...source, style: { ...source.style, fit } }),
+        });
+        assert.equal(rendered.records.length, 1);
+        assert.equal(rendered.frame.commands.length, 1);
+        const record = quadRecord(rendered.records[0], `${source.kind} ${fit}`);
+        assert.equal(record.kind, "media");
+        assert.equal(record.accuracy, "conservative");
+        assert.equal(
+          record.provenance,
+          source.kind === "image"
+            ? "projected-image-draw-quad"
+            : "projected-video-draw-quad",
+        );
+        assertQuad(record.bounds, rendered.uniforms[0], `${source.kind} ${fit}`);
+        const layout = rendered.frame.commands[0].bounds;
+        if (fit !== "cover")
+          assert.notDeepEqual(
+            uniformRect(rendered.uniforms[0]),
+            [layout.x, layout.y, layout.width, layout.height],
+            `${source.kind} ${fit ?? "default"} uses the fitted uniform, not the layout box`,
+          );
+      }
+    }
+
+    const crop = { x: 0.2, y: 0.8, zoom: 2 };
+    for (const source of [image, video]) {
+      const coverNode =
+        source.kind === "image"
+          ? Image({ url: source.url, width: 100, height: 80, fit: "cover" })
+          : Video(source.clip, { width: 100, height: 80, fit: "cover" });
+      const cropNode =
+        source.kind === "image"
+          ? Image({ url: source.url, width: 100, height: 80, crop })
+          : Video(source.clip, { width: 100, height: 80, crop });
+      const cover = await renderOnce(ZStack([coverNode.id("cover")]), {
+        time: source.kind === "video" ? 2 : 0,
+        media: prepared(source),
+      });
+      const cropped = await renderOnce(ZStack([cropNode.id("cropped")]), {
+        time: source.kind === "video" ? 2 : 0,
+        media: prepared(source),
+      });
+      assert.deepEqual(
+        uniformRect(cropped.uniforms[0]),
+        uniformRect(cover.uniforms[0]),
+        `${source.kind} crop changes UV, not the fitted texture quad`,
+      );
+      assert.notDeepEqual(
+        uniformUv(cropped.uniforms[0]),
+        uniformUv(cover.uniforms[0]),
+      );
+      const croppedRecord = quadRecord(
+        cropped.records[0],
+        `cropped ${source.kind}`,
+      );
+      assert.equal(croppedRecord.accuracy, "conservative");
+      assert.equal(
+        croppedRecord.provenance,
+        source.kind === "image"
+          ? "projected-image-draw-quad"
+          : "projected-video-draw-quad",
+      );
+      assertQuad(
+        croppedRecord.bounds,
+        cropped.uniforms[0],
+        `cropped ${source.kind}`,
+      );
+      assert.equal(cropped.records.length, 1);
+    }
+  });
+});
+
+test("media quads stay conservative through reflection, camera, opacity, and a later time", async () => {
+  await withGpuGlobals(async () => {
+    const source = {
+      kind: "image" as const,
+      url: "photo.png",
+      style: { width: 100, height: 80, fit: "contain" as const },
+    };
+    const view = ZStack([
+      Image({
+        url: "photo.png",
+        width: 100,
+        height: 80,
+        fit: "contain",
+      })
+        .offset({ from: 0, to: 20, duration: 2 }, -4)
+        .scale(-2, 1.25, [0, 0])
+        .id("photo"),
+    ]);
+    const camera = evaluateCamera(
+      Camera({ zoom: 1.5, rotation: Math.PI / 7 }),
+      0,
+      [120, 80],
+    );
+    const early = await renderOnce(view, {
+      time: 0,
+      target: [120, 80],
+      design: [120, 80],
+      camera,
+      media: prepared(source),
+    });
+    const later = await renderOnce(view, {
+      time: 2,
+      target: [120, 80],
+      design: [120, 80],
+      camera,
+      media: prepared(source),
+    });
+    for (const rendered of [early, later]) {
+      const record = quadRecord(rendered.records[0], "transformed image");
+      assert.equal(record.kind, "media");
+      assert.equal(record.accuracy, "conservative");
+      assert.equal(record.provenance, "projected-image-draw-quad");
+      assert.equal(record.geometryVisible, true);
+      assertQuad(record.bounds, rendered.uniforms[0], "transformed image");
+      assert.ok(record.bounds.width > 0 && record.bounds.height > 0);
+    }
+    assert.ok(early.uniforms[0][4] < 0, "negative scale is the uploaded reflection");
+    assert.notEqual(
+      early.uniforms[0][6],
+      later.uniforms[0][6],
+      "the later command transform moves the uploaded quad",
+    );
+    const earlyRecord = quadRecord(early.records[0], "early image");
+    const laterRecord = quadRecord(later.records[0], "later image");
+    assert.notEqual(earlyRecord.bounds.x, laterRecord.bounds.x);
+
+    const hidden = await renderOnce(
+      ZStack([
+        Image({ url: "photo.png", width: 100, height: 80 })
+          .opacity(0)
+          .id("hidden"),
+      ]),
+      { media: prepared(source) },
+    );
+    const hiddenRecord = quadRecord(hidden.records[0], "hidden image");
+    assert.equal(hidden.uniforms[0][20], 0);
+    assert.equal(hiddenRecord.geometryVisible, false);
+    assert.equal(hiddenRecord.accuracy, "conservative");
+    assertQuad(hiddenRecord.bounds, hidden.uniforms[0], "hidden image");
+    assert.ok(hiddenRecord.bounds.width > 0);
+  });
+});
+
+test("video records exist only inside the active interval, and a missing resource still throws", async () => {
+  await withGpuGlobals(async () => {
+    const source = {
+      kind: "video" as const,
+      clip: CLIP,
+      style: { width: 100, height: 80 },
+    };
+    const view = ZStack([Video(CLIP, { width: 100, height: 80 }).id("reel")]);
+    for (const time of [0, 1, 2, 3, 3.1]) {
+      const active = time >= CLIP.start && time <= CLIP.start + CLIP.duration;
+      if (!active) {
+        const quiet = await renderOnce(view, { time });
+        assert.equal(quiet.frame.commands.length, 0, `time ${time}`);
+        assert.equal(quiet.records.length, 0, `time ${time}`);
+        continue;
+      }
+      const rendered = await renderOnce(view, {
+        time,
+        media: prepared(source),
+      });
+      assert.equal(rendered.records.length, 1, `time ${time}`);
+      const record = quadRecord(rendered.records[0], `video ${time}`);
+      assert.equal(record.provenance, "projected-video-draw-quad");
+      assert.equal(record.accuracy, "conservative");
+      assertQuad(record.bounds, rendered.uniforms[0], `video ${time}`);
+    }
+    await assert.rejects(
+      () => renderOnce(view, { time: 2 }),
+      /Media is not prepared; use renderAsync\(\)./,
+    );
+  });
+});
+
+test("media overflow is unavailable, and nested media is not collected", async () => {
+  await withGpuGlobals(async () => {
+    const source = {
+      kind: "image" as const,
+      url: "photo.png",
+      style: { width: 20, height: 10 },
+    };
+    const blown = await renderOnce(
+      ZStack([
+        Image({ url: "photo.png", width: 20, height: 10 }).scale(1e40).id("blown"),
+      ]),
+      { media: prepared(source) },
+    );
+    assert.equal(blown.records[0].accuracy, "unavailable");
+    if (blown.records[0].accuracy !== "unavailable") return;
+    assert.equal("bounds" in blown.records[0], false);
+    assert.match(blown.records[0].unsupported, /not finite/);
+
+    const staged = await renderOnce(
+      ZStack([
+        Image({ url: "photo.png", width: 20, height: 10 })
+          .scale(1e38, 1e38, [0, 0])
+          .id("staged"),
+      ]),
+      { media: prepared(source) },
+    );
+    assert.equal(staged.records[0].accuracy, "unavailable");
+    if (staged.records[0].accuracy !== "unavailable") return;
+    assert.match(staged.records[0].unsupported, /overflows float32 vertex stages/);
+    assert.equal("bounds" in staged.records[0], false);
+
+    const nested = await renderOnce(
+      ZStack([
+        Group([
+          Image({ url: "photo.png", width: 20, height: 10 }).id("inside"),
+        ]).id("surface"),
+      ]),
+      { media: prepared(source) },
+    );
+    assert.equal(nested.records.length, 1);
+    assert.equal(nested.records[0].kind, "group");
+    assert.equal(nested.records[0].accuracy, "unavailable");
+    assert.equal(
+      nested.records.some((record) => record.kind === "media"),
+      false,
+    );
+    assert.equal(
+      nested.records.some((record) => record.path.includes("inside")),
+      false,
+    );
   });
 });

@@ -7,14 +7,14 @@ silently upgrade dependencies to make an example work.
 
 ## Choose the smallest abstraction
 
-| Need | API |
-| --- | --- |
-| One view directly on the project timeline | `StageEntry({ ..., view })` |
-| Reusable pure content with its own design dimensions | `World(view, { size })` |
-| A timeline interval viewing a World | `Shot({ ..., world })` |
-| A World embedded as a node in another view | `Composition(world, options)` |
-| A watermark/HUD unaffected by scene transitions | `project.overlay: () => Overlay(view, options)` |
-| Adapt a view to the low-level Scene lifecycle | `Stage(view, options)` |
+| Need                                                 | API                                             |
+| ---------------------------------------------------- | ----------------------------------------------- |
+| One view directly on the project timeline            | `StageEntry({ ..., view })`                     |
+| Reusable pure content with its own design dimensions | `World(view, { size })`                         |
+| A timeline interval viewing a World                  | `Shot({ ..., world })`                          |
+| A World embedded as a node in another view           | `Composition(world, options)`                   |
+| A watermark/HUD unaffected by scene transitions      | `project.overlay: () => Overlay(view, options)` |
+| Adapt a view to the low-level Scene lifecycle        | `Stage(view, options)`                          |
 
 Do not wrap every component in a World or Composition. Reusable cards, titles,
 and chart marks can simply be functions returning nodes. Composition is for an
@@ -85,16 +85,26 @@ mandatory visual style. Use the user's brief for actual content and choreography
 
 ```ts
 import {
-  World, Shot, Composition, Camera, Overlay,
-  Box, Text, VStack, type Project,
+  World,
+  Shot,
+  Composition,
+  Camera,
+  Overlay,
+  Box,
+  Text,
+  VStack,
+  type Project,
 } from "ritween";
 
 const world = World(
   ({ theme }) =>
-    VStack([
-      Text("One world, two views", { size: 80, color: theme.textColor }),
-      Box({ width: 480, height: 16, fill: theme.colors.accent }),
-    ], { gap: 32 }).frame({ width: "fill", height: "fill" }),
+    VStack(
+      [
+        Text("One world, two views", { size: 80, color: theme.textColor }),
+        Box({ width: 480, height: 16, fill: theme.colors.accent }),
+      ],
+      { gap: 32 },
+    ).frame({ width: "fill", height: "fill" }),
   { size: [1920, 1080] },
 );
 
@@ -105,24 +115,32 @@ export const project: Project = {
   duration: 8,
   scenes: [
     Shot({
-      id: "wide", source: "manifest.ts", start: 0, duration: 5,
+      id: "wide",
+      source: "manifest.ts",
+      start: 0,
+      duration: 5,
       world,
       camera: Camera({ x: 960, y: 540, zoom: 1 }),
     }),
     Shot({
-      id: "close", source: "manifest.ts", start: 4, duration: 4,
-      world, worldOffset: 4,
+      id: "close",
+      source: "manifest.ts",
+      start: 4,
+      duration: 4,
+      world,
+      worldOffset: 4,
       camera: Camera({
-        x: 960, y: 540,
+        x: 960,
+        y: 540,
         zoom: { from: 1, to: 1.2, duration: 4 },
       }),
       transition: { type: "crossfade", duration: 1 },
     }),
   ],
-  overlay: () => Overlay(
-    () => Text("STUDIO", { size: 24 }).padding(40),
-    { designSize: [1920, 1080] },
-  ),
+  overlay: () =>
+    Overlay(() => Text("STUDIO", { size: 24 }).padding(40), {
+      designSize: [1920, 1080],
+    }),
 };
 
 // Optional inset: place this node in another view, not project.scenes.

@@ -154,7 +154,9 @@ export function Transport({
 
           <span className="whitespace-nowrap font-mono text-[10.5px] tabular-nums text-time">
             Frame{" "}
-            <span className="font-medium text-foreground/90">{currentFrame}</span>
+            <span className="font-medium text-foreground/90">
+              {currentFrame}
+            </span>
             <span className="mx-1 text-frame">/</span>
             <span className="text-frame">{total}</span>
           </span>

@@ -45,16 +45,27 @@ Modifiers are immutable; layout, paint, and motion remain deterministic when see
 import { StageEntry, HStack, ForEach, Box, Motion } from "ritween";
 
 const entry = StageEntry({
-  id: "bars", source: "manifest.ts", start: 0, duration: 3,
-  view: () => HStack(
-  ForEach(
-    [{ id: "first", value: 80 }, { id: "second", value: 120 }],
-    (item) => item.id,
-    (item, index) => Box({ width: 40, height: item.value })
-      .scale(1, Motion.stagger(index, 0.08, Motion.fade()), [0.5, 1]),
-  ),
-  { gap: 16, align: "end" },
-  ),
+  id: "bars",
+  source: "manifest.ts",
+  start: 0,
+  duration: 3,
+  view: () =>
+    HStack(
+      ForEach(
+        [
+          { id: "first", value: 80 },
+          { id: "second", value: 120 },
+        ],
+        (item) => item.id,
+        (item, index) =>
+          Box({ width: 40, height: item.value }).scale(
+            1,
+            Motion.stagger(index, 0.08, Motion.fade()),
+            [0.5, 1],
+          ),
+      ),
+      { gap: 16, align: "end" },
+    ),
 });
 // Put entry in project.scenes; project.duration is 3 for this single entry.
 ```
@@ -70,6 +81,24 @@ Motion presets produce tween data for `.opacity()`, `.offset()`, and `.scale()`;
 
 Image needs `url/width/height/fit`. Image/Video also accept `crop: { x, y, zoom }`
 with normalized focal coordinates and zoom >= 1; tracks animate in local time.
+`.padding(16)` is uniform and `.padding({ top, right, bottom, left })` is per edge
+(omitted edges are zero). `.frame({ width, height, align, alignX, alignY })` aligns per
+axis: `alignX`/`alignY` win, then `align`, then center. `.background({ fill, radius,
+stroke, strokeWidth })` paints the node's measured bounds behind it without changing
+size, clipping, or adding a pass; padding applied before it is painted, padding after
+it is not. It sets no width or height. `.id()` on the draw leaf keeps the leaf's shared
+identity; `.id()` on the background wrapper gives that one declared ID a single target
+at the wrapper's measured bounds. During a shared transition every paint of a declared
+chain follows one pose, so a background and its content cannot separate, including
+inside a clip or Group.
+`.flex(weight = 1)` assigns a proportional main-axis slot inside the nearest enclosing
+`HStack` or `VStack`. Weights are finite and positive. Gaps and fixed siblings reserve
+space first; deficit gives flexible slots 0 and emits `fixed-allocation-deficit`.
+Boundary padding is included in the slot budget regardless of modifier order (`.padding().flex()`
+and `.flex().padding()` produce identical outer bounds without expanding the slot).
+Content exceeding the slot remains visible unless clipped with `.clip()`. Combining flex
+with a fixed main-axis frame or duplicate flex on the same boundary chain throws an error;
+flex outside `HStack`/`VStack` emits an `unused-flex` diagnostic.
 All nodes support `.clip()` (rect), `.clip({ shape: "rect", radius: 24 })`,
 `.clip({ shape: "circle" })`, `.clip({ shape: "path", outline, fillRule })`, or
 `.clip({ shape: "image", url, mode?: "alpha" | "luminance" })`. Image masks stretch

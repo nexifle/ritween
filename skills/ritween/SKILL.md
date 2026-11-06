@@ -73,7 +73,7 @@ Read only the references needed for the current task, not the entire collection.
 
 | Task                                                                   | Reference                                                            |
 | ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Reusable Worlds, nested viewports, Shots, transitions, and overlays | [Composition API](references/composition.md) |
+| Reusable Worlds, nested viewports, Shots, transitions, and overlays    | [Composition API](references/composition.md)                         |
 | Custom GPU pipelines, uniforms, text assets, and resource lifecycle    | [GPU scene workflow](references/gpu-scene-workflow.md)               |
 | Curved paths, smooth timing, mesh deformation, instancing, and strokes | [Geometry and motion](references/gpu-geometry-motion.md)             |
 | Illustrative lighting, hatching, and 3D outlines                       | [Stylized surfaces](references/stylized-surface-rendering.md)        |

@@ -460,13 +460,15 @@ try {
       let pipeline;
       return {
         setup({ device, format }) {
-          const module = device.createShaderModule({ code: `
+          const module = device.createShaderModule({
+            code: `
             @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
               let p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
               return vec4f(p[i], 0, 1);
             }
             @fragment fn fs() -> @location(0) vec4f { return vec4f(${color}, 1); }
-          ` });
+          `,
+          });
           pipeline = device.createRenderPipeline({
             layout: "auto",
             vertex: { module, entryPoint: "vs" },
@@ -474,9 +476,15 @@ try {
           });
         },
         render({ encoder, target, time }) {
-          const pass = encoder.beginRenderPass({ colorAttachments: [{
-            view: target.createView(), loadOp: "load", storeOp: "store",
-          }] });
+          const pass = encoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: target.createView(),
+                loadOp: "load",
+                storeOp: "store",
+              },
+            ],
+          });
           pass.setPipeline(pipeline);
           pass.setScissorRect(Math.round((time - 1) * 60), 40, 10, 10);
           pass.draw(3);
@@ -498,14 +506,17 @@ try {
       })),
     };
     const partialSource = await FrameSource.create(partialProject, {
-      width: 100, height: 100, onError: (e) => errors.push(e),
+      width: 100,
+      height: 100,
+      onError: (e) => errors.push(e),
     });
     let partialChecks;
     try {
       const captures = [];
       for (const time of [1.5, 1.25, 1.5, 1.75, 1.5]) {
         const canvas = await partialSource.render(time);
-        const copy = new OffscreenCanvas(100, 100), ctx = copy.getContext("2d");
+        const copy = new OffscreenCanvas(100, 100),
+          ctx = copy.getContext("2d");
         ctx.drawImage(canvas, 0, 0);
         captures.push({
           pixels: Array.from(ctx.getImageData(0, 0, 100, 100).data),
@@ -514,10 +525,18 @@ try {
           future: [...ctx.getImageData(50, 45, 1, 1).data],
         });
       }
-      if (JSON.stringify(captures[0].pixels) !== JSON.stringify(captures[2].pixels) ||
-          JSON.stringify(captures[0].pixels) !== JSON.stringify(captures[4].pixels))
+      if (
+        JSON.stringify(captures[0].pixels) !==
+          JSON.stringify(captures[2].pixels) ||
+        JSON.stringify(captures[0].pixels) !==
+          JSON.stringify(captures[4].pixels)
+      )
         throw Error("Partial transition scene retained pixels across seeks.");
-      partialChecks = captures.map(({ old, current, future }) => ({ old, current, future }));
+      partialChecks = captures.map(({ old, current, future }) => ({
+        old,
+        current,
+        future,
+      }));
     } finally {
       partialSource.dispose();
     }
@@ -819,7 +838,9 @@ try {
     const { old, current, future } = report.partialChecks[index];
     assert.deepEqual(old, [0, 0, 0, 255]);
     assert.deepEqual(future, [0, 0, 0, 255]);
-    assert.ok(Math.abs(current[0] - 128) <= 1 && Math.abs(current[2] - 128) <= 1);
+    assert.ok(
+      Math.abs(current[0] - 128) <= 1 && Math.abs(current[2] - 128) <= 1,
+    );
   }
   assert.deepEqual(report.sharedPixels[1], [255, 0, 0, 255]);
   assert.notDeepEqual(report.sharedPixels[0], [255, 0, 0, 255]);

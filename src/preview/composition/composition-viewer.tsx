@@ -7,7 +7,12 @@ import {
 } from "react";
 import { miniButton } from "../components/control-styles";
 import { Icon } from "../components/icon";
-import { clamp, clampCompPan, COMP_ZOOM_MAX, COMP_ZOOM_MIN } from "../utils/view-utils";
+import {
+  clamp,
+  clampCompPan,
+  COMP_ZOOM_MAX,
+  COMP_ZOOM_MIN,
+} from "../utils/view-utils";
 
 export function CompositionViewer({
   resolution,
@@ -249,7 +254,9 @@ export function CompositionViewer({
         </div>
       </div>
       {sourceOpen && (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{source}</div>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {source}
+        </div>
       )}
       <div
         ref={wellRef}

@@ -3,18 +3,18 @@
 `app.tsx` is the entry point and coordinates rendering, audio, application state,
 and the studio panels.
 
-| Folder | Responsibility |
-| --- | --- |
-| `composition/` | Composition canvas viewer, zoom, and pan interactions. |
-| `timeline/` | Timeline, clip lanes, and track headers. |
-| `playback/` | Playback transport and master audio controls. |
-| `source/` | Scene source inspector and syntax highlighting. |
-| `export/` | Video export settings and progress panel. |
-| `layout/` | Studio header, footer, dock arrangement, and project heading. |
-| `components/` | Shared UI primitives and control styles used across features. |
-| `hooks/` | Shared React hooks; filenames start with `use-`. |
-| `state/` | Preview state, actions, and reducer. |
-| `utils/` | Shared pure view calculations and time formatting. |
+| Folder         | Responsibility                                                |
+| -------------- | ------------------------------------------------------------- |
+| `composition/` | Composition canvas viewer, zoom, and pan interactions.        |
+| `timeline/`    | Timeline, clip lanes, and track headers.                      |
+| `playback/`    | Playback transport and master audio controls.                 |
+| `source/`      | Scene source inspector and syntax highlighting.               |
+| `export/`      | Video export settings and progress panel.                     |
+| `layout/`      | Studio header, footer, dock arrangement, and project heading. |
+| `components/`  | Shared UI primitives and control styles used across features. |
+| `hooks/`       | Shared React hooks; filenames start with `use-`.              |
+| `state/`       | Preview state, actions, and reducer.                          |
+| `utils/`       | Shared pure view calculations and time formatting.            |
 
 ## Where to place new files
 

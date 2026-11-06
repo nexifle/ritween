@@ -98,7 +98,10 @@ export function highlight(code: string): HighlightToken[] {
   };
   const scanNumber = () => {
     const start = index;
-    if (code[index] === "0" && (code[index + 1] === "x" || code[index + 1] === "X")) {
+    if (
+      code[index] === "0" &&
+      (code[index + 1] === "x" || code[index + 1] === "X")
+    ) {
       index += 2;
       while (index < length && /[0-9a-fA-F_]/.test(code[index])) index += 1;
       push("number", code.slice(start, index));
@@ -276,7 +279,11 @@ export function highlightLines(code: string): HighlightToken[][] {
       if (part) lines[lines.length - 1].push({ kind: token.kind, text: part });
     });
   }
-  if (code.endsWith("\n") && lines.length > 1 && lines[lines.length - 1].length === 0)
+  if (
+    code.endsWith("\n") &&
+    lines.length > 1 &&
+    lines[lines.length - 1].length === 0
+  )
     lines.pop();
   return lines;
 }

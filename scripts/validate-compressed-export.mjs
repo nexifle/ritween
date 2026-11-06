@@ -30,70 +30,77 @@ try {
     const file = `${directory}/pulse-${fps}.mp4`;
     const [download, output] = await Promise.all([
       page.waitForEvent("download"),
-      page.evaluate(async ({ fps, sourceRoot }) => {
-        const { project: demo } = await import("/@id/virtual:ritween-project");
-        const { exportMp4: exportVideo } =
-          await import(`${sourceRoot}/engine/export/formats/mp4/export-mp4.ts`);
-        const { renderAudio } = await import(`${sourceRoot}/engine/render/audio.ts`);
-        const project = {
-          ...demo,
-          duration: 3,
-          scenes: [
-            { ...demo.scenes[0], start: 0, duration: 1.25 },
-            { ...demo.scenes[1], start: 1.25, duration: 1.75 },
-          ],
-          audioTracks: [
-            {
-              id: "pulse",
-              name: "Pulse",
-              clips: [
-                {
-                  id: "pulse",
-                  name: "Pulse",
-                  start: 0,
-                  duration: 3,
-                  create: () => ({
-                    schedule(host) {
-                      for (const at of [0, 1.05, 2.4]) {
-                        const oscillator = host.context.createOscillator();
-                        const gain = host.context.createGain();
-                        oscillator.frequency.value = 440;
-                        gain.gain.value = 0.2;
-                        oscillator.connect(gain).connect(host.destination);
-                        oscillator.start(at);
-                        oscillator.stop(at + 0.2);
-                      }
-                    },
-                  }),
-                },
-              ],
-            },
-          ],
-        };
-        const pcm = await renderAudio(project, [], fps);
-        const output = await exportVideo(project, {
-          width: 640,
-          height: 360,
-          fps,
-          keyFrameInterval: 1,
-        });
-        const audio = new Blob([pcm.getChannelData(0).slice().buffer]);
-        const reference = await new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result.split(",")[1]);
-          reader.readAsDataURL(audio);
-        });
-        const link = document.createElement("a");
-        link.download = "pulse.mp4";
-        link.href = URL.createObjectURL(output.blob);
-        link.click();
-        return {
-          frames: output.frames,
-          duration: output.duration,
-          reference,
-          bytes: output.blob.size,
-        };
-      }, { fps, sourceRoot: `/@fs${normalizePath(root)}/src` }),
+      page.evaluate(
+        async ({ fps, sourceRoot }) => {
+          const { project: demo } =
+            await import("/@id/virtual:ritween-project");
+          const { exportMp4: exportVideo } = await import(
+            `${sourceRoot}/engine/export/formats/mp4/export-mp4.ts`
+          );
+          const { renderAudio } = await import(
+            `${sourceRoot}/engine/render/audio.ts`
+          );
+          const project = {
+            ...demo,
+            duration: 3,
+            scenes: [
+              { ...demo.scenes[0], start: 0, duration: 1.25 },
+              { ...demo.scenes[1], start: 1.25, duration: 1.75 },
+            ],
+            audioTracks: [
+              {
+                id: "pulse",
+                name: "Pulse",
+                clips: [
+                  {
+                    id: "pulse",
+                    name: "Pulse",
+                    start: 0,
+                    duration: 3,
+                    create: () => ({
+                      schedule(host) {
+                        for (const at of [0, 1.05, 2.4]) {
+                          const oscillator = host.context.createOscillator();
+                          const gain = host.context.createGain();
+                          oscillator.frequency.value = 440;
+                          gain.gain.value = 0.2;
+                          oscillator.connect(gain).connect(host.destination);
+                          oscillator.start(at);
+                          oscillator.stop(at + 0.2);
+                        }
+                      },
+                    }),
+                  },
+                ],
+              },
+            ],
+          };
+          const pcm = await renderAudio(project, [], fps);
+          const output = await exportVideo(project, {
+            width: 640,
+            height: 360,
+            fps,
+            keyFrameInterval: 1,
+          });
+          const audio = new Blob([pcm.getChannelData(0).slice().buffer]);
+          const reference = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result.split(",")[1]);
+            reader.readAsDataURL(audio);
+          });
+          const link = document.createElement("a");
+          link.download = "pulse.mp4";
+          link.href = URL.createObjectURL(output.blob);
+          link.click();
+          return {
+            frames: output.frames,
+            duration: output.duration,
+            reference,
+            bytes: output.blob.size,
+          };
+        },
+        { fps, sourceRoot: `/@fs${normalizePath(root)}/src` },
+      ),
     ]);
     await download.saveAs(file);
     assert.equal(output.frames, fps * 3);

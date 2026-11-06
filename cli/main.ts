@@ -14,6 +14,17 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { constants } from "node:fs";
+import {
+  parseRules,
+  evaluateRules,
+  RulesInputError,
+  MAX_RULES_BYTES,
+  type RulesFile,
+} from "../src/engine/inspect/rules";
+import {
+  MAX_INSPECTION_BYTES,
+  type InspectionDocument,
+} from "../src/engine/inspect/report";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { parseOptions, help } from "./options.ts";
@@ -109,6 +120,37 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (!("command" in parsed)) return;
+    let rules: RulesFile | undefined;
+    if (parsed.rules !== undefined) {
+      try {
+        const handle = await import("node:fs/promises").then((fs) =>
+          fs.open(resolve(parsed.rules!), "r"),
+        );
+        try {
+          const buffer = Buffer.alloc(MAX_RULES_BYTES + 1);
+          let size = 0;
+          while (size < buffer.length) {
+            const read = await handle.read(
+              buffer,
+              size,
+              buffer.length - size,
+              null,
+            );
+            if (!read.bytesRead) break;
+            size += read.bytesRead;
+          }
+          if (size > MAX_RULES_BYTES)
+            throw new RulesInputError("Rules exceed the 1 MiB limit.");
+          rules = parseRules(buffer.subarray(0, size).toString("utf8"));
+        } finally {
+          await handle.close();
+        }
+      } catch (error) {
+        throw new RulesInputError(
+          `Invalid --rules input: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     options = parsed;
     const activeOptions = parsed;
     const project = await resolveProject(
@@ -316,15 +358,30 @@ export async function main(argv = process.argv.slice(2)) {
         );
         // The evaluator prefixes its own name and appends browser stack frames;
         // report only the message the user can act on.
-        const { json, summary } = await inspector.catch((error: unknown) => {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          throw Error(
-            message
-              .replace(/^page\.evaluate: (?:(?:\w*Error): )?/, "")
-              .split(/\n\s+at /)[0],
-          );
-        });
+        const { json: inspectedJson, summary } = await inspector.catch(
+          (error: unknown) => {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            throw Error(
+              message
+                .replace(/^page\.evaluate: (?:(?:\w*Error): )?/, "")
+                .split(/\n\s+at /)[0],
+            );
+          },
+        );
+        const document = JSON.parse(inspectedJson) as InspectionDocument;
+        const ruleResults = rules ? evaluateRules(document, rules) : undefined;
+        const json = ruleResults
+          ? JSON.stringify({ ...document, ruleResults })
+          : inspectedJson;
+        if (Buffer.byteLength(json, "utf8") > MAX_INSPECTION_BYTES)
+          throw Error("Inspection exceeds 64 MiB; inspect a narrower target.");
+        if (
+          ruleResults?.some(
+            (r) => r.status === "fail" || r.status === "indeterminate",
+          )
+        )
+          process.exitCode = 1;
         if (failures.length) throw Error(failures.join("\n"));
         if (cancelled) throw Error("Cancelled.");
         if (inspectOutput)
@@ -419,7 +476,13 @@ export async function main(argv = process.argv.slice(2)) {
         : `Ritween: ${message}`,
     );
     // Usage and malformed input exit 2; runtime and selected validation failures exit 1.
-    process.exitCode = interrupted ? 130 : options ? 1 : 2;
+    process.exitCode = interrupted
+      ? 130
+      : error instanceof RulesInputError
+        ? 2
+        : options
+          ? 1
+          : 2;
   } finally {
     exportProgress?.stop();
     cancelled = true;

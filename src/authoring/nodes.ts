@@ -49,6 +49,11 @@ export interface StackOptions {
 }
 export type NodeSpec =
   | {
+      readonly kind: "safe-area";
+      readonly insets: Required<PaddingInsets>;
+      readonly child: ViewNode;
+    }
+  | {
       readonly kind: "clip";
       readonly shape: ClipShape;
       readonly child: ViewNode;
@@ -258,6 +263,28 @@ export function Box(style: BoxStyle): ViewNode {
       width: animated(style.width),
       height: animated(style.height),
     }),
+  });
+}
+/** Layout-only inset viewport. Use its scoped ID as a rule's safe-rectangle target. */
+export function SafeArea(child: ViewNode, insets: PaddingInsets): ViewNode {
+  if (!insets || typeof insets !== "object")
+    throw Error("SafeArea requires explicit insets.");
+  for (const key of Object.keys(insets))
+    if (!["top", "right", "bottom", "left"].includes(key))
+      throw Error(`Unknown SafeArea inset: ${key}`);
+  const normalized = {
+    top: insets.top ?? 0,
+    right: insets.right ?? 0,
+    bottom: insets.bottom ?? 0,
+    left: insets.left ?? 0,
+  };
+  for (const value of Object.values(normalized))
+    if (!Number.isFinite(value) || value < 0)
+      throw Error("SafeArea insets must be finite and non-negative.");
+  return new ViewNode({
+    kind: "safe-area",
+    insets: Object.freeze(normalized),
+    child,
   });
 }
 export function Spacer(): ViewNode {

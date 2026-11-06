@@ -91,6 +91,20 @@ export {
   frameTiming,
 } from "./engine/timeline";
 
+export {
+  parseRules,
+  evaluateRules,
+  summarizeRuleSchedule,
+  MAX_RULES_BYTES,
+  MAX_RULES,
+  RulesInputError,
+} from "./engine/inspect/rules";
+export type {
+  RuleTarget,
+  InspectionRule,
+  RulesFile,
+  RuleResult,
+} from "./engine/inspect/rules";
 export { FrameSource } from "./engine/render/frame-source";
 export type { FrameSourceOptions } from "./engine/render/frame-source";
 

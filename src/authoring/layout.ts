@@ -159,6 +159,7 @@ export interface LayoutNode {
    * Composition boundaries, which keep their own scoped spaces.
    */
   readonly contentBounds?: Bounds;
+  readonly safeBounds?: Bounds;
   /**
    * Identity allocated by the one counter of this root evaluation. Opt-in inspection metadata;
    * absent when inspection is disabled. Rebasing a nested tree keeps it, because the node stays
@@ -168,9 +169,7 @@ export interface LayoutNode {
 }
 /** Stable layout diagnostic codes (docs/plans/declarative-layout-hardening.md §7). */
 export type LayoutDiagnosticCode =
-  | "offered-size-overflow"
-  | "fixed-allocation-deficit"
-  | "unused-flex";
+  "offered-size-overflow" | "fixed-allocation-deficit" | "unused-flex";
 /**
  * Structured form of a layout conflict. `warnings` stays the legacy string list;
  * these entries are authored at the point of detection, never parsed back out of
@@ -223,7 +222,14 @@ export type WorldViewportMapping =
       readonly source: "evaluateCamera";
       readonly precision: "binary64-evaluated";
       readonly status: "mapped";
-      readonly matrix: readonly [number, number, number, number, number, number];
+      readonly matrix: readonly [
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+      ];
     }
   | {
       readonly kind: "world-to-composition-viewport";
@@ -305,16 +311,21 @@ function layoutSpaceProvenance(): LayoutSpaceProvenance {
   };
 }
 /** Mount one evaluated frame's own layout space as a composition world or overlay. */
-function worldViewportMapping(
-  matrix: readonly number[],
-): WorldViewportMapping {
+function worldViewportMapping(matrix: readonly number[]): WorldViewportMapping {
   if (matrix.length === 6 && matrix.every((value) => Number.isFinite(value)))
     return {
       kind: "world-to-composition-viewport",
       source: "evaluateCamera",
       precision: "binary64-evaluated",
       status: "mapped",
-      matrix: [matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]],
+      matrix: [
+        matrix[0],
+        matrix[1],
+        matrix[2],
+        matrix[3],
+        matrix[4],
+        matrix[5],
+      ],
     };
   return {
     kind: "world-to-composition-viewport",
@@ -380,7 +391,10 @@ function frameHasLayoutSpace(frame: EvaluatedFrame): boolean {
   return false;
 }
 /** Rebase explicit frame space ids with provenance. No-op unless inspection stamped one. */
-function rebaseFrameLayout(frame: EvaluatedFrame, prefix: string): EvaluatedFrame {
+function rebaseFrameLayout(
+  frame: EvaluatedFrame,
+  prefix: string,
+): EvaluatedFrame {
   if (!frameHasLayoutSpace(frame)) return frame;
   const commands = frame.commands.map((command) => {
     if (command.kind !== "composition" && command.kind !== "group") return command;
@@ -915,7 +929,20 @@ function evaluateViewWithCounter(
       } else if ("child" in s) {
         let cw = w,
           ch = h;
-        if (s.kind === "padding") {
+        if (s.kind === "safe-area") {
+          const i = s.insets;
+          if (
+            !Number.isFinite(w) ||
+            !Number.isFinite(h) ||
+            i.left + i.right > w ||
+            i.top + i.bottom > h
+          )
+            throw Error(
+              `${path}: SafeArea insets exceed the finite parent proposal.`,
+            );
+          cw = w - i.left - i.right;
+          ch = h - i.top - i.bottom;
+        } else if (s.kind === "padding") {
           for (const value of [s.top, s.right, s.bottom, s.left])
             positive(value, "Padding");
           cw = Math.max(0, w - s.left - s.right);
@@ -963,6 +990,10 @@ function evaluateViewWithCounter(
         if (s.kind === "padding") {
           m.width += s.left + s.right;
           m.height += s.top + s.bottom;
+        }
+        if (s.kind === "safe-area") {
+          m.width = w;
+          m.height = h;
         }
         if (s.kind === "frame") {
           if (s.width !== undefined) m.width = cw;
@@ -1564,7 +1595,16 @@ function evaluateViewWithCounter(
       let cx = x,
         cy = y;
       let childSlot: Bounds | undefined;
-      if (s.kind === "padding") {
+      if (s.kind === "safe-area") {
+        cx += s.insets.left;
+        cy += s.insets.top;
+        childSlot = {
+          x: cx,
+          y: cy,
+          width: m.width - s.insets.left - s.insets.right,
+          height: m.height - s.insets.top - s.insets.bottom,
+        };
+      } else if (s.kind === "padding") {
         cx += s.left;
         cy += s.top;
         if (allocatedSlot) {
@@ -1578,11 +1618,15 @@ function evaluateViewWithCounter(
       } else if (s.kind === "frame") {
         const fw =
           s.width === undefined || s.width === "fill"
-            ? (allocatedSlot ? allocatedSlot.width : m.width)
+            ? allocatedSlot
+              ? allocatedSlot.width
+              : m.width
             : positive(s.width, "Frame width");
         const fh =
           s.height === undefined || s.height === "fill"
-            ? (allocatedSlot ? allocatedSlot.height : m.height)
+            ? allocatedSlot
+              ? allocatedSlot.height
+              : m.height
             : positive(s.height, "Frame height");
         cx += align(s.alignX ?? s.align, m.width - child.width);
         cy += align(s.alignY ?? s.align, m.height - child.height);
@@ -1595,9 +1639,10 @@ function evaluateViewWithCounter(
           };
         }
       } else if (s.kind === "hstack") {
-        const slotWidth = (allocatedSlot && child.allocatedSlotMain !== undefined)
-          ? child.allocatedSlotMain
-          : child.width;
+        const slotWidth =
+          allocatedSlot && child.allocatedSlotMain !== undefined
+            ? child.allocatedSlotMain
+            : child.width;
         cx += cursor;
         cy += align(s.options.align ?? "center", m.height - child.height);
         if (allocatedSlot) {
@@ -1610,9 +1655,10 @@ function evaluateViewWithCounter(
         }
         cursor += child.width + (s.options.gap ?? 0);
       } else if (s.kind === "vstack") {
-        const slotHeight = (allocatedSlot && child.allocatedSlotMain !== undefined)
-          ? child.allocatedSlotMain
-          : child.height;
+        const slotHeight =
+          allocatedSlot && child.allocatedSlotMain !== undefined
+            ? child.allocatedSlotMain
+            : child.height;
         cy += cursor;
         cx += align(s.options.align ?? "center", m.width - child.width);
         if (allocatedSlot) {
@@ -1672,6 +1718,16 @@ function evaluateViewWithCounter(
       ...(m.offeredSize ? { offeredSize: m.offeredSize } : {}),
       ...(allocatedSlot ? { allocatedSlot } : {}),
       ...(contentBounds ? { contentBounds } : {}),
+      ...(options.inspection && s.kind === "safe-area"
+        ? {
+            safeBounds: {
+              x: x + s.insets.left,
+              y: y + s.insets.top,
+              width: m.width - s.insets.left - s.insets.right,
+              height: m.height - s.insets.top - s.insets.bottom,
+            },
+          }
+        : {}),
     };
   }
   const rootKey = root.key ?? "root";

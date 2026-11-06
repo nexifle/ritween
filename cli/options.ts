@@ -23,6 +23,7 @@ Options:
   --frame INDEX            Zero-based frame index, divided by --fps
   --target SCOPE#ID        inspect only: exact node in one scope, by its
                            authored ViewNode.id(); keeps ancestors and space context
+  --rules PATH             inspect only: JSON assertion rules (1 MiB, 10,000 rules)
   --fail-on error          inspect only: exit 1 when a diagnostic has severity
                            error (plain diagnostics never change the exit code)
   --resolution PRESET      360p, 720p, 1080p or WIDTHxHEIGHT
@@ -85,6 +86,7 @@ export function parseOptions(argv: string[]) {
       browser: { type: "string" },
       timeout: { type: "string" },
       target: { type: "string" },
+      rules: { type: "string" },
       "fail-on": { type: "string" },
       force: { type: "boolean" },
       json: { type: "boolean" },
@@ -125,7 +127,12 @@ export function parseOptions(argv: string[]) {
     throw Error("--open and --port apply to web preview only.");
   if (values.time !== undefined && values.frame !== undefined)
     throw Error("Pass --time or --frame, not both.");
-  // inspect has no rules input yet; --fail-on error is the only selected-failure mode.
+  if (values.rules !== undefined && command !== "inspect")
+    throw Error("--rules applies to inspect only.");
+  if (values.rules !== undefined && values.target !== undefined)
+    throw Error(
+      "--rules cannot be combined with --target; rules require the full tree.",
+    );
   if (values["fail-on"] !== undefined && command !== "inspect")
     throw Error("--fail-on applies to inspect only.");
   if (values["fail-on"] !== undefined && values["fail-on"] !== "error")

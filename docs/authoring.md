@@ -1022,3 +1022,110 @@ or construct a Path morph explicitly. These helpers do not animate geometry on
 their own. Path's 4096-command limit applies (a Polyline uses five commands per
 segment; a Polygon uses one per vertex plus close). GPU rendering is not verified
 by CPU layout tests.
+
+
+## Assertions and safe areas
+
+`SafeArea(child, { top, right, bottom, left })` is a layout-only node. It occupies
+its finite parent proposal and places the child at the inset origin. Omitted edges
+are zero; insets must be finite and non-negative, and their sums cannot exceed the
+proposal. Zero remaining width/height is allowed. It neither clips nor adds GPU
+surfaces. Oversized content remains visible. Give the SafeArea an ID to select its
+`safe-rectangle`; nested SafeAreas have independent rectangles. Parent motion moves
+this local rectangle and content together, so local compliance does **not** prove
+output-screen safety. There are no platform defaults or automatic descendant rules.
+
+```ts
+SafeArea(
+  HStack([title.flex(), button], { gap: 12 }).id("row"),
+  { left: 24, right: 24, top: 16, bottom: 16 },
+).id("safe");
+```
+
+An inspection rules file has `schemaVersion: 1` and a `rules` array:
+
+```json
+{
+  "schemaVersion": 1,
+  "rules": [{
+    "id": "row-inside-safe",
+    "kind": "containment",
+    "a": { "scope": "scene:main", "space": "layout", "id": "row", "bounds": "content" },
+    "b": { "scope": "scene:main", "space": "layout", "id": "safe", "bounds": "safe-rectangle" },
+    "space": "scene:main/layout",
+    "tolerance": 0.01,
+    "temporal": { "start": 1, "end": 4, "samples": [1, 2, 3] }
+  }]
+}
+```
+
+Targets require an exact scope and layout-space ID plus exactly one authored `id`
+or exact `path`. Repeated IDs in different nested spaces are not ambiguous when
+the space is explicit. Missing or ambiguous targets fail. Bounds selections are
+`layout-slot`, `content`, `safe-rectangle`, or `projected-paint`. Layout comparisons
+use a qualified `scope/space` (for example `scene:main/layout`); projected paint
+uses `output-pixels`. Unsupported coordinate conversions return `indeterminate`,
+not success. A safe rectangle is local layout geometry, not projected output ink.
+
+Rules compare A against B:
+
+- `containment`: all edges of A inside B.
+- `minimum-inset`: `edge` (`left`, `right`, `top`, `bottom`) and `minimum`.
+- `minimum-gap`: signed separation from A's end to B's start on `axis` (`x`/`y`),
+  with `minimum`. No cross-axis overlap is required.
+- `alignment`: `axis` and `align` (`start`, `center`, `end`).
+- `non-overlap`: explicit pair only; touching edges are not positive-area overlap.
+
+Default tolerance is 0.01 of the selected space's units, with a finite non-negative
+per-rule override. This is unrelated to browser pixel-comparison tolerance.
+Projected paint requires an explicit rule `assertionDomain`: use
+`ideal-projected-bounds` for mathematical projected-quad bounds measurements, or
+`pixel-contribution` for visual contribution questions. The latter remains
+`indeterminate`: G3 does not reconstruct raster coverage, alpha or occlusion.
+In particular zoom clamp-to-edge sampling can contribute outside the ideal quad.
+No ideal quad is relabeled as a raster-conservative bound.
+
+Paint targets default to subtree content, excluding backgrounds. Explicit
+`paintSelection: "background"` selects exactly one background belonging to the
+selected node (not arbitrary descendant backgrounds); absent or ambiguous selections
+are errors. Bounds alignment measures start/center/end of the selected envelope,
+including conservative envelopes; a mismatch is a bounds mismatch, not ink mismatch.
+Containment/inset need an exact single container rectangle; an aggregate envelope
+is not filled. Non-overlap checks the selected pair's leaves, preserving aggregate
+holes. Conservative possible violations remain indeterminate except for explicitly
+selected bounds alignment. Results record the domain, capability and provenance.
+
+Layout comparisons can follow recorded `evaluateCamera` World-to-parent mappings
+into a common qualified layout space, retaining binary64 provenance. Unsupported,
+ambiguous or singular chains remain indeterminate. Conversion to output pixels is
+not inferred from the design/output ratio. Output layout conversion requires one
+recorded frame occurrence and a consistent uploaded descendant draw camera, then
+uses the node transform, recorded surface chain and compositor placement. Missing,
+ambiguous, singular, empty or custom mappings remain indeterminate. This conversion
+projects the **unclipped layout rectangle**, not visible paint: clipping must never
+manufacture an inner safe container or conceal content leaving a local safe area.
+A separate stationary output-space target is required to establish screen safety.
+
+Results include status, measured values, threshold, accuracy, unit, space, targets
+and project time. Requested `fail` or `indeterminate` results exit 1. Only inactive
+temporal scopes produce `not-applicable`; they are counted separately from passes.
+Intervals are `[start, end)` unless `includeEnd: true`. Samples must be finite,
+unique, sorted and inside the interval. `ritween inspect --time` still checks only
+one time, not the whole authored schedule.
+
+Checkout validation can execute the authored schedule in one browser/FrameSource:
+
+```sh
+node scripts/validate-rule-schedule.mjs --project ./manifest.ts --rules ./rules.json
+```
+
+Its report aggregates results by rule/time and fails for any failure, indeterminate
+result, missing authored sample, empty authored schedule, or rule with no applicable
+executed samples. Each temporal rule runs only at its own authored samples; another
+rule's schedule does not add incidental checks during intentional motion. See
+`scripts/inspect-fixture/manifest-safe-area.mjs` and `safe-area-rules.json` for a
+reusable fixture with a deliberately narrow entrance gap and settled-state scope.
+A passing layout can still have poor hierarchy, contrast, density or typography.
+Compliance is not aesthetic review, and finite samples do not prove all times.
+Browser evidence must be recorded separately; it never rewrites an indeterminate
+CPU result to pass.

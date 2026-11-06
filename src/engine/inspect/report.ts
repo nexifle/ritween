@@ -92,6 +92,7 @@ export interface InspectionLayoutNode {
    * aggregates there, including at Clip and Composition space boundaries. Layout geometry,
    * never paint, visibility or ink. */
   readonly contentBounds?: InspectionBounds;
+  readonly safeBounds?: InspectionBounds;
   /** Identity from the frame's one evaluation counter; absent when inspection is disabled. */
   readonly inspectionId?: number;
   readonly bounds: InspectionBounds;
@@ -323,6 +324,11 @@ export interface InspectionScene {
    * not fragment coverage or the full clamp-to-edge sampling contribution.
    */
   readonly finalPaintRecords?: readonly FinalPaintRecord[];
+  /** Recorded compositor placement, not clipping or raster coverage. */
+  readonly outputLayoutMapping?: {
+    readonly matrix: InspectionMatrix6;
+    readonly selection: InspectionBounds;
+  };
   readonly finalProjection: FinalProjection;
   /** Legacy `EvaluatedFrame.warnings` strings, preserved verbatim and in order. */
   readonly warnings?: readonly string[];
@@ -782,6 +788,9 @@ function readNodeHeader(
       budget,
     );
   }
+  const rawSafeBounds = read(value, "safeBounds", where);
+  if (rawSafeBounds !== undefined) budget?.charge(14);
+  const safeBoundsVal = rawSafeBounds === undefined ? undefined : bounds(rawSafeBounds, `${where}.safeBounds`, budget);
   const rawContentBounds = read(value, "contentBounds", where);
   let contentBoundsVal: InspectionBounds | undefined;
   if (rawContentBounds !== undefined) {
@@ -823,6 +832,7 @@ function readNodeHeader(
     offeredSizeVal,
     allocatedSlotVal,
     contentBoundsVal,
+    safeBoundsVal,
     inspectionIdVal,
     boundsVal,
     transformVal,
@@ -905,6 +915,7 @@ function constructLayoutTree(
         ...(top.header.allocatedSlotVal === undefined
           ? {}
           : { allocatedSlot: top.header.allocatedSlotVal }),
+        ...(top.header.safeBoundsVal === undefined ? {} : { safeBounds: top.header.safeBoundsVal }),
         ...(top.header.contentBoundsVal === undefined
           ? {}
           : { contentBounds: top.header.contentBoundsVal }),
@@ -1103,6 +1114,7 @@ function constructTargetedLayoutTree(
       ...(header.allocatedSlotVal === undefined
         ? {}
         : { allocatedSlot: header.allocatedSlotVal }),
+      ...(header.safeBoundsVal === undefined ? {} : { safeBounds: header.safeBoundsVal }),
       ...(header.contentBoundsVal === undefined
         ? {}
         : { contentBounds: header.contentBoundsVal }),
@@ -2622,7 +2634,11 @@ function inspectLayer(
       });
       finalRecords = pending;
     }
-
+    const outputLayoutMapping = plan.status === "available" ? {
+      matrix: [plan.scaleX, 0, 0, plan.scaleY, plan.translateX, plan.translateY] as InspectionMatrix6,
+      selection: { x: plan.selection.x0, y: plan.selection.y0, width: plan.selection.x1 - plan.selection.x0, height: plan.selection.y1 - plan.selection.y0 },
+    } : undefined;
+    if (outputLayoutMapping) budget?.charge(new TextEncoder().encode(JSON.stringify({ outputLayoutMapping })).length - 1);
     return {
       scene: {
         scope: context.scope,
@@ -2641,6 +2657,7 @@ function inspectLayer(
         ...(publishedOccurrences.surfaces === undefined
           ? {}
           : { surfaceOccurrences: publishedOccurrences.surfaces }),
+        ...(outputLayoutMapping ? { outputLayoutMapping } : {}),
         finalProjection,
         warnings,
       },

@@ -31,6 +31,7 @@ export {
   Box,
   Text,
   Spacer,
+  SafeArea,
   HStack,
   VStack,
   ZStack,

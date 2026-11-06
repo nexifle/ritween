@@ -178,7 +178,7 @@ These collections are metadata, not raster evidence. Keep the three precisions a
 
 Node `id` is the author-declared `ViewNode.id()` value. Anonymous nodes have no `id` and their synthetic path segments (`box[0]`) are never treated as identifiers.
 
-`paintRecords` are ideal pre-transition Box, Text, and Media draw quads in `scene-target-pixels`. `finalPaintRecords` are those leaves projected into `output-pixels` when `finalProjection.status` is `available`. Both are ideal quads, not mask pixels, occlusion, clamp-to-edge sampling, or fragment coverage. Built-in and direct transitions publish recorded-leaf output quads. Custom transition output stays unavailable, while pre-transition records remain. A recorded project overlay is identity in output pixels on the project clock and is not mixed by the scene transition. `capability.geometry.paint` is always `partial`, including when a scene publishes no recorded output; it has no `unavailable` state. `capability.transitions.projection` is separate: `partial` when any published retained scene has `finalProjection.status` of `available`, otherwise `unavailable`. A `--target` republishes that projection value from the retained scene alone. This command does not evaluate G4 rules.
+`paintRecords` are ideal pre-transition Box, Text, and Media draw quads in `scene-target-pixels`. `finalPaintRecords` are those leaves projected into `output-pixels` when `finalProjection.status` is `available`. Both are ideal quads, not mask pixels, occlusion, clamp-to-edge sampling, or fragment coverage. Built-in and direct transitions publish recorded-leaf output quads. Custom transition output stays unavailable, while pre-transition records remain. A recorded project overlay is identity in output pixels on the project clock and is not mixed by the scene transition. `capability.geometry.paint` is always `partial`, including when a scene publishes no recorded output; it has no `unavailable` state. `capability.transitions.projection` is separate: `partial` when any published retained scene has `finalProjection.status` of `available`, otherwise `unavailable`. A `--target` republishes that projection value from the retained scene alone. Use `--rules PATH` to evaluate explicit G4 assertions on the complete snapshot.
 
 Diagnostics carry a stable `code` (`offered-size-overflow`, `fixed-allocation-deficit`, `unavailable-inspection` today), `severity`, `scope`, optional node `id`, exact `path`, `clock.local`/`clock.project`, `space`, `message`, and numeric `bounds` plus `excess`/`deficit` where they apply. They are authored where the layout conflict is detected, not parsed back out of warning strings.
 
@@ -188,7 +188,13 @@ The output is a whitelist of metadata: no GPU textures, media sources, image bit
 
 `--fail-on error` exits 1 when any diagnostic has severity `error`; plain diagnostics never change the exit code. File output is atomic: the bytes land in a sibling temp file, the cancellation check runs immediately before the commit, and publication is a single rename (or a no-replace link without `--force`). A failed or cancelled write therefore never exposes a partial file and never destroys an existing one.
 
-Exit codes: 0 successful inspection, 1 runtime or selected-diagnostic failure, 2 malformed command input. `--rules` input arrives with the assertion engine; this command rejects it until then.
+Exit codes: 0 successful inspection, 1 runtime, selected-diagnostic, or requested rule failure/indeterminate result, 2 malformed command or rules input. Rules files are limited to 1 MiB UTF-8 and 10,000 rules. `--rules` cannot be combined with the tree-pruning `--target` option.
+
+```sh
+ritween inspect --project ./manifest.ts --time 2 --rules ./rules.json
+```
+
+Rules use schema version 1 and are returned as `ruleResults` beside the inspection metadata. See [authoring rules](docs/authoring.md#assertions-and-safe-areas) for schema, geometry accuracy and temporal scope. An inactive temporal rule is `not-applicable`, never a successful check. A single inspect invocation checks only its requested time.
 
 ## Validation
 

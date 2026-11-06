@@ -1,0 +1,276 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    {
+      "space": "scene:content/layout",
+      "id": "nested-local-safe",
+      "kind": "containment",
+      "a": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "panel",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "inner-safe",
+        "bounds": "safe-rectangle"
+      },
+      "temporal": {
+        "start": 0.3,
+        "end": 6,
+        "samples": [
+          0.5,
+          1,
+          2,
+          3,
+          4.5,
+          5
+        ]
+      }
+    },
+    {
+      "space": "output-pixels",
+      "id": "nested-output-safe",
+      "kind": "containment",
+      "a": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "panel",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "inner-safe",
+        "bounds": "safe-rectangle"
+      },
+      "temporal": {
+        "start": 0.3,
+        "end": 6,
+        "samples": [
+          0.5,
+          1,
+          2,
+          3,
+          4.5,
+          5
+        ]
+      }
+    },
+    {
+      "space": "scene:content/layout",
+      "id": "exact-search-slot-gap",
+      "kind": "minimum-gap",
+      "a": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "query",
+        "bounds": "layout-slot"
+      },
+      "b": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "button",
+        "bounds": "layout-slot"
+      },
+      "axis": "x",
+      "minimum": 12,
+      "temporal": {
+        "start": 0.3,
+        "end": 6,
+        "samples": [
+          0.5,
+          1,
+          2,
+          3,
+          4.5,
+          5
+        ]
+      }
+    },
+    {
+      "space": "scene:content/layout",
+      "id": "title-status-gap",
+      "kind": "minimum-gap",
+      "a": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "title",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "status",
+        "bounds": "content"
+      },
+      "axis": "y",
+      "minimum": 8,
+      "temporal": {
+        "start": 0.3,
+        "end": 6,
+        "samples": [
+          0.5,
+          1,
+          2,
+          3,
+          4.5,
+          5
+        ]
+      }
+    },
+    {
+      "space": "scene:content/layout",
+      "id": "title-inset",
+      "kind": "minimum-inset",
+      "a": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "title",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "inner-safe",
+        "bounds": "safe-rectangle"
+      },
+      "edge": "left",
+      "minimum": 0,
+      "temporal": {
+        "start": 0.3,
+        "end": 6,
+        "samples": [
+          0.5,
+          1,
+          2,
+          3,
+          4.5,
+          5
+        ]
+      }
+    },
+    {
+      "space": "scene:content/layout",
+      "id": "title-status-alignment",
+      "kind": "alignment",
+      "a": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "title",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "status",
+        "bounds": "content"
+      },
+      "axis": "x",
+      "align": "start",
+      "temporal": {
+        "start": 0.3,
+        "end": 6,
+        "samples": [
+          0.5,
+          1,
+          2,
+          3,
+          4.5,
+          5
+        ]
+      }
+    },
+    {
+      "space": "scene:content/layout",
+      "id": "title-status-disjoint",
+      "kind": "non-overlap",
+      "a": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "title",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "status",
+        "bounds": "content"
+      },
+      "temporal": {
+        "start": 0.3,
+        "end": 6,
+        "samples": [
+          0.5,
+          1,
+          2,
+          3,
+          4.5,
+          5
+        ]
+      }
+    },
+    {
+      "id": "motion-local-safety",
+      "kind": "containment",
+      "a": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "panel",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "inner-safe",
+        "bounds": "safe-rectangle"
+      },
+      "space": "output-pixels",
+      "temporal": {
+        "start": 0,
+        "end": 4.5,
+        "samples": [
+          0,
+          0.15,
+          0.3,
+          4,
+          4.1,
+          4.2,
+          4.3,
+          4.4
+        ]
+      }
+    },
+    {
+      "id": "settled-output-screen",
+      "kind": "containment",
+      "a": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "outer-safe",
+        "bounds": "safe-rectangle"
+      },
+      "b": {
+        "scope": "scene:content",
+        "space": "layout",
+        "id": "screen",
+        "bounds": "layout-slot"
+      },
+      "space": "output-pixels",
+      "temporal": {
+        "start": 0.3,
+        "end": 6,
+        "samples": [
+          0.5,
+          1,
+          2,
+          3,
+          4.5,
+          5
+        ]
+      }
+    }
+  ]
+}

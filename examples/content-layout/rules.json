@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    {
+      "id": "content-safe",
+      "kind": "containment",
+      "a": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "content",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "safe",
+        "bounds": "safe-rectangle"
+      },
+      "space": "scene:requests/layout",
+      "temporal": {
+        "start": 0,
+        "end": 6,
+        "includeEnd": true,
+        "samples": [0, 0.2, 0.4, 1, 1.999, 2, 3, 3.999, 4, 5.875, 6]
+      }
+    },
+    {
+      "id": "card-gap",
+      "kind": "minimum-gap",
+      "a": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "summary",
+        "bounds": "layout-slot"
+      },
+      "b": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "events",
+        "bounds": "layout-slot"
+      },
+      "space": "scene:requests/layout",
+      "temporal": {
+        "start": 0,
+        "end": 6,
+        "includeEnd": true,
+        "samples": [0, 0.2, 0.4, 1, 1.999, 2, 3, 3.999, 4, 5.875, 6]
+      },
+      "axis": "y",
+      "minimum": 24
+    },
+    {
+      "id": "query-status-gap",
+      "kind": "minimum-gap",
+      "a": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "query",
+        "bounds": "layout-slot"
+      },
+      "b": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "status",
+        "bounds": "layout-slot"
+      },
+      "space": "scene:requests/layout",
+      "temporal": {
+        "start": 0,
+        "end": 6,
+        "includeEnd": true,
+        "samples": [0, 0.2, 0.4, 1, 1.999, 2, 3, 3.999, 4, 5.875, 6]
+      },
+      "axis": "x",
+      "minimum": 16
+    },
+    {
+      "id": "status-button-gap",
+      "kind": "minimum-gap",
+      "a": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "status",
+        "bounds": "layout-slot"
+      },
+      "b": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "button",
+        "bounds": "layout-slot"
+      },
+      "space": "scene:requests/layout",
+      "temporal": {
+        "start": 0,
+        "end": 6,
+        "includeEnd": true,
+        "samples": [0, 0.2, 0.4, 1, 1.999, 2, 3, 3.999, 4, 5.875, 6]
+      },
+      "axis": "x",
+      "minimum": 16
+    },
+    {
+      "id": "title-padding",
+      "kind": "minimum-inset",
+      "a": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "title",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "summary",
+        "bounds": "layout-slot"
+      },
+      "space": "scene:requests/layout",
+      "temporal": {
+        "start": 0,
+        "end": 6,
+        "includeEnd": true,
+        "samples": [0, 0.2, 0.4, 1, 1.999, 2, 3, 3.999, 4, 5.875, 6]
+      },
+      "edge": "left",
+      "minimum": 24
+    },
+    {
+      "id": "viewport-stationary-width",
+      "kind": "alignment",
+      "a": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "scroll",
+        "bounds": "layout-slot"
+      },
+      "b": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "stream-heading",
+        "bounds": "content"
+      },
+      "space": "scene:requests/layout",
+      "temporal": {
+        "start": 0,
+        "end": 6,
+        "includeEnd": true,
+        "samples": [0, 0.2, 0.4, 1, 1.999, 2, 3, 3.999, 4, 5.875, 6]
+      },
+      "axis": "x",
+      "align": "start"
+    },
+    {
+      "id": "output-safety",
+      "kind": "containment",
+      "a": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "content",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:requests",
+        "space": "layout",
+        "id": "screen",
+        "bounds": "layout-slot"
+      },
+      "space": "output-pixels",
+      "temporal": {
+        "start": 0,
+        "end": 6,
+        "includeEnd": true,
+        "samples": [0, 0.2, 0.4, 1, 1.999, 2, 3, 3.999, 4, 5.875, 6]
+      }
+    }
+  ]
+}

@@ -186,3 +186,10 @@ The Ritween CLI supplies the browser bundler; a direct Node import is not a brow
 Do not enable `allowJs` or weaken strict checking merely to suppress missing declarations inside Ritween. Check the installed package version and its type entry, record the actual diagnostic, and report a package typing issue if declarations are missing. Keep consumer typechecking separate from whether preview or export succeeds.
 
 The CLI accepts a direct manifest path or discovers common names such as `manifest.ts` in a project directory. Prefer explicit `--project ./manifest.ts` when discovery is uncertain. Do not assume the CLI loads the consumer's `vite.config`; it creates its own Vite server.
+
+## Required variable-content validation
+
+Follow [layout validation](layout-validation.md) for axes, padding order, safe areas,
+scoped targets, geometry capabilities, deterministic font ownership, scroll viewports,
+temporal coverage, CLI limits and the mandatory nine-step workflow. Use real-font
+inspection and all-state visual review; successful rules are not optical or aesthetic proof.

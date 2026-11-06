@@ -54,7 +54,11 @@ Options:
   --version, -v            Show version
 
 Inspect writes JSON to stdout; logs go to stderr. Exit codes: 0 success,
-1 runtime or selected diagnostic failure, 2 malformed command input.
+1 runtime, selected diagnostic, or requested rule fail/indeterminate;
+2 malformed command/rules input. Rules run only at --time, not their full schedule.
+Inactive intervals are not-applicable, not pass. Output limit: 64 MiB, no truncation.
+Rules do not prove raster contribution, optical alignment, or design quality.
+Review all states and same-renderer forward/backward seeking before export.
 
 Requires Chrome/Chromium with WebGPU; MP4 also requires native H.264 encoding.
 Ctrl+C stops the server or cancels rendering. Existing files are kept on failure.

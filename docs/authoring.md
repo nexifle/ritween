@@ -380,7 +380,8 @@ Parents offer finite width/height; children report their size; parents place the
 Stacks measure non-flexible children first. Spacers and children whose main-axis
 frame is `"fill"` divide remaining space equally. Fixed content does not shrink;
 excess is reported in inspection warnings. This is intentionally not CSS flexbox:
-there is no layout priority, weighted growth, baseline alignment, or constraint solver.
+explicit `.flex(weight)` provides weighted slots, but there is no layout priority,
+baseline alignment, or general constraint solver.
 
 Stack `align` controls the cross axis (`start`, `center`, `end`); ZStack applies it
 to both axes. Empty stacks have zero intrinsic size. Spacer's cross-axis intrinsic
@@ -439,7 +440,7 @@ const card = Text("Row", { size: 20 }).padding({
   right: 12,
 });
 card.background({ fill: "#FFFFFF", radius: 8 }); // fills the padded card
-card.padding(4).background({ fill: "#FFFFFF" }); // padding 4 stays transparent
+card.background({ fill: "#FFFFFF" }).padding(4); // outer padding 4 stays transparent
 ```
 
 Modifier order also decides which ID owns the target. `.id()` on the draw leaf
@@ -1126,7 +1127,7 @@ per-rule override. This is unrelated to browser pixel-comparison tolerance.
 Projected paint requires an explicit rule `assertionDomain`: use
 `ideal-projected-bounds` for mathematical projected-quad bounds measurements, or
 `pixel-contribution` for visual contribution questions. The latter remains
-`indeterminate`: G3 does not reconstruct raster coverage, alpha or occlusion.
+`indeterminate`: inspection does not reconstruct raster coverage, alpha or occlusion.
 In particular zoom clamp-to-edge sampling can contribute outside the ideal quad.
 No ideal quad is relabeled as a raster-conservative bound.
 
@@ -1174,3 +1175,16 @@ A passing layout can still have poor hierarchy, contrast, density or typography.
 Compliance is not aesthetic review, and finite samples do not prove all times.
 Browser evidence must be recorded separately; it never rewrites an indeterminate
 CPU result to pass.
+
+## Content-driven production workflow
+
+See the packaged [layout validation workflow](../skills/ritween/references/layout-validation.md)
+for the nine required steps, geometry proof boundaries, immutable font/resource ownership,
+and identical local/installed evaluation protocol. The realistic
+[`examples/content-layout`](../examples/content-layout/README.md) example uses licensed
+preloaded fonts, weighted search slots, padded content-sized cards, stable IDs, local
+and output safety, three content states, and a stationary scrolling viewport.
+Its fixed scroll height is a deliberate viewport budget, not a background height.
+Run its rules schedule and inspect every state before export. Keep engine correctness,
+layout compliance and subjective design review separate; finite samples prove neither
+all procedural states nor agent reliability.

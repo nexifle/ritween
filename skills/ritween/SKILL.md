@@ -14,6 +14,13 @@ metadata:
 
 Help the user produce a runnable project, not just code snippets. This skill targets Ritween 0.2.4. Check the installed version before using examples; for a different version, inspect its types and CLI help. Do not automatically change the user's dependency version.
 
+## Content-driven layout validation
+
+For variable text, cards, safe areas, scrolling or state changes, follow the mandatory
+[nine-step layout workflow](references/layout-validation.md), including public type
+checks, real-font inspection, scheduled rules, all-state visual review, same-renderer
+ABA seeking and export gating. Rules are not aesthetic approval.
+
 ## Workflow
 
 1. Inspect the existing project and the brief: message, duration, aspect ratio, assets, audio, and output location. Reuse the existing project where possible. Choose simple defaults for nonblocking details; ask about unresolved creative decisions or destructive changes.
@@ -64,7 +71,7 @@ video, large datasets, geometry, and reusable components into one manifest.
 - TSX is a module format; JSX and DOM elements do not automatically become GPU graphics. Use exported factories such as `Text`, `VStack`, and `Composition`, not invented JSX components.
 - The incoming scene owns its transition. For non-cut transitions, start it at the previous scene's end minus transition duration; never introduce gaps or triple overlaps. See [composition](references/composition.md).
 - All Stages and Overlays require `Renderer.renderAsync()`, even without media. CLI, preview, and export already handle this. World clock remapping does not remap Video playback, which uses project time.
-- The CLI provides only `preview`, `frame`, and `export`; there is no `init` or `create` command.
+- The CLI provides `preview`, `frame`, `inspect`, and `export`; there is no `init` or `create` command.
 - Do not overwrite output files or use `--force` without the user's permission.
 
 ## Optional implementation references

@@ -220,3 +220,19 @@ ritween export ../video9 --resolution 1080x1920 --fps 60 \
 Exports default to quality-mode variable bitrate and two-second GOPs, with keyframes also requested at scene cuts. Automatic bitrate scales with pixels and FPS: 6 Mbps at Full HD 60 FPS, 3 Mbps at Full HD 30 FPS, minimum 500 kbps. Omit `--bitrate` to use Auto. The value is integer bits/second, not Mbps or a hard file-size limit. `--latency-mode realtime` explicitly prioritizes low latency; it does not guarantee faster total export. `--keyframe-interval` accepts positive seconds up to 60; actual requests are rounded down to whole frames (minimum one frame). These flags apply to `export` only. JSON results include the resolved encoding settings.
 
 MP4 contains Baseline H.264 I/P frames and optional AAC, with actual sync samples and fast-start metadata. The exporter validates sample order and count, and rejects missing/reordered frames instead of silently producing an invalid timeline.
+
+## Content-driven authoring workflow
+
+Follow the [nine-step public workflow](skills/ritween/references/layout-validation.md).
+Confirm public exports/types, enumerate states/content variants/motion boundaries,
+build a spacing/typography skeleton, inspect scoped real-font geometry, run rules at
+every authored sample, render all-state contact sheets and visually review them, then
+test forward/backward ABA in one renderer. Export only after repairs or an explicit
+named operator exception. Report measured compliance separately from subjective
+design quality and unsupported checks. A single `inspect` is not schedule coverage;
+separate `frame` processes are not same-renderer seek evidence.
+
+The packaged `examples/content-layout` includes a realistic example, rules and a
+shared evaluation brief. Its README documents the skill runner: replace only the CLI
+executable for local/installed evaluation, preserve cwd/arguments and assertions, and
+select an isolated tarball installation on PATH (never implicit installs or global links).

@@ -70,7 +70,9 @@
     "CLI.md",
     "LICENSE",
     "docs/technical-guide.md",
-    "docs/authoring.md"
+    "docs/authoring.md",
+    "skills/ritween",
+    "examples/content-layout"
   ],
   "allowScripts": {
     "esbuild@0.28.2": true,

@@ -14,6 +14,7 @@ import {
   type Theme,
 } from "./layout";
 import type { ViewNode } from "./nodes";
+import { StageFonts, snapshotFonts, type StageFont } from "./fonts";
 import { collectSharedElements } from "./shared-elements";
 import { ViewRenderer, type PaintRecord } from "./renderer";
 import { Camera, evaluateCamera, type CameraOptions } from "./camera";
@@ -28,6 +29,8 @@ export interface StageContext {
   readonly theme: Theme;
 }
 export interface StageOptions {
+  /** Scene-owned faces loaded before any measurement, including conditional content. */
+  readonly fonts?: readonly StageFont[];
   /** Project-clock clips, shared with SceneEntry.mediaClips for footage audio. */
   readonly mediaClips?: readonly MediaClip[];
   /** Optional image preloads; images appearing later are discovered during frame preparation. */
@@ -72,6 +75,8 @@ export function Overlay(
       textResolution: options.textResolution,
       mediaClips: options.mediaClips,
       images: options.images,
+      fonts: options.fonts,
+      inspection: options.inspection,
     },
     false,
   );
@@ -103,6 +108,8 @@ function createViewScene(
     throw Error("Stage textResolution must be finite and at least 1.");
   const clips = Object.freeze((options.mediaClips ?? []).map(videoResource));
   const images = Object.freeze([...(options.images ?? [])]);
+  const fontSpecs = snapshotFonts(options.fonts);
+  const fontResources = new StageFonts();
   if (images.some((url) => !url))
     throw Error("Stage image URLs must not be empty.");
   const activeOnly =
@@ -186,7 +193,8 @@ function createViewScene(
       prepared.timing.time === context.time &&
       prepared.timing.localTime === context.localTime &&
       prepared.timing.progress === context.progress &&
-      prepared.inspection === (context.inspection ?? options.inspection ?? false)
+      prepared.inspection ===
+        (context.inspection ?? options.inspection ?? false)
     )
       return prepared.result;
     throw Error("Stage frame is not prepared. Use renderAsync().");
@@ -222,27 +230,29 @@ function createViewScene(
         throw Error("Stage has already been initialized or disposed.");
       initialized = true;
       setupContext = context;
-      const env = contextFor(context);
-      const root = view(env);
-      const fonts = new Set<string>();
-      // Discovery uses the same composition traversal as rendering, before fonts are loaded.
-      evaluateView(root, {
-        time: 0,
-        width: env.designSize[0],
-        height: env.designSize[1],
-        theme,
-        context: env,
-        measureText: (_text, font) => {
-          fonts.add(font);
-          return 0;
-        },
-      });
-      await Promise.all([...fonts].map((font) => document.fonts.load(font)));
-      await document.fonts.ready;
-      if (disposed) throw Error("Stage was disposed during setup.");
-      const instance = new ViewRenderer();
-      renderer = instance;
       try {
+        await fontResources.load(fontSpecs);
+        if (disposed) throw Error("Stage was disposed during setup.");
+        const env = contextFor(context);
+        const root = view(env);
+        const fonts = new Set<string>();
+        // Discovery uses the same composition traversal as rendering, before fonts are loaded.
+        evaluateView(root, {
+          time: 0,
+          width: env.designSize[0],
+          height: env.designSize[1],
+          theme,
+          context: env,
+          measureText: (_text, font) => {
+            fonts.add(font);
+            return 0;
+          },
+        });
+        await Promise.all([...fonts].map((font) => document.fonts.load(font)));
+        await document.fonts.ready;
+        if (disposed) throw Error("Stage was disposed during setup.");
+        const instance = new ViewRenderer();
+        renderer = instance;
         await instance.setup(context);
         if (disposed) throw Error("Stage was disposed during setup.");
         ready = true;
@@ -262,7 +272,11 @@ function createViewScene(
       } catch (error) {
         ready = false;
         media?.dispose();
-        instance.dispose();
+        renderer?.dispose();
+        renderer = undefined;
+        prepared = undefined;
+        frame = undefined;
+        fontResources.dispose();
         throw error;
       }
     },
@@ -301,6 +315,7 @@ function createViewScene(
       ready = false;
       prepared = undefined;
       media?.dispose();
+      fontResources.dispose();
       managedVideoScenes.delete(scene);
       renderer?.dispose();
       renderer = undefined;

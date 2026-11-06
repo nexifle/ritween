@@ -8,6 +8,51 @@ Shots, overlap transitions, Circle/Line shapes, Group/ForEach, Image/Video nodes
 motion presets, geometric clipping, image/luminance masks, media crop, and a
 CPU-inspectable tree/display list and chart components.
 
+## Deterministic conditional fonts
+
+Register fonts used by conditional content explicitly on `Stage` (or `Overlay`):
+
+```ts
+Stage(view, {
+  fonts: [{
+    family: "Project Inter",
+    source: new URL("./Inter-Regular.woff2", import.meta.url).href,
+    weight: "400",
+  }],
+});
+```
+
+Each scene loads and registers its own faces before measurement, including faces
+not used at time zero. Loading errors reject setup; no fallback frame is captured
+and replaced asynchronously. Disposal removes only that scene's registrations.
+Use a distinct project family name and register each required numeric weight
+(integer string `"1"`–`"1000"`, default `"400"`). Only `style: "normal"` is
+supported: non-normal styles reject synchronously because Text has no style
+selector. Family names are single, unquoted names without surrounding whitespace.
+While scenes/overlays are alive, each owner declaring the same family
+(case-insensitive) must declare the identical complete weight-to-source URL string
+configuration. Adding even a weight with the same source can change browser
+matching, so subset/superset configurations reject before any registration.
+Multiple weights in one scene are supported; repeat the complete configuration in
+other owners. Declaration order and duplicate identical entries do not matter.
+Only numeric weights are supported, not `normal` aliases or variable weight ranges.
+Identical configurations may coexist and dispose independently.
+Reservations are released on setup failure/disposal, so a later scene may reuse
+the descriptor with another source; each scene has its own bounded text cache.
+Do not register competing faces through external CSS/FontFaceSet APIs: those
+registrations are outside Stage ownership and isolation guarantees. Setup is
+one-shot, including after failure; create a new scene rather than retrying setup.
+Font URLs must be available to preview and CLI; provide licensed assets in your
+project. Fonts are not bundled by Ritween. `document.fonts.check()` alone does not
+prove that a named family exists. Explicit emoji fallback is separate from the
+intended primary face and depends on the controlled browser/system font set.
+
+Text inspection describes line boxes and texture quads, not optical ink alignment.
+Glyph ink can be clipped by the texture quad (for example tight line height).
+Fractional quad widths resample the text texture; do not expect Canvas and GPU
+channel values to be byte-identical. Put scrolling content's offset **before**
+the stationary `.frame(...).clip()` wrappers.
+
 ## A complete project
 
 ```ts

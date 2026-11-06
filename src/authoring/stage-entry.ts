@@ -3,6 +3,7 @@ import { videoResource } from "../engine/render/visual";
 import { Stage, type StageContext, type StageOptions } from "./stage";
 import type { ViewNode } from "./nodes";
 import { Camera } from "./camera";
+import { snapshotFonts } from "./fonts";
 
 export interface StageEntryOptions extends StageOptions {
   readonly id: string;
@@ -41,6 +42,7 @@ export function StageEntry(options: StageEntryOptions): SceneEntry {
   const settings = Object.freeze({
     ...stageOptions,
     mediaClips,
+    fonts: snapshotFonts(stageOptions.fonts),
     camera:
       typeof stageOptions.camera === "function"
         ? stageOptions.camera

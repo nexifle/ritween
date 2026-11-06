@@ -12,6 +12,7 @@ export type {
 } from "./path";
 export type { ClipShape, ImageMask } from "./clip";
 export { Stage, Overlay } from "./stage";
+export type { StageFont } from "./fonts";
 export { StageEntry } from "./stage-entry";
 export type { StageEntryOptions } from "./stage-entry";
 export { World, Composition, Shot } from "./composition";

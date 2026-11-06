@@ -268,6 +268,25 @@ const TRANSITION_UNAVAILABLE_MARKERS = [
   "transition output stay unavailable",
   "Inspect a non-overlapping time for exact results.",
 ];
+const SHARED_PORT = 5185;
+const SHARED_OUTPUT = [160, 100];
+/** Authored fills of the shared fixture, read back from the rendered output. */
+const SHARED_HERO_WHITE = [255, 255, 255, 255];
+const SHARED_PAIR_YELLOW = [255, 230, 0, 255];
+const SHARED_MARKER_CYAN = [0, 194, 255, 255];
+const SHARED_BLACK = [0, 0, 0, 255];
+const NESTED_PORT = 5184;
+const NESTED_SCOPE = "scene:nested";
+const NESTED_OUTPUT = [240, 160];
+const NESTED_TIME_A = 0;
+const NESTED_TIME_B = 1;
+const NESTED_RED = [226, 61, 61, 255];
+const NESTED_BLUE = [46, 107, 255, 255];
+const NESTED_GREEN = [0, 255, 0, 255];
+const NESTED_YELLOW = [255, 212, 0, 255];
+const NESTED_BLACK = [0, 0, 0, 255];
+/** The inner world's full-bleed background box, `#112233`. */
+const NESTED_INNER_BACKGROUND = [17, 34, 51, 255];
 const SURFACE_SCOPE = "scene:surface";
 const SURFACE_TIME_A = 0;
 const SURFACE_TIME_B = 1;
@@ -332,6 +351,10 @@ const fonts = join(root, "tests/fixtures/fonts");
 const regularConsumer = join(artifacts, "consumer-regular");
 /** A large layout variant so cancellation can be signalled during the render phase. */
 const slowConsumer = join(artifacts, "consumer-slow");
+/** Nested World → Clip → Group → Composition fixture with its own proof server. */
+const nestedConsumer = join(artifacts, "consumer-nested");
+/** Shared-transition surface correction fixture with its own proof server. */
+const sharedConsumer = join(artifacts, "consumer-shared");
 
 let latestFontProof = null;
 let renderStartedHandler = null;
@@ -516,6 +539,40 @@ function assertMappingUnavailable(mapping, label) {
   assert.equal("matrix" in mapping, false, label);
   assert.deepEqual(Object.keys(mapping).sort(), ["reason", "status"], label);
 }
+/**
+ * A descriptor mapping is either the legacy unavailable value or the world camera affine. The
+ * affine is `evaluateCamera` binary64, not an uploaded uniform, so it is never a GPU claim.
+ */
+function assertSpaceMapping(descriptor, label) {
+  const mapping = descriptor.mapping;
+  if (mapping?.status === "unavailable") {
+    if (descriptor.kind === "world" && "kind" in mapping) {
+      assert.equal(mapping.kind, "world-to-composition-viewport", label);
+      assert.equal(mapping.source, "evaluateCamera", label);
+      assert.equal(mapping.precision, "binary64-evaluated", label);
+      assert.equal(typeof mapping.reason, "string", label);
+      assert.equal("matrix" in mapping, false, label);
+      return;
+    }
+    assertMappingUnavailable(mapping, label);
+    return;
+  }
+  assert.equal(descriptor.kind, "world", `${label} only a world has an affine`);
+  assert.equal(mapping?.status, "mapped", label);
+  assert.equal(mapping.kind, "world-to-composition-viewport", label);
+  assert.equal(mapping.source, "evaluateCamera", label);
+  assert.equal(mapping.precision, "binary64-evaluated", label);
+  assert.deepEqual(Object.keys(mapping).sort(), [
+    "kind",
+    "matrix",
+    "precision",
+    "source",
+    "status",
+  ], label);
+  assert.equal(mapping.matrix.length, 6, label);
+  for (const value of mapping.matrix)
+    assert.equal(Number.isFinite(value), true, `${label} matrix`);
+}
 
 function assertLayoutSpace(descriptor, label) {
   assert.deepEqual(
@@ -545,7 +602,7 @@ function assertSpaceClosure(scene, label) {
     assert.equal(byId.has(descriptor.id), false, `${label} duplicate ${descriptor.id}`);
     byId.set(descriptor.id, descriptor);
     assert.equal(SPACE_KINDS.includes(descriptor.kind), true, `${label} ${descriptor.id}`);
-    assertMappingUnavailable(descriptor.mapping, `${label} ${descriptor.id}`);
+    assertSpaceMapping(descriptor, `${label} ${descriptor.id}`);
     if (descriptor.id === "layout") assertLayoutSpace(descriptor, label);
     if (descriptor.parent?.status === "known") {
       assert.equal(typeof descriptor.parent.id, "string", `${label} ${descriptor.id}`);
@@ -608,8 +665,9 @@ function maxChannelDelta(left, right) {
   return max;
 }
 
-function samplePixel(frame, point) {
-  const index = (point[1] * OUTPUT[0] + point[0]) * 4;
+/** `width` defaults to the flat fixtures' shared OUTPUT; other output sizes pass their own. */
+function samplePixel(frame, point, width = OUTPUT[0]) {
+  const index = (point[1] * width + point[0]) * 4;
   return [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]];
 }
 
@@ -1017,6 +1075,9 @@ async function captureFlatSequence({
         ownerIds: (layer.frame?.paintRecords ?? []).map(
           (record) => record.inspection?.nodeId ?? null,
         ),
+        // Occurrence metadata as a provider collects it. Absent stays absent, not empty.
+        frames: listed(layer.frame?.frameOccurrences),
+        surfaces: listed(layer.frame?.surfaceOccurrences),
       })),
       overlay: report?.overlay
         ? {
@@ -1094,6 +1155,13 @@ async function captureFlatSequence({
                   })),
                   records: listedRecords(layer.paintRecords),
                   finalRecords: listedRecords(layer.finalPaintRecords),
+                  // Published occurrence metadata, read back through the same whitelist.
+                  frameOccurrences: (layer.frameOccurrences ?? []).map((entry) => ({
+                    ...entry,
+                  })),
+                  surfaceOccurrences: (layer.surfaceOccurrences ?? []).map(
+                    (entry) => ({ ...entry }),
+                  ),
                 };
               }),
             };
@@ -1184,6 +1252,1674 @@ async function captureFlatSequence({
     documentFacesBeforeCreate,
     extras,
   };
+}
+
+/**
+ * Read-only GPU instrumentation for the nested camera/surface proof.
+ *
+ * It patches four prototype entry points, never alters their effect, and restores each one in
+ * `finally`. What it records, per render, is the whole draw path rather than a bag of cameras:
+ *
+ * - `writeBuffer` for the renderer's `Float32Array` uniform array: the buffer, the byte offset,
+ *   and an owned copy of the written bytes.
+ * - `createBindGroup`: the uniform buffer resource (`buffer`, `offset`, `size`) each bind group
+ *   slot 0 addresses.
+ * - `setBindGroup(0, group)` and `draw(6)`: the block a draw actually addresses, in order.
+ * - `beginRenderPass`: a pass boundary, so a draw can never inherit the previous pass's binding.
+ *
+ * The page then reports, for one render: every uniform write, and every draw with the exact
+ * write range overlapping the bind group's own `[offset, offset + size)`.
+ */
+async function captureProofSequence({ modulePath, timeA, timeB }) {
+  const fixture = await import(modulePath);
+  const errors = [];
+  const writes = [];
+  const draws = [];
+  const passes = [];
+  const binds = new WeakMap();
+  const labels = new WeakMap();
+  const originals = {
+    writeBuffer: GPUQueue.prototype.writeBuffer,
+    createBindGroup: GPUDevice.prototype.createBindGroup,
+    setBindGroup: GPURenderPassEncoder.prototype.setBindGroup,
+    draw: GPURenderPassEncoder.prototype.draw,
+    beginRenderPass: GPUCommandEncoder.prototype.beginRenderPass,
+    createTexture: GPUDevice.prototype.createTexture,
+    createView: GPUTexture.prototype.createView,
+    setScissorRect: GPURenderPassEncoder.prototype.setScissorRect,
+  };
+  let bound;
+  const restore = () => {
+    GPUQueue.prototype.writeBuffer = originals.writeBuffer;
+    GPUDevice.prototype.createBindGroup = originals.createBindGroup;
+    GPURenderPassEncoder.prototype.setBindGroup = originals.setBindGroup;
+    GPURenderPassEncoder.prototype.draw = originals.draw;
+    GPUCommandEncoder.prototype.beginRenderPass = originals.beginRenderPass;
+    GPUDevice.prototype.createTexture = originals.createTexture;
+    GPUTexture.prototype.createView = originals.createView;
+    GPURenderPassEncoder.prototype.setScissorRect = originals.setScissorRect;
+  };
+  // The renderer labels every surface texture with the drawn command's path, so an attachment
+  // view names the surface it belongs to without consulting any published record.
+  GPUDevice.prototype.createTexture = function (descriptor) {
+    const texture = originals.createTexture.call(this, descriptor);
+    labels.set(texture, descriptor?.label ?? null);
+    return texture;
+  };
+  GPUTexture.prototype.createView = function (...args) {
+    const view = originals.createView.apply(this, args);
+    labels.set(view, labels.get(this) ?? null);
+    return view;
+  };
+  // A pass that never binds slot 0 must not inherit the previous pass's block. The attachment
+  // view is recorded so passes sharing one render target can be grouped afterwards.
+  GPUCommandEncoder.prototype.beginRenderPass = function (descriptor) {
+    bound = undefined;
+    const view = descriptor?.colorAttachments?.[0]?.view;
+    passes.push({
+      id: passes.length,
+      target: view ?? null,
+      label: view ? (labels.get(view) ?? null) : null,
+      scissor: null,
+    });
+    return originals.beginRenderPass.call(this, descriptor);
+  };
+  GPURenderPassEncoder.prototype.setScissorRect = function (x, y, width, height, ...rest) {
+    const pass = passes.at(-1);
+    if (pass) pass.scissor = { x, y, width, height };
+    return originals.setScissorRect.call(this, x, y, width, height, ...rest);
+  };
+  GPUQueue.prototype.writeBuffer = function (buffer, offset, data, ...rest) {
+    // The renderer uploads one Float32Array of uniform blocks per render pass, immediately
+    // before beginning that pass. Other Float32Array uploads (path edges, transition controls)
+    // are not draw-camera blocks and are filtered out when a binding is resolved.
+    if (data instanceof Float32Array)
+      writes.push({
+        buffer,
+        offset,
+        data: new Float32Array(data),
+        // The renderer uploads a pass's blocks immediately before beginning that pass, so the
+        // next pass index is the pass this write is for, including when no pass exists yet.
+        intendedPass: passes.length,
+      });
+    return originals.writeBuffer.call(this, buffer, offset, data, ...rest);
+  };
+  GPUDevice.prototype.createBindGroup = function (descriptor) {
+    const group = originals.createBindGroup.call(this, descriptor);
+    const uniform = descriptor.entries.find((entry) => entry.binding === 0);
+    const resource = uniform?.resource;
+    if (resource && typeof resource === "object" && "buffer" in resource)
+      binds.set(group, {
+        buffer: resource.buffer,
+        offset: resource.offset ?? 0,
+        size: resource.size ?? 0,
+      });
+    return group;
+  };
+  GPURenderPassEncoder.prototype.setBindGroup = function (slot, group, ...rest) {
+    if (slot === 0) bound = binds.get(group) ?? null;
+    return originals.setBindGroup.call(this, slot, group, ...rest);
+  };
+  GPURenderPassEncoder.prototype.draw = function (...args) {
+    draws.push({
+      pass: passes.length - 1,
+      // The view pipeline draws one quad as six vertices; the transition compositor draws a
+      // three-vertex triangle. The count separates a paint draw from the final composite.
+      vertexCount: typeof args[0] === "number" ? args[0] : null,
+      binding: bound
+        ? { buffer: bound.buffer, offset: bound.offset, size: bound.size }
+        : null,
+    });
+    return originals.draw.apply(this, args);
+  };
+  const builder = await import("/src/engine/inspect/report.ts");
+  const published = (report) => {
+    const document = builder.buildInspectionDocument({
+      packageVersion: "0.0.0-proof",
+      project: {
+        name: fixture.project.name,
+        duration: fixture.project.duration,
+        resolution: fixture.project.resolution,
+      },
+      frame: report,
+    });
+    return document.scenes;
+  };
+  let source;
+  let written = 0;
+  let drawn = 0;
+  let seen = 0;
+  /**
+   * One render's complete upload/draw path. Every draw resolves to the single uniform write its
+   * own bind group addresses; a draw whose binding matches no write or several stays explicit
+   * instead of being guessed at.
+   */
+  const decode = async (time) => {
+    const canvas = await source.render(time);
+    const frameWrites = writes.slice(written);
+    const frameDraws = draws.slice(drawn);
+    const firstPass = seen;
+    const framePasses = passes.slice(seen);
+    seen = passes.length;
+    written = writes.length;
+    drawn = draws.length;
+    const copy = new OffscreenCanvas(canvas.width, canvas.height);
+    const context = copy.getContext("2d", { willReadFrequently: true });
+    context.drawImage(canvas, 0, 0);
+    const image = context.getImageData(0, 0, canvas.width, canvas.height);
+    const blob = await copy.convertToBlob({ type: "image/png" });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 8192)
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    const scenes = published(source.inspectFrame());
+    const blockOf = (draw) => {
+      if (!draw.binding) return { status: "unbound" };
+      const hits = frameWrites.filter(
+        (write) =>
+          write.buffer === draw.binding.buffer &&
+          write.intendedPass === draw.pass &&
+          draw.binding.offset >= write.offset &&
+          draw.binding.offset + draw.binding.size <=
+            write.offset + write.data.byteLength,
+      );
+      if (hits.length !== 1) return { status: "ambiguous", count: hits.length };
+      const write = hits[0];
+      const start = (draw.binding.offset - write.offset) / 4;
+      // 36 floats: rect, transform, resolution, radius/stroke, fill, stroke, opacity,
+      // textured, padding, cameraX, cameraY. The same count the shader consumes.
+      return {
+        status: "resolved",
+        pass: draw.pass - firstPass,
+        bindingOffset: draw.binding.offset,
+        bindingSize: draw.binding.size,
+        block: Array.from(write.data.subarray(start, start + 36)),
+      };
+    };
+    const targetOf = new Map();
+    for (const pass of framePasses) {
+      const key = pass.target;
+      if (!targetOf.has(key)) targetOf.set(key, targetOf.size);
+    }
+    return {
+      width: canvas.width,
+      height: canvas.height,
+      pixels: Array.from(image.data),
+      png: btoa(binary),
+      scenes,
+      // Pass order within a render is the order the renderer began its render passes. Passes
+      // sharing a target are the world and overlay visits of one surface, in that order.
+      passes: framePasses.map((pass) => ({
+        id: pass.id - firstPass,
+        label: pass.label,
+        target: targetOf.get(pass.target),
+        scissor: pass.scissor,
+      })),
+      draws: frameDraws.map((draw, index) => ({
+        index,
+        vertexCount: draw.vertexCount,
+        ...blockOf(draw),
+      })),
+    };
+  };
+  const steps = [];
+  let frames;
+  try {
+    source = await fixture.FrameSource.create(fixture.project, {
+      width: fixture.OUTPUT[0],
+      height: fixture.OUTPUT[1],
+      inspect: true,
+      onError: (message) => errors.push(String(message)),
+    });
+    const cal1 = await decode(timeA);
+    const cal2 = await decode(timeA);
+    steps.push("calibrate-a", "calibrate-a-repeat");
+    let tolerance = 0;
+    for (let i = 0; i < cal1.pixels.length; i++)
+      tolerance = Math.max(tolerance, Math.abs(cal1.pixels[i] - cal2.pixels[i]));
+    steps.push("tolerance-recorded");
+    const seqA = await decode(timeA);
+    const seqB = await decode(timeB);
+    const seqA2 = await decode(timeA);
+    steps.push("sequence-a", "sequence-b", "sequence-a");
+    frames = { cal1, cal2, tolerance, seqA, seqB, seqA2 };
+  } finally {
+    restore();
+    source?.dispose();
+  }
+  let gpu = null;
+  let gpuError = null;
+  try {
+    const adapter = await navigator.gpu?.requestAdapter();
+    gpu = adapter?.info
+      ? {
+          vendor: adapter.info.vendor ?? null,
+          architecture: adapter.info.architecture ?? null,
+          device: adapter.info.device ?? null,
+          description: adapter.info.description ?? null,
+          isFallbackAdapter: adapter.info.isFallbackAdapter ?? null,
+        }
+      : null;
+    if (!adapter) gpuError = "requestAdapter returned null";
+  } catch (error) {
+    gpuError = String(error);
+  }
+  return { steps, frames, gpu, gpuError, renderErrors: errors, userAgent: navigator.userAgent };
+}
+
+/** float32 unit roundoff. Sizes a geometry tolerance only; it is not an antialiasing allowance. */
+const FLOAT32_EPSILON = 1.1920928955078125e-7;
+
+/**
+ * Compare affine / rect / resolution components with a tolerance scaled by the float32 unit
+ * roundoff at each expected magnitude. The renderer composes these values from float32 uniform
+ * fields, so a few ulp of drift is expected; antialiasing is a pixel question and stays separate.
+ */
+function assertAffineClose(actual, expected, label, ulps = 16) {
+  assert.equal(actual.length, expected.length, label);
+  for (let i = 0; i < expected.length; i++) {
+    const tolerance = ulps * FLOAT32_EPSILON * Math.max(1, Math.abs(expected[i]));
+    assert.ok(
+      Math.abs(actual[i] - expected[i]) <= tolerance,
+      `${label}[${i}]: ${actual[i]} expected ${expected[i]} within ${tolerance}`,
+    );
+  }
+}
+
+function assertQuadClose(actual, expected, label) {
+  assertAffineClose(
+    [actual.x, actual.y, actual.width, actual.height],
+    [expected.x, expected.y, expected.width, expected.height],
+    label,
+  );
+}
+
+/** Canvas-order affine product: `left × right`, so `right` is applied first. */
+function affineProduct(left, right) {
+  return [
+    left[0] * right[0] + left[2] * right[1],
+    left[1] * right[0] + left[3] * right[1],
+    left[0] * right[2] + left[2] * right[3],
+    left[1] * right[2] + left[3] * right[3],
+    left[0] * right[4] + left[2] * right[5] + left[4],
+    left[1] * right[4] + left[3] * right[5] + left[5],
+  ];
+}
+const translate2 = (x, y) => [1, 0, 0, 1, x, y];
+/** `evaluateCamera`'s closed form, restated so this file does not import the engine. */
+function authoredCameraAffine(camera, size) {
+  const [ax, ay] = camera.anchor ?? [0.5, 0.5];
+  return [
+    camera.zoom,
+    0,
+    0,
+    camera.zoom,
+    ax * size[0] - camera.zoom * camera.x,
+    ay * size[1] - camera.zoom * camera.y,
+  ];
+}
+/** Positive-area axis-aligned image of one authored rect under an affine. */
+function authoredQuad(matrix, rect) {
+  const corner = (x, y) => [
+    matrix[0] * x + matrix[2] * y + matrix[4],
+    matrix[1] * x + matrix[3] * y + matrix[5],
+  ];
+  const [x0, y0] = corner(rect.x, rect.y);
+  const [x1, y1] = corner(rect.x + rect.width, rect.y + rect.height);
+  return {
+    x: Math.min(x0, x1),
+    y: Math.min(y0, y1),
+    width: Math.abs(x1 - x0),
+    height: Math.abs(y1 - y0),
+  };
+}
+
+/**
+ * Intersection of a quad with a render target's pixel rect. Each render visit clips to its own
+ * target, so an inner quad that runs past the outer composition viewport stops at that edge.
+ */
+function clipQuadToTarget(quad, width, height) {
+  const x0 = Math.max(quad.x, 0);
+  const y0 = Math.max(quad.y, 0);
+  const x1 = Math.min(quad.x + quad.width, width);
+  const y1 = Math.min(quad.y + quad.height, height);
+  return {
+    x: x0,
+    y: y0,
+    width: Math.max(0, x1 - x0),
+    height: Math.max(0, y1 - y0),
+  };
+}
+
+/**
+ * The nested fixture's authored geometry, composed the way `ViewRenderer` composes it and
+ * independently of any report. WGSL maps `(bounds + uv * size) * transform.xy + transform.zw`
+ * through the camera rows; a tagged surface draws its child target at its own `rect` and
+ * `transform`; `computeFrameTransform` multiplies the camera by the viewport scale plus the
+ * letterbox offset. The fixture's design size equals its output, so scale is 1 and offset is 0.
+ *
+ * Every expected number below is arithmetic on the fixture's exported constants, so a moved
+ * matrix cannot carry its expectation along with it.
+ */
+function nestedAuthoredGeometry(fixture) {
+  const { OUTPUT: output, OUTER: outer, INNER: inner, LEAF: leaf } = fixture;
+  const pad = fixture.CLIP_PADDING;
+  const overlayBox = fixture.OVERLAY_BOX;
+  const plate = fixture.PLATE;
+  const outerSurface = translate2(outer.x, outer.y);
+  const state = (camera) => {
+    const outerViewport = [outer.width, outer.height];
+    const outerWorld = affineProduct(
+      outerSurface,
+      authoredCameraAffine(camera, outerViewport),
+    );
+    // The clip's child target starts at the clip's padded origin inside that world, and the
+    // outer camera reaches it through the surface uniform rather than a draw camera.
+    const clipChild = affineProduct(
+      outerSurface,
+      affineProduct(
+        authoredCameraAffine(camera, outerViewport),
+        translate2(pad, pad),
+      ),
+    );
+    // Group adds no transform, so the inner Composition is placed by its own offset.
+    const compositionAt = affineProduct(clipChild, translate2(inner.x, inner.y));
+    const innerWorld = affineProduct(
+      compositionAt,
+      authoredCameraAffine(fixture.INNER_CAMERA, [inner.width, inner.height]),
+    );
+    // The plate fills the clip's own 148x108 target. Moving it out of that target applies the
+    // clip surface's own placement and the outer camera, and the outer composition viewport then
+    // clips it, because the renderer clips each visit to the target it draws into.
+    const cameraToOuterWorld = affineProduct(
+      authoredCameraAffine(camera, [outer.width, outer.height]),
+      translate2(pad, pad),
+    );
+    const plateInOuterWorld = clipQuadToTarget(
+      authoredQuad(cameraToOuterWorld, {
+        x: 0,
+        y: 0,
+        width: plate.width,
+        height: plate.height,
+      }),
+      outer.width,
+      outer.height,
+    );
+    // Placement is a pure translation, so the scene quad is the outer-world quad moved by it.
+    const plateInScene = authoredQuad(outerSurface, plateInOuterWorld);
+    return {
+      // The outer composition surface is drawn by the root pass, so its published projection is
+      // its own placement only; the camera it contains belongs to the child pass's uniforms.
+      outerSurface,
+      // The scene mapping into that surface's child target, i.e. placement composed with camera.
+      outerWorld,
+      outerOverlay: outerSurface,
+      clipChild,
+      innerWorld,
+      innerOverlay: compositionAt,
+      quads: {
+        plate: plateInScene,
+        innerBackground: authoredQuad(innerWorld, {
+          x: 0,
+          y: 0,
+          width: inner.width,
+          height: inner.height,
+        }),
+        // `scale(-1.5, -1.25, [0, 0])`, then the authored leaf offset.
+        leaf: authoredQuad(
+          affineProduct(innerWorld, [-1.5, 0, 0, -1.25, leaf.x, leaf.y]),
+          { x: 0, y: 0, width: leaf.width, height: leaf.height },
+        ),
+        innerOverlay: authoredQuad(
+          affineProduct(compositionAt, translate2(overlayBox.x, overlayBox.y)),
+          { x: 0, y: 0, width: overlayBox.width, height: overlayBox.height },
+        ),
+        outerOverlay: authoredQuad(
+          affineProduct(outerSurface, translate2(1.25, 2.75)),
+          { x: 0, y: 0, width: 6, height: 4 },
+        ),
+      },
+    };
+  };
+  return {
+    output,
+    a: state(fixture.OUTER_CAMERA_A),
+    b: state(fixture.OUTER_CAMERA_B),
+  };
+}
+
+/** Camera rows `[a, b, c, d, e, f]` from one uploaded uniform block, as the shader composes them. */
+function uploadedCameraRows(block) {
+  return [block[24], block[28], block[25], block[29], block[26], block[30]];
+}
+/** Float32 rounding of a binary64 matrix, which is what the upload stores. */
+const toFloat32Rows = (matrix) => matrix.map((value) => Math.fround(value));
+
+/**
+ * Map every published frame visit to the render pass it actually produced, without guessing from
+ * ordering alone. A visit that rendered into a tagged surface names that surface; the renderer
+ * labels the surface texture with the drawn command's path, so the attachment view identifies it,
+ * and the world pass precedes the overlay pass on that one target. A root visit is the pass whose
+ * target carries no surface label.
+ */
+function visitPasses(frame, scene, sceneIndex) {
+  // Surface paths repeat across scenes (one per scene), so the set of "not a surface target"
+  // labels has to span the whole frame; a single scene's list would leave the other scene's
+  // surface passes looking like root targets.
+  const surfacePaths = new Set(
+    frame.scenes.flatMap((entry) =>
+      (entry.surfaceOccurrences ?? []).map((surface) => surface.path),
+    ),
+  );
+  const byLabel = new Map();
+  for (const pass of frame.passes) {
+    if (!byLabel.has(pass.label)) byLabel.set(pass.label, []);
+    byLabel.get(pass.label).push(pass);
+  }
+  const paints = paintDraws(frame);
+  const painting = (pass) => paints.some((draw) => draw.pass === pass.id);
+  /**
+   * A root visit paints straight into its own scene target, which is never a surface texture.
+   * A transition project renders each active scene into `TransitionRenderer.targets[i]`, which
+   * the engine labels `Transition i`; a direct project paints straight into the swap chain, which
+   * carries no label. Both are read from the render target, not from the visited metadata, and the
+   * clear-only pass and the three-vertex composite pass drop out because neither paints a quad.
+   */
+  const rootPass = frame.passes
+    .filter(painting)
+    .filter((pass) => !surfacePaths.has(pass.label))
+    .find((pass) =>
+      pass.label === null
+        ? true
+        : pass.label === `Transition ${sceneIndex}` ||
+          !pass.label.startsWith("Transition "),
+    );
+  const surfaceById = new Map(
+    (scene.surfaceOccurrences ?? []).map((surface) => [
+      surface.occurrenceId,
+      surface,
+    ]),
+  );
+  return scene.frameOccurrences.map((visit) => {
+    if (visit.parentSurface.status !== "known")
+      return { visit, pass: rootPass };
+    const surface = surfaceById.get(visit.parentSurface.occurrenceId);
+    if (!surface) return { visit, pass: undefined };
+    const list = byLabel.get(surface.path) ?? [];
+    // World renders into a surface before its overlay, and only a Composition declares an
+    // overlay, so a Group or Clip surface owns exactly one pass.
+    const index =
+      surface.overlayFrameOccurrenceId === undefined
+        ? 0
+        : visit.id === surface.worldFrameOccurrenceId
+          ? 0
+          : 1;
+    return { visit, pass: list[index] };
+  });
+}
+
+/**
+ * Build a deliberately wrong publication: one visit's camera list with its first entry replaced
+ * by another command's camera from the same render, length unchanged. Feeding this through
+ * {@link assertOccurrenceParity} must fail on the upload comparison itself, which is what makes
+ * the real assertion a causal check rather than an observation that two arrays differ.
+ */
+function substituteForeignCamera(frame) {
+  const entries = frame.scenes.flatMap((scene) =>
+    scene.frameOccurrences.flatMap((visit) =>
+      visit.drawCameras.map((camera) => ({ visit, camera })),
+    ),
+  );
+  const host = entries[0];
+  if (!host || host.camera.camera.status !== "mapped") return undefined;
+  const hostRows = toFloat32Rows(host.camera.camera.matrix);
+  const foreign = entries.find(
+    (entry) =>
+      entry.camera !== host.camera &&
+      entry.camera.camera.status === "mapped" &&
+      toFloat32Rows(entry.camera.camera.matrix).some(
+        (value, index) => value !== hostRows[index],
+      ),
+  );
+  if (!foreign) return undefined;
+  return {
+    to: host.visit.id,
+    cameras: host.visit.drawCameras.map((camera, index) =>
+      index === 0 ? foreign.camera : camera,
+    ),
+  };
+}
+
+/** Paint draws are the six-vertex quads; the transition compositor draws a triangle. */
+const paintDraws = (frame) => frame.draws.filter((draw) => draw.vertexCount === 6);
+
+/**
+ * Prove one render's published occurrence metadata against the actual draw path.
+ *
+ * - Each visit is bound to its own render pass and its paint draws, in `frame.commands` order,
+ *   which is the order the renderer uploads blocks and issues draws. Every published
+ *   `drawCameras` entry must equal the camera rows of the block that draw's own bind group
+ *   addresses, and no paint draw may go unclaimed.
+ * - Each published surface occurrence must equal the uniform its own drawing command uploaded
+ *   (read back from that draw's block), and its `childScissor` must equal the scissor the child
+ *   render actually set.
+ *
+ * `reassign` swaps two visits' camera lists before the comparison; the same assertions must then
+ * fail. That negative control runs through the real assertion, not through an array inequality.
+ */
+function assertOccurrenceParity(frame, label, { reassign } = {}) {
+  let visits = 0;
+  let surfaces = 0;
+  let draws = 0;
+  // Draws belong to one render, not to one scene, so the "claimed exactly once" ledger spans the
+  // whole frame and is settled after every scene has been walked.
+  const claimed = new Set();
+  for (const [sceneIndex, scene] of frame.scenes.entries()) {
+    const bound = visitPasses(frame, scene, sceneIndex);
+    for (const { visit, pass } of bound) {
+      visits += 1;
+      assert.ok(pass, `${label} visit ${visit.id} has its own render pass`);
+      const inPass = paintDraws(frame).filter((draw) => draw.pass === pass.id);
+      for (const draw of inPass)
+        assert.equal(
+          draw.status,
+          "resolved",
+          `${label} draw ${draw.index} resolves its own bind group write`,
+        );
+      const published =
+        reassign && reassign.to === visit.id ? reassign.cameras : visit.drawCameras;
+      assert.equal(
+        inPass.length,
+        published.length,
+        `${label} visit ${visit.id} drew exactly its published commands`,
+      );
+      for (const [index, camera] of published.entries()) {
+        const draw = inPass[index];
+        assert.equal(claimed.has(draw.index), false, `${label} draw reused`);
+        claimed.add(draw.index);
+        assert.equal(
+          camera.camera.status,
+          "mapped",
+          `${label} visit ${visit.id} camera ${camera.commandId}`,
+        );
+        assert.deepEqual(
+          uploadedCameraRows(draw.block),
+          toFloat32Rows(camera.camera.matrix),
+          `${label} visit ${visit.id} command ${camera.commandId} upload`,
+        );
+        draws += 1;
+      }
+    }
+    const byLabel = new Map();
+    for (const pass of frame.passes) {
+      if (!byLabel.has(pass.label)) byLabel.set(pass.label, []);
+      byLabel.get(pass.label).push(pass);
+    }
+    for (const surface of scene.surfaceOccurrences ?? []) {
+      surfaces += 1;
+      const parent = bound.find(
+        (entry) => entry.visit.id === surface.parentFrameOccurrenceId,
+      );
+      assert.ok(parent?.pass, `${label} ${surface.path} parent pass`);
+      const index = parent.visit.drawCameras.findIndex(
+        (camera) => camera.commandId === surface.occurrenceId,
+      );
+      assert.notEqual(index, -1, `${label} ${surface.path} is a published draw`);
+      const draw = paintDraws(frame).filter(
+        (entry) => entry.pass === parent.pass.id,
+      )[index];
+      assert.ok(draw?.block, `${label} ${surface.path} draw block`);
+      const at = draw.block;
+      assertAffineClose(
+        [at[0], at[1], at[2], at[3]],
+        [...surface.uniform.rect],
+        `${label} ${surface.path} uploaded rect`,
+      );
+      assertAffineClose(
+        [at[4], at[5], at[6], at[7]],
+        [...surface.uniform.transform],
+        `${label} ${surface.path} uploaded transform`,
+      );
+      assertAffineClose(
+        [at[8], at[9]],
+        [...surface.uniform.resolution],
+        `${label} ${surface.path} uploaded resolution`,
+      );
+      assertAffineClose(
+        [at[20]],
+        [surface.uniform.opacity],
+        `${label} ${surface.path} opacity`,
+      );
+      assertAffineClose(
+        [at[24], at[25], at[26], at[28], at[29], at[30]],
+        [...surface.uniform.cameraX, ...surface.uniform.cameraY],
+        `${label} ${surface.path} uploaded camera rows`,
+      );
+      // Child passes are the ones stamped with this surface's label; the world pass first, then
+      // the overlay pass when the composition declares one.
+      const childPasses = byLabel.get(surface.path) ?? [];
+      assert.equal(
+        childPasses.length,
+        surface.overlayFrameOccurrenceId === undefined ? 1 : 2,
+        `${label} ${surface.path} child pass count`,
+      );
+      if (surface.childScissor)
+        for (const childPass of childPasses) {
+          assert.ok(childPass.scissor, `${label} ${surface.path} scissor recorded`);
+          assert.deepEqual(
+            childPass.scissor,
+            surface.childScissor,
+            `${label} ${surface.path} scissor equals the published one`,
+          );
+        }
+    }
+  }
+  assert.equal(
+    claimed.size,
+    paintDraws(frame).length,
+    `${label} every instrumented paint draw was claimed exactly once`,
+  );
+  return { visits, surfaces, draws };
+}
+
+/**
+ * Public CLI inspect of the nested fixture plus one FrameSource A→B→A.
+ *
+ * Three independent things are checked and none of them is derived from the metadata under test:
+ *
+ * 1. `assertOccurrenceParity` binds each published visit to the render pass it produced and each
+ *    published camera to the block that draw's own bind group addresses, then runs the same
+ *    comparison again after reassigning one visit's cameras, which must fail.
+ * 2. The authored geometry is recomputed from the fixture's exported constants (cameras, offsets,
+ *    clip padding, negative leaf scale) with `nestedAuthoredGeometry`, and the published quads and
+ *    surface projections must match it to float32 rounding.
+ * 3. Fixed output pixels read the authored fill colours. Each point is an interior of the quad
+ *    that authored geometry puts there and is sampled from a hard-coded coordinate, so a moved
+ *    matrix cannot move its own expectation. Coverage, edges, and occlusion stay unclaimed.
+ */
+async function proveNativeNested() {
+  const evidence = {
+    fixture: "scripts/inspect-fixture/manifest-nested.mjs",
+    startedAt: new Date().toISOString(),
+    port: NESTED_PORT,
+    schema: "frameAndSurfaceOccurrences",
+    output: [...NESTED_OUTPUT],
+    limits: {
+      matrix:
+        "each published draw camera is compared with the uniform block that draw's own bind group addresses, per render pass, and a reassigned camera must break the same assertion",
+      geometry:
+        "published quads and surface projections compared with affine arithmetic on the fixture's authored constants; tolerance is float32 ulp, not antialiasing",
+      raster:
+        "fixed authored interior pixels only, with a tolerance calibrated from an unchanged A repeat; not edge, coverage, or occlusion proof",
+      scopes:
+        "frameOccurrences ids are this snapshot's render counter; surfaceOccurrences.occurrenceId is an evaluation command id. Neither is compared across processes.",
+      g3: "not complete",
+      g7: "not measured",
+    },
+  };
+  const fixture = await import(join(template, "manifest-nested.mjs"));
+  const expected = nestedAuthoredGeometry(fixture);
+  assert.deepEqual([...expected.output], [...NESTED_OUTPUT]);
+  const fixtureSource = await readFile(
+    join(template, "manifest-nested.mjs"),
+    "utf8",
+  );
+  for (const needle of [
+    "[240, 160]",
+    "scale(-1.5, -1.25, [0, 0])",
+    "zoom: 0.9",
+    "zoom: 0.875",
+    "padding(CLIP_PADDING)",
+    "Composition(inner",
+    'id("nested-overlay")',
+  ])
+    assert.ok(
+      fixtureSource.includes(needle),
+      `manifest-nested.mjs drifted from the nested camera contract: missing ${needle}`,
+    );
+  await createConsumer(nestedConsumer, "manifest-nested.mjs");
+  const inspectAt = (time) =>
+    inspectJson([
+      "inspect",
+      "--project",
+      nestedConsumer,
+      "--time",
+      String(time),
+    ]);
+  let browser;
+  let vite;
+  try {
+    const stateA = await inspectAt(NESTED_TIME_A);
+    const stateB = await inspectAt(NESTED_TIME_B);
+    const readState = (result, label) => {
+      assert.equal(result.document.scenes.length, 1, label);
+      const scene = result.document.scenes[0];
+      assert.equal(scene.scope, NESTED_SCOPE, label);
+      assertSpaceClosure(scene, label);
+      assert.equal(scene.frameOccurrences?.length, 7, `${label} frame visits`);
+      assert.equal(scene.surfaceOccurrences?.length, 4, `${label} surfaces`);
+      // Nested World → Clip → Group → Composition with an overlay on both compositions.
+      const kinds = scene.surfaceOccurrences.map((surface) => surface.surface.kind);
+      assert.deepEqual(
+        [...kinds].sort(),
+        ["clip", "composition", "composition", "group"],
+        label,
+      );
+      const outer = scene.surfaceOccurrences.find((surface) =>
+        surface.path.endsWith("nested-outer"),
+      );
+      const clip = scene.surfaceOccurrences.find(
+        (surface) => surface.surface.kind === "clip",
+      );
+      const group = scene.surfaceOccurrences.find(
+        (surface) => surface.surface.kind === "group",
+      );
+      const inner = scene.surfaceOccurrences.find(
+        (surface) =>
+          surface.surface.kind === "composition" && surface !== outer,
+      );
+      assert.ok(outer && clip && group && inner, label);
+      assert.equal(clip.parentOccurrenceId, outer.occurrenceId, label);
+      assert.equal(group.parentOccurrenceId, clip.occurrenceId, label);
+      assert.equal(inner.parentOccurrenceId, group.occurrenceId, label);
+      assert.equal(outer.parentOccurrenceId, undefined, label);
+      // The composition owns two different frame visits for one physical target.
+      assert.notEqual(
+        inner.worldFrameOccurrenceId,
+        inner.overlayFrameOccurrenceId,
+        label,
+      );
+      const worldFrame = scene.frameOccurrences.find(
+        (frame) => frame.id === inner.worldFrameOccurrenceId,
+      );
+      const overlayFrame = scene.frameOccurrences.find(
+        (frame) => frame.id === inner.overlayFrameOccurrenceId,
+      );
+      assert.ok(worldFrame && overlayFrame, label);
+      assert.deepEqual(
+        worldFrame.targetResolution,
+        overlayFrame.targetResolution,
+        label,
+      );
+      assert.deepEqual(
+        worldFrame.parentSurface,
+        overlayFrame.parentSurface,
+        label,
+      );
+      assert.notDeepEqual(
+        worldFrame.baseFrameTransform,
+        overlayFrame.baseFrameTransform,
+        `${label} world and overlay base transforms differ`,
+      );
+      for (const surface of scene.surfaceOccurrences) {
+        assert.equal(surface.occurrenceIdKind, "evaluation-command", label);
+        assert.notEqual(
+          surface.occurrenceId,
+          surface.parentFrameOccurrenceId,
+          `${label} command id is not a frame id`,
+        );
+        assert.equal(
+          surface.projection.status,
+          "mapped",
+          `${label} ${surface.path}`,
+        );
+        if (surface.projection.status === "mapped")
+          for (const matrix of [
+            surface.projection.childPixelsToParent,
+            surface.projection.parentToScene,
+            surface.projection.childPixelsToScene,
+          ]) {
+            assert.equal(matrix.length, 6, label);
+            for (const value of matrix)
+              assert.equal(Number.isFinite(value), true, label);
+          }
+      }
+      // Cross-report isolation: every recorded parent id resolves inside this snapshot.
+      const frameIds = new Set(scene.frameOccurrences.map((frame) => frame.id));
+      const surfaceIds = new Set(
+        scene.surfaceOccurrences.map((surface) => surface.occurrenceId),
+      );
+      for (const frame of scene.frameOccurrences)
+        if (frame.parentSurface.status === "known")
+          assert.equal(
+            surfaceIds.has(frame.parentSurface.occurrenceId),
+            true,
+            label,
+          );
+      for (const surface of scene.surfaceOccurrences) {
+        assert.equal(frameIds.has(surface.parentFrameOccurrenceId), true, label);
+        for (const frameId of [
+          surface.worldFrameOccurrenceId,
+          surface.overlayFrameOccurrenceId,
+        ])
+          if (frameId !== undefined)
+            assert.equal(frameIds.has(frameId), true, label);
+      }
+      for (const id of [
+        "outer-plate",
+        "nested-leaf",
+        "nested-overlay",
+        "outer-overlay",
+      ]) {
+        const node = nodeById(scene.tree, id);
+        const record = recordOwnedBy(scene.paintRecords ?? [], node);
+        assert.ok(record, `${label} ${id} record`);
+        assert.equal(record.geometryVisible, true, `${label} ${id} visible`);
+        assert.equal(record.space, "scene-target-pixels", label);
+      }
+      return { scene, outer, clip };
+    };
+    const readA = readState(stateA, "A");
+    const readB = readState(stateB, "B");
+    // Authored geometry, not fitted numbers. Every published quad and surface projection must
+    // equal the affine arithmetic on the fixture's own constants.
+    const authored = { A: expected.a, B: expected.b };
+    const assertState = (read, label) => {
+      const want = authored[label];
+      const quadOf = (path) => {
+        const record = read.scene.paintRecords.find(
+          (entry) => entry.path === path,
+        );
+        assert.ok(record, `${label} ${path} record`);
+        return record.bounds;
+      };
+      assertQuadClose(
+        quadOf("nested-clip/clip/nested-group/outer-plate"),
+        want.quads.plate,
+        `${label} authored plate quad`,
+      );
+      assertQuadClose(
+        quadOf("root/box[0]"),
+        want.quads.innerBackground,
+        `${label} authored inner background quad`,
+      );
+      assertQuadClose(
+        quadOf("root/offset[1]/scale/nested-leaf"),
+        want.quads.leaf,
+        `${label} authored leaf quad`,
+      );
+      assertQuadClose(
+        quadOf("root/nested-overlay"),
+        want.quads.innerOverlay,
+        `${label} authored inner overlay quad`,
+      );
+      assertQuadClose(
+        quadOf("root/outer-overlay"),
+        want.quads.outerOverlay,
+        `${label} authored outer overlay quad`,
+      );
+      // The clip surface is the outer camera composed with the clip's padded origin, and the
+      // outer composition surface is only its own offset, so the pan cannot move it.
+      const projectionOf = (surface) =>
+        surface.projection.status === "mapped"
+          ? [...surface.projection.childPixelsToScene]
+          : null;
+      assertAffineClose(
+        projectionOf(read.clip),
+        want.clipChild,
+        `${label} authored clip surface projection`,
+      );
+      assertAffineClose(
+        projectionOf(read.outer),
+        want.outerSurface,
+        `${label} authored outer surface projection`,
+      );
+      return {
+        surfaces: {
+          outer: projectionOf(read.outer),
+          clip: projectionOf(read.clip),
+        },
+      };
+    };
+    const stateGeometryA = assertState(readA, "A");
+    const stateGeometryB = assertState(readB, "B");
+    // The two states must actually disagree, or the authored table proves nothing.
+    assert.notDeepEqual(
+      stateGeometryA.surfaces.clip,
+      stateGeometryB.surfaces.clip,
+      "the authored pan changes the clip surface projection",
+    );
+    assert.deepEqual(
+      stateGeometryA.surfaces.outer,
+      stateGeometryB.surfaces.outer,
+      "the outer composition surface is its own offset, not the world camera",
+    );
+    assert.notDeepEqual(
+      authored.A.quads.leaf,
+      authored.B.quads.leaf,
+      "the authored leaf quad moves between A and B",
+    );
+    assert.equal(
+      authored.A.quads.leaf.y,
+      authored.B.quads.leaf.y,
+      "the pan moves x only",
+    );
+    evidence.authored = {
+      leafA: authored.A.quads.leaf,
+      leafB: authored.B.quads.leaf,
+      clipA: authored.A.clipChild,
+      clipB: authored.B.clipChild,
+      outer: authored.A.outerSurface,
+    };
+    evidence.cli = {
+      frameIds: readA.scene.frameOccurrences.map((frame) => frame.id),
+      surfaceIds: readA.scene.surfaceOccurrences.map(
+        (surface) => surface.occurrenceId,
+      ),
+      clipScissor: readA.clip.childScissor ?? null,
+      outerWorld: readA.outer.worldFrameOccurrenceId,
+      outerOverlay: readA.outer.overlayFrameOccurrenceId,
+      innerWorld: readA.scene.surfaceOccurrences.find(
+        (surface) =>
+          surface.surface.kind === "composition" && surface !== readA.outer,
+      )?.worldFrameOccurrenceId,
+      innerOverlay: readA.scene.surfaceOccurrences.find(
+        (surface) =>
+          surface.surface.kind === "composition" && surface !== readA.outer,
+      )?.overlayFrameOccurrenceId,
+    };
+    assert.deepEqual(
+      evidence.cli.frameIds,
+      readB.scene.frameOccurrences.map((frame) => frame.id),
+      "both snapshots number their visits the same way",
+    );
+
+    vite = await createProofServer({
+      port: NESTED_PORT,
+      title: "Lane B native nested camera",
+    });
+    browser = await launchProofBrowser();
+    const page = await openProofPage(browser, vite);
+    const browserErrors = page.proofErrors;
+    const captured = await page.evaluate(captureProofSequence, {
+      modulePath: "/scripts/inspect-fixture/manifest-nested.mjs",
+      timeA: fixture.TIME_A,
+      timeB: fixture.TIME_B,
+    });
+    assert.deepEqual(captured.steps, [
+      "calibrate-a",
+      "calibrate-a-repeat",
+      "tolerance-recorded",
+      "sequence-a",
+      "sequence-b",
+      "sequence-a",
+    ]);
+    assert.deepEqual(captured.renderErrors, []);
+    const { cal1, tolerance, seqA, seqB, seqA2 } = captured.frames;
+    assert.ok(tolerance === 0 || tolerance < 8, `tolerance ${tolerance}`);
+    assert.ok(
+      maxChannelDelta(seqA.pixels, seqA2.pixels) <= tolerance,
+      "A→B→A returns to the calibrated A frame",
+    );
+    assert.ok(
+      maxChannelDelta(seqA.pixels, seqB.pixels) > tolerance,
+      "B differs from A",
+    );
+    const parity = {};
+    const negativeControls = {};
+    for (const [frame, label] of [
+      [cal1, "cal1"],
+      [seqA, "seqA"],
+      [seqB, "seqB"],
+      [seqA2, "seqA2"],
+    ]) {
+      assert.deepEqual([frame.width, frame.height], [...NESTED_OUTPUT], label);
+      assert.equal(frame.scenes.length, 1, label);
+      // Every surface contributes one child pass, plus one more when it declares an overlay.
+      const scene = frame.scenes[0];
+      assert.equal(
+        frame.passes.filter(
+          (pass) =>
+            pass.label !== null &&
+            (scene.surfaceOccurrences ?? []).some(
+              (surface) => surface.path === pass.label,
+            ),
+        ).length,
+        (scene.surfaceOccurrences ?? []).reduce(
+          (total, surface) =>
+            total + (surface.overlayFrameOccurrenceId === undefined ? 1 : 2),
+          0,
+        ),
+        `${label} labelled passes are exactly the surface child passes`,
+      );
+      parity[label] = assertOccurrenceParity(frame, label);
+      // Negative control: publish a different command's camera on this visit, keeping the list
+      // length so the failure lands on the upload comparison itself.
+      const substituted = substituteForeignCamera(frame);
+      assert.ok(substituted, `${label} a foreign camera exists to substitute`);
+      let reassignError = null;
+      try {
+        assertOccurrenceParity(frame, `${label} reassigned`, { reassign: substituted });
+      } catch (error) {
+        reassignError = error instanceof Error ? error.message : String(error);
+      }
+      assert.ok(
+        reassignError,
+        `${label} a reassigned camera list must fail the same parity assertion`,
+      );
+      // It must fail on the upload comparison itself, not on an unrelated structural check.
+      assert.match(
+        reassignError,
+        /upload/,
+        `${label} the reassigned failure is the upload comparison: ${reassignError}`,
+      );
+      negativeControls[label] = reassignError;
+    }
+    evidence.binding = parity;
+    evidence.negativeControl = negativeControls;
+    // Direction check: the outer world camera follows the pan, the outer overlay does not.
+    const visitBySpace = (frame, suffix) =>
+      frame.scenes[0].frameOccurrences.find(
+        (visit) => visit.layoutSpace.id?.endsWith(suffix),
+      );
+    const outerWorldA = visitBySpace(seqA, "/nested-outer/world");
+    const outerWorldB = visitBySpace(seqB, "/nested-outer/world");
+    const outerOverlayA = visitBySpace(seqA, "/nested-outer/overlay");
+    const outerOverlayB = visitBySpace(seqB, "/nested-outer/overlay");
+    assert.ok(outerWorldA && outerWorldB && outerOverlayA && outerOverlayB);
+    // A frame's base transform is `computeFrameTransform` for its own design size and its own
+    // camera. The fixture's design size equals the target resolution, so the viewport scale is 1
+    // and the letterbox offset is 0: the authored camera affine is the whole matrix. The
+    // composition's placement lives in the surface uniform, not here.
+    const outerViewportCamera = authoredCameraAffine(fixture.OUTER_CAMERA_A, [
+      fixture.OUTER.width,
+      fixture.OUTER.height,
+    ]);
+    assertAffineClose(
+      outerWorldA.baseFrameTransform.matrix,
+      outerViewportCamera,
+      "A outer world base transform is the authored camera affine",
+    );
+    assertAffineClose(
+      outerOverlayA.baseFrameTransform.matrix,
+      [1, 0, 0, 1, 0, 0],
+      "A outer overlay base transform is the identity viewport",
+    );
+    assert.notDeepEqual(
+      outerWorldA.baseFrameTransform,
+      outerWorldB.baseFrameTransform,
+      "the pan moves the outer world base transform",
+    );
+    assert.deepEqual(
+      outerOverlayA.baseFrameTransform,
+      outerOverlayB.baseFrameTransform,
+      "the outer overlay does not follow the world camera",
+    );
+
+    // Fixed authored pixels. These coordinates are constants, and each is an interior of the
+    // quad authored geometry puts there, so the expectation cannot follow a wrong matrix.
+    // A: the leaf covers (80,64) and is absent at (57,64), which then shows the outer plate.
+    // B: the pan moves the leaf onto (57,64), while (80,64) shows the inner world background.
+    const NESTED_PIXELS = {
+      A: [
+        [[80, 64], NESTED_BLUE, "authored leaf interior"],
+        [[57, 64], NESTED_RED, "authored outer plate where the leaf is absent"],
+      ],
+      B: [
+        [[57, 64], NESTED_BLUE, "authored leaf interior after the pan"],
+        [[80, 64], NESTED_INNER_BACKGROUND, "authored inner background after the pan"],
+      ],
+    };
+    const pixelTolerance = Math.max(tolerance, 2);
+    const sampled = {};
+    for (const [frame, label] of [
+      [cal1, "A"],
+      [seqA, "A"],
+      [seqA2, "A"],
+      [seqB, "B"],
+    ]) {
+      for (const [point, rgba, note] of NESTED_PIXELS[label]) {
+        assertNear(
+          samplePixel(frame.pixels, point, frame.width),
+          rgba,
+          pixelTolerance,
+          `${label} ${point.join(",")} ${note}`,
+        );
+      }
+      sampled[label] = NESTED_PIXELS[label].map(([point]) => ({
+        point,
+        rgba: samplePixel(frame.pixels, point, frame.width),
+      }));
+    }
+    // The same coordinate must read differently at A and B, or the fixture is not discriminating.
+    assert.notDeepEqual(
+      samplePixel(seqA.pixels, [80, 64], seqA.width),
+      samplePixel(seqB.pixels, [80, 64], seqB.width),
+      "the pan changes the authored leaf/interior pixel at one fixed coordinate",
+    );
+    assert.deepEqual(browserErrors, []);
+    evidence.gpu = captured.gpu;
+    evidence.gpuError = captured.gpuError;
+    evidence.userAgent = captured.userAgent;
+    evidence.pixels = {
+      tolerance,
+      toleranceNote:
+        "calibrated from an unchanged A repeat; antialiasing is a pixel question and is not used to derive geometry expectations",
+      expected: NESTED_PIXELS,
+      sampled,
+      note: "Fixed authored interiors only. Not background coverage and not an edge or occlusion claim.",
+    };
+    await mkdir(reports, { recursive: true });
+    await writeFile(
+      join(reports, "nested-a.png"),
+      Buffer.from(cal1.png, "base64"),
+    );
+    await writeFile(
+      join(reports, "nested-b.png"),
+      Buffer.from(seqB.png, "base64"),
+    );
+    evidence.artifacts = {
+      a: "artifacts/g1b/reports/nested-a.png",
+      b: "artifacts/g1b/reports/nested-b.png",
+      report: "artifacts/g1b/reports/nested-camera-proof.json",
+    };
+  } catch (error) {
+    evidence.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    evidence.finishedAt = new Date().toISOString();
+    await browser?.close();
+    await vite?.close();
+    await mkdir(reports, { recursive: true });
+    await writeFile(
+      join(reports, "nested-camera-proof.json"),
+      JSON.stringify(evidence, null, 2),
+    );
+  }
+  return evidence;
+}
+
+/**
+ * The shared fixture's authored geometry at one transition progress.
+ *
+ * `matchSharedElements` with one pure-translation element reduces to an absolute pose
+ * `lerp(out, in, smoothstep(t))`. The *scene* position of every corrected element is therefore
+ * that absolute pose in both scenes, while the *relative* draw camera is `pose − own authored
+ * offset`, which has opposite signs in the outgoing and incoming scopes. Both facts are
+ * arithmetic on the fixture's exported constants.
+ */
+function sharedAuthoredGeometry(fixture, progress) {
+  const t = Math.max(0, Math.min(1, progress));
+  const eased = t * t * (3 - 2 * t);
+  const lerp = (from, to) => from + (to - from) * eased;
+  return {
+    progress: t,
+    eased,
+    // Absolute scene position of the corrected elements. Identical in both scopes.
+    heroSurfaceX: lerp(fixture.HERO.out.x, fixture.HERO.in.x),
+    pairLeafX: fixture.SOLO.at.x + lerp(fixture.SOLO.leaf.outX, fixture.SOLO.leaf.inX),
+    markerX: lerp(fixture.MARKER.outX, fixture.MARKER.inX),
+  };
+}
+
+/**
+ * Native proof that a shared-transition correction lands on exactly the command that resolves it.
+ *
+ * One render carries both cases, and each is checked against the upload its own draw made:
+ *
+ * - **Matched surface, suppressed descendant.** The `hero` Composition carries the shared id, so
+ *   the transition corrects that surface command and the renderer drops the correction map for its
+ *   child pass. The leaf inside declares `hero-leaf`, and the scene-level marker declares that same
+ *   id, so the map handed to the child pass genuinely contained it. The child pass must therefore
+ *   upload an identity camera while the scene-level marker with the same id is corrected in the
+ *   same render. That distinguishes suppression from a missing map entry.
+ * - **Unmatched surface, descendant fallback.** The `solo` Composition has no id, resolves no
+ *   correction, and passes the map on, so `pair-leaf` takes the pose exactly once.
+ *
+ * Every published camera is compared with the block that draw's own bind group addresses, so
+ * "exactly once" is a statement about the upload, not about a recomputation.
+ */
+async function proveNativeShared() {
+  const evidence = {
+    fixture: "scripts/inspect-fixture/manifest-shared.mjs",
+    startedAt: new Date().toISOString(),
+    port: SHARED_PORT,
+    output: [...SHARED_OUTPUT],
+    limits: {
+      matrix:
+        "each published draw camera is compared with the uniform block that draw's own bind group addresses, per render pass",
+      pose:
+        "expected poses are smoothstep arithmetic on the fixture's authored offsets, not values read from the report",
+      raster:
+        "fixed authored interior pixels only, with a tolerance calibrated from an unchanged A repeat",
+      g3: "not complete",
+      g7: "not measured",
+    },
+  };
+  const fixture = await import(join(template, "manifest-shared.mjs"));
+  assert.deepEqual([...fixture.OUTPUT], [...SHARED_OUTPUT]);
+  const expected = {
+    A: sharedAuthoredGeometry(fixture, fixture.PROGRESS_A),
+    B: sharedAuthoredGeometry(fixture, fixture.PROGRESS_B),
+  };
+  // Subtract each scope's own authored offset to get the relative correction its upload carries.
+  const relative = (state, fixture) => ({
+    heroSurface: {
+      out: state.heroSurfaceX - fixture.HERO.out.x,
+      in: state.heroSurfaceX - fixture.HERO.in.x,
+    },
+    marker: {
+      out: state.markerX - fixture.MARKER.outX,
+      in: state.markerX - fixture.MARKER.inX,
+    },
+    pairLeaf: {
+      out: state.pairLeafX - (fixture.SOLO.at.x + fixture.SOLO.leaf.outX),
+      in: state.pairLeafX - (fixture.SOLO.at.x + fixture.SOLO.leaf.inX),
+    },
+  });
+  const shifts = { A: relative(expected.A, fixture), B: relative(expected.B, fixture) };
+  // The fixture only proves anything if its two states disagree.
+  assert.notEqual(expected.A.heroSurfaceX, expected.B.heroSurfaceX);
+  assert.notEqual(expected.A.markerX, expected.B.markerX);
+  assert.notEqual(expected.A.pairLeafX, expected.B.pairLeafX);
+  // One absolute pose, two different authored offsets, so the two scopes' relative corrections
+  // differ: a scope that uploaded the other scope's shift would place the surface wrongly.
+  assert.notEqual(
+    shifts.A.heroSurface.out,
+    shifts.A.heroSurface.in,
+    "the two scopes carry different relative corrections for one absolute pose",
+  );
+  for (const role of ["out", "in"]) {
+    assert.notEqual(shifts.A.marker[role], 0, `the ${role} marker is corrected at A`);
+    assert.notEqual(shifts.B.marker[role], shifts.A.marker[role], `the ${role} pose changes by B`);
+  }
+
+  const fixtureSource = await readFile(
+    join(template, "manifest-shared.mjs"),
+    "utf8",
+  );
+  for (const needle of [
+    "[160, 100]",
+    'id("hero")',
+    'id("hero-leaf")',
+    'id("pair-leaf")',
+    '{ type: "shared", duration: 1 }',
+  ])
+    assert.ok(
+      fixtureSource.includes(needle),
+      `manifest-shared.mjs drifted from the shared-correction contract: missing ${needle}`,
+    );
+  await createConsumer(sharedConsumer, "manifest-shared.mjs");
+  const inspectAt = (time) =>
+    inspectJson([
+      "inspect",
+      "--project",
+      sharedConsumer,
+      "--time",
+      String(time),
+    ]);
+  let browser;
+  let vite;
+  try {
+    const stateA = await inspectAt(fixture.TIME_A);
+    const stateB = await inspectAt(fixture.TIME_B);
+    const readState = (result, label, want) => {
+      assert.equal(result.document.scenes.length, 2, `${label} two scopes`);
+      assert.deepEqual(
+        result.document.scenes.map((scene) => scene.scope),
+        [fixture.SCOPE_OUT, fixture.SCOPE_IN],
+        label,
+      );
+      /**
+       * The uploaded camera of one command, found in the visit that actually drew it. A command
+       * belongs to exactly one render visit, so a second match would mean the metadata is wrong.
+       */
+      const cameraOf = (scene, nodeId) => {
+        const hits = scene.frameOccurrences.flatMap((visit) =>
+          visit.drawCameras
+            .filter((entry) => entry.ownerNodeId === nodeId)
+            .map((entry) => ({ visit, entry })),
+        );
+        assert.equal(
+          hits.length,
+          1,
+          `${label} ${scene.scope} node ${nodeId} has one draw camera`,
+        );
+        assert.equal(hits[0].entry.camera.status, "mapped", label);
+        return [...hits[0].entry.camera.matrix];
+      };
+      /** The uploaded camera of one command, addressed by its evaluation command id. */
+      const commandCameraOf = (scene, commandId) => {
+        const hits = scene.frameOccurrences.flatMap((visit) =>
+          visit.drawCameras.filter((entry) => entry.commandId === commandId),
+        );
+        assert.equal(
+          hits.length,
+          1,
+          `${label} ${scene.scope} command ${commandId} has one draw camera`,
+        );
+        assert.equal(hits[0].camera.status, "mapped", label);
+        return [...hits[0].camera.matrix];
+      };
+      return result.document.scenes.map((scene) => {
+        assertSpaceClosure(scene, `${label} ${scene.scope}`);
+        const role = scene.scope === fixture.SCOPE_OUT ? "out" : "in";
+        const heroAuthored = role === "out" ? fixture.HERO.out : fixture.HERO.in;
+        const hero = scene.surfaceOccurrences.find((surface) =>
+          surface.path.endsWith("/hero"),
+        );
+        const solo = scene.surfaceOccurrences.find((surface) =>
+          surface.path.endsWith("/composition"),
+        );
+        assert.ok(hero && solo, `${label} ${scene.scope} surfaces`);
+        assert.equal(hero.surface.kind, "composition", label);
+        assert.equal(solo.surface.kind, "composition", label);
+        // A composition owns two visits on one target; the tagged one has an overlay, the
+        // untagged one declares none.
+        assert.notEqual(
+          hero.worldFrameOccurrenceId,
+          hero.overlayFrameOccurrenceId,
+          `${label} ${scene.scope} hero world and overlay are distinct visits`,
+        );
+        assert.equal(
+          solo.overlayFrameOccurrenceId,
+          undefined,
+          `${label} ${scene.scope} solo has one pass`,
+        );
+        const heroWorldVisit = scene.frameOccurrences.find(
+          (visit) => visit.id === hero.worldFrameOccurrenceId,
+        );
+        assert.ok(heroWorldVisit, label);
+        // Suppressed descendant: the hero child pass drives with an identity camera.
+        assert.deepEqual(
+          heroWorldVisit.drawCameras.map((camera) =>
+            camera.camera.status === "mapped" ? [...camera.camera.matrix] : null,
+          ),
+          [[1, 0, 0, 1, 0, 0]],
+          `${label} ${scene.scope} corrected surface suppresses the child correction`,
+        );
+        // Authored ids repeat across nesting levels, so records are matched by the node that owns
+        // each paint rather than by a path suffix. Walk order is the tree's own order: the hero
+        // leaf sits inside the first composition, the same-id marker is a later top-level node.
+        const nodesById = (id) => {
+          const found = [];
+          walk(scene.tree, (node) => {
+            if (node.id === id) found.push(node);
+          });
+          return found;
+        };
+        const heroLeafNodes = nodesById("hero-leaf");
+        assert.equal(
+          heroLeafNodes.length,
+          2,
+          `${label} ${scene.scope} two nodes declare hero-leaf`,
+        );
+        const recordOf = (node, what) => {
+          const record = recordOwnedBy(scene.paintRecords, node);
+          assert.ok(record, `${label} ${scene.scope} record for ${what}`);
+          return record;
+        };
+        const heroLeaf = recordOf(heroLeafNodes[0], "the leaf inside the tagged surface");
+        const marker = recordOf(heroLeafNodes[1], "the scene-level marker");
+        const pairLeafNodes = nodesById("pair-leaf");
+        assert.equal(pairLeafNodes.length, 1, `${label} ${scene.scope} one pair-leaf`);
+        const pairLeaf = recordOf(pairLeafNodes[0], "the fallback leaf");
+        assert.notEqual(
+          heroLeafNodes[0].inspectionId,
+          heroLeafNodes[1].inspectionId,
+          `${label} ${scene.scope} the two hero-leaf nodes are distinct`,
+        );
+        // Absolute scene positions of the corrected elements: one pose, both scopes.
+        assertQuadClose(
+          marker.bounds,
+          {
+            x: want.markerX,
+            y: fixture.MARKER.y,
+            width: fixture.MARKER.width,
+            height: fixture.MARKER.height,
+          },
+          `${label} ${scene.scope} scene-level marker is at the shared pose`,
+        );
+        assertQuadClose(
+          pairLeaf.bounds,
+          {
+            x: want.pairLeafX,
+            y: fixture.SOLO.at.y + fixture.SOLO.leaf.y,
+            width: fixture.SOLO.leaf.width,
+            height: fixture.SOLO.leaf.height,
+          },
+          `${label} ${scene.scope} fallback leaf is at the shared pose`,
+        );
+        // The suppressed leaf moves only because its surface did, so it keeps its authored
+        // offset inside that surface.
+        assertQuadClose(
+          heroLeaf.bounds,
+          {
+            x: want.heroSurfaceX + fixture.HERO.leaf.x,
+            y: heroAuthored.y + fixture.HERO.leaf.y,
+            width: fixture.HERO.leaf.width,
+            height: fixture.HERO.leaf.height,
+          },
+          `${label} ${scene.scope} suppressed leaf keeps its authored offset in the surface`,
+        );
+        // Relative uploads: the surface and the marker carry the pose; the inner leaf does not.
+        assertAffineClose(
+          cameraOf(scene, marker.inspection.nodeId),
+          [1, 0, 0, 1, shifts[label].marker[role], 0],
+          `${label} ${scene.scope} marker uploaded correction`,
+        );
+        assertAffineClose(
+          cameraOf(scene, pairLeaf.inspection.nodeId),
+          [1, 0, 0, 1, shifts[label].pairLeaf[role], 0],
+          `${label} ${scene.scope} fallback leaf uploaded correction once`,
+        );
+        assertAffineClose(
+          commandCameraOf(scene, hero.occurrenceId),
+          [1, 0, 0, 1, shifts[label].heroSurface[role], 0],
+          `${label} ${scene.scope} tagged surface uploaded correction`,
+        );
+        // The surface uniform the tagged command uploaded carries that same correction once.
+        assertAffineClose(
+          [...hero.uniform.cameraX],
+          [1, 0, shifts[label].heroSurface[role]],
+          `${label} ${scene.scope} hero surface uniform correction`,
+        );
+        assertAffineClose(
+          [...solo.uniform.cameraX],
+          [1, 0, 0],
+          `${label} ${scene.scope} unmatched surface keeps an identity camera`,
+        );
+        return {
+          scope: scene.scope,
+          role,
+          heroChildCamera: heroWorldVisit.drawCameras.map((camera) =>
+            camera.camera.status === "mapped" ? [...camera.camera.matrix] : null,
+          ),
+          heroSurface: hero.projection.status === "mapped"
+            ? [...hero.projection.childPixelsToScene]
+            : null,
+          soloSurface: solo.projection.status === "mapped"
+            ? [...solo.projection.childPixelsToScene]
+            : null,
+          heroLeafBounds: { ...heroLeaf.bounds },
+          pairLeafBounds: { ...pairLeaf.bounds },
+          markerBounds: { ...marker.bounds },
+          markerCamera: cameraOf(scene, marker.inspection.nodeId),
+          pairLeafCamera: cameraOf(scene, pairLeaf.inspection.nodeId),
+          heroSurfaceCamera: commandCameraOf(scene, hero.occurrenceId),
+        };
+      });
+    };
+    const readA = readState(stateA, "A", expected.A);
+    const readB = readState(stateB, "B", expected.B);
+    // The suppression claim needs the map to have contained the id, so one render must show the
+    // same declared id corrected at scene level and uncorrected inside the tagged surface.
+    for (const detail of [...readA, ...readB]) {
+      assert.deepEqual(
+        detail.heroChildCamera,
+        [[1, 0, 0, 1, 0, 0]],
+        `${detail.scope} suppressed child is identity`,
+      );
+      assert.notDeepEqual(
+        detail.markerCamera,
+        [1, 0, 0, 1, 0, 0],
+        `${detail.scope} the same id outside the surface is corrected`,
+      );
+      assert.notDeepEqual(
+        detail.pairLeafCamera,
+        [1, 0, 0, 1, 0, 0],
+        `${detail.scope} the unmatched surface's descendant is corrected`,
+      );
+    }
+    // Both states publish a projection, and each equals the absolute pose for its own progress.
+    // The surface projection is the placed surface composed with its corrected camera, which is
+    // exactly the absolute pose; the unmatched surface is only its own offset.
+    for (const [label, details, want] of [
+      ["A", readA, expected.A],
+      ["B", readB, expected.B],
+    ])
+      for (const detail of details) {
+        assertAffineClose(
+          detail.heroSurface,
+          [1, 0, 0, 1, want.heroSurfaceX, fixture.HERO.out.y],
+          `${label} ${detail.scope} hero surface projection is the absolute shared pose`,
+        );
+        assertAffineClose(
+          detail.soloSurface,
+          [1, 0, 0, 1, fixture.SOLO.at.x, fixture.SOLO.at.y],
+          `${label} ${detail.scope} unmatched surface projection is its own offset`,
+        );
+      }
+    evidence.authored = expected;
+    evidence.shifts = shifts;
+    evidence.cli = { A: readA, B: readB };
+
+    vite = await createProofServer({
+      port: SHARED_PORT,
+      title: "Lane B native shared correction",
+    });
+    browser = await launchProofBrowser();
+    const page = await openProofPage(browser, vite);
+    const browserErrors = page.proofErrors;
+    const captured = await page.evaluate(captureProofSequence, {
+      modulePath: "/scripts/inspect-fixture/manifest-shared.mjs",
+      timeA: fixture.TIME_A,
+      timeB: fixture.TIME_B,
+    });
+    assert.deepEqual(captured.renderErrors, []);
+    const { cal1, tolerance, seqA, seqB, seqA2 } = captured.frames;
+    assert.ok(tolerance === 0 || tolerance < 8, `tolerance ${tolerance}`);
+    assert.ok(
+      maxChannelDelta(seqA.pixels, seqA2.pixels) <= tolerance,
+      "A→B→A returns to the calibrated A frame",
+    );
+    assert.ok(
+      maxChannelDelta(seqA.pixels, seqB.pixels) > tolerance,
+      "B differs from A",
+    );
+    const parity = {};
+    const negativeControls = {};
+    for (const [frame, label] of [
+      [cal1, "cal1"],
+      [seqA, "seqA"],
+      [seqB, "seqB"],
+      [seqA2, "seqA2"],
+    ]) {
+      assert.deepEqual([frame.width, frame.height], [...SHARED_OUTPUT], label);
+      assert.equal(frame.scenes.length, 2, label);
+      parity[label] = assertOccurrenceParity(frame, label);
+      // Negative control through the very same assertion: publish a different command's camera
+      // on one visit, keeping the list length so the failure lands on the upload comparison.
+      const substituted = substituteForeignCamera(frame);
+      assert.ok(substituted, `${label} a foreign camera exists to substitute`);
+      let reassignError = null;
+      try {
+        assertOccurrenceParity(frame, `${label} reassigned`, { reassign: substituted });
+      } catch (error) {
+        reassignError = error instanceof Error ? error.message : String(error);
+      }
+      assert.ok(
+        reassignError,
+        `${label} a reassigned camera list must fail the same parity assertion`,
+      );
+      assert.match(
+        reassignError,
+        /upload/,
+        `${label} the reassigned failure is the upload comparison: ${reassignError}`,
+      );
+      negativeControls[label] = reassignError;
+    }
+    evidence.binding = parity;
+    evidence.negativeControl = negativeControls;
+    // Fixed authored pixels. The suppressed leaf's interior coordinate never changes colour
+    // relative to its own surface; the marker and pair leaf move onto new fixed coordinates.
+    const SHARED_PIXELS = {
+      A: [
+        [[130, 80], SHARED_MARKER_CYAN, "scene-level marker interior"],
+        [[155, 80], SHARED_BLACK, "background the marker has not reached"],
+        [[102, 30], SHARED_PAIR_YELLOW, "fallback pair leaf interior"],
+        [[115, 30], SHARED_BLACK, "background the pair leaf has not reached"],
+      ],
+      B: [
+        [[155, 80], SHARED_MARKER_CYAN, "scene-level marker interior after the pose"],
+        [[130, 80], SHARED_BLACK, "background the marker has left"],
+        [[118, 30], SHARED_PAIR_YELLOW, "fallback pair leaf interior after the pose"],
+        [[36, 30], SHARED_BLACK, "the leaf's A coordinate is bare once its surface has moved"],
+      ],
+    };
+    const pixelTolerance = Math.max(tolerance, 2);
+    const sampled = {};
+    for (const [frame, label] of [
+      [cal1, "A"],
+      [seqA, "A"],
+      [seqA2, "A"],
+      [seqB, "B"],
+    ]) {
+      for (const [point, rgba, note] of SHARED_PIXELS[label])
+        assertNear(
+          samplePixel(frame.pixels, point, frame.width),
+          rgba,
+          pixelTolerance,
+          `${label} ${point.join(",")} ${note}`,
+        );
+      sampled[label] = SHARED_PIXELS[label].map(([point]) => ({
+        point,
+        rgba: samplePixel(frame.pixels, point, frame.width),
+      }));
+    }
+    assert.notDeepEqual(
+      samplePixel(seqA.pixels, [130, 80], seqA.width),
+      samplePixel(seqB.pixels, [130, 80], seqB.width),
+      "the pose changes that fixed coordinate",
+    );
+    assert.deepEqual(browserErrors, []);
+    evidence.gpu = captured.gpu;
+    evidence.gpuError = captured.gpuError;
+    evidence.userAgent = captured.userAgent;
+    evidence.pixels = {
+      tolerance,
+      expected: SHARED_PIXELS,
+      sampled,
+      note: "Fixed authored interiors only. Not coverage, edge, or occlusion proof.",
+    };
+    await mkdir(reports, { recursive: true });
+    await writeFile(
+      join(reports, "shared-a.png"),
+      Buffer.from(cal1.png, "base64"),
+    );
+    await writeFile(
+      join(reports, "shared-b.png"),
+      Buffer.from(seqB.png, "base64"),
+    );
+    evidence.artifacts = {
+      a: "artifacts/g1b/reports/shared-a.png",
+      b: "artifacts/g1b/reports/shared-b.png",
+      report: "artifacts/g1b/reports/shared-correction-proof.json",
+    };
+  } catch (error) {
+    evidence.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    evidence.finishedAt = new Date().toISOString();
+    await browser?.close();
+    await vite?.close();
+    await mkdir(reports, { recursive: true });
+    await writeFile(
+      join(reports, "shared-correction-proof.json"),
+      JSON.stringify(evidence, null, 2),
+    );
+  }
+  return evidence;
 }
 
 /**
@@ -5200,6 +6936,48 @@ async function proveNativeSurfaces() {
   return evidence;
 }
 
+// shortcut: shared-correction-only entry so this proof can rerun without the full GPU suite.
+if (process.env.RITWEEN_SHARED_PROOF === "1") {
+  try {
+    const evidence = await proveNativeShared();
+    console.log(
+      JSON.stringify({
+        ok: true,
+        authored: evidence.authored,
+        shifts: evidence.shifts,
+        cli: evidence.cli,
+        binding: evidence.binding,
+        pixels: evidence.pixels,
+        gpu: evidence.gpu,
+        gpuError: evidence.gpuError,
+      }),
+    );
+  } finally {
+    handshakeServer.close();
+  }
+  process.exit(0);
+}
+
+// shortcut: nested-camera-only entry so the G3 camera proof can rerun without the full GPU suite.
+if (process.env.RITWEEN_NESTED_PROOF === "1") {
+  try {
+    const evidence = await proveNativeNested();
+    console.log(
+      JSON.stringify({
+        ok: true,
+        stateA: evidence.stateA,
+        stateB: evidence.stateB,
+        pixels: evidence.pixels,
+        gpu: evidence.gpu,
+        gpuError: evidence.gpuError,
+      }),
+    );
+  } finally {
+    handshakeServer.close();
+  }
+  process.exit(0);
+}
+
 // shortcut: surface-only entry so this lane can rerun without the transition GPU suite; remove if the suite grows a real selector.
 if (process.env.RITWEEN_SURFACE_PROOF === "1") {
   try {
@@ -6094,7 +7872,13 @@ try {
   const nestedSpace = firstSpaces[1];
   assert.equal(nestedSpace.kind, "world", first.scope);
   assert.deepEqual(nestedSpace.parent, { status: "known", id: "layout" });
-  assertMappingUnavailable(nestedSpace.mapping, first.scope);
+  // The mounted world descriptor carries the evaluated camera affine: binary64, not a uniform.
+  assert.equal(nestedSpace.mapping.status, "mapped", first.scope);
+  assert.equal(nestedSpace.mapping.kind, "world-to-composition-viewport", first.scope);
+  assert.equal(nestedSpace.mapping.source, "evaluateCamera", first.scope);
+  assert.equal(nestedSpace.mapping.precision, "binary64-evaluated", first.scope);
+  const identityCamera = [1, 0, 0, 1, 0, 0];
+  assert.deepEqual([...nestedSpace.mapping.matrix], identityCamera, first.scope);
   const worldStack = nodeById(first.tree, "world-stack");
   assert.equal(worldStack.space, nestedSpace.id);
   assert.notEqual(worldStack.space, "layout");
@@ -6250,7 +8034,7 @@ try {
   assert.deepEqual(first.commands[0].kind, "text");
   const json = overlap.raw;
   for (const forbidden of [
-    '"source"',
+    '"source":{',
     "http://",
     "https://",
     "ImageBitmap",
@@ -6260,6 +8044,15 @@ try {
       json.includes(forbidden),
       false,
       `whitelisted output must not contain ${forbidden}`,
+    );
+  // Every published `source` is a mapping provenance label, never a media source object.
+  for (const match of json.matchAll(/"source":"([^"]*)"/g))
+    assert.equal(
+      ["evaluateCamera", "computeFrameTransform", "uploaded-uniform"].includes(
+        match[1],
+      ),
+      true,
+      `unexpected published source ${match[1]}`,
     );
   assert.equal(/NaN|Infinity/.test(json), false, "no non-finite geometry");
   findings.overlapDiagnostics = document.diagnostics.length;
@@ -6646,6 +8439,8 @@ try {
   findings.clipProof = await proveRectClip();
   findings.maskProof = await proveMaskFamilies();
   findings.surfaceProof = await proveNativeSurfaces();
+  findings.nestedProof = await proveNativeNested();
+  findings.sharedProof = await proveNativeShared();
   findings.transitionProof = await proveNativeTransitions();
 
   const report = {
@@ -6719,6 +8514,8 @@ try {
       "no Group or Composition placeholder paint record",
       "one FrameSource A-repeat and A\u2192B\u2192A; interiors only, not coverage",
       "surface direct final matches pre after output clipping; G3 not complete",
+      "native nested World→Clip→Group→Composition: each published draw camera equals the upload its own bind group addresses in its own render pass; a substituted camera fails that same comparison; quads and surface projections match affine arithmetic on the authored constants; fixed authored interior pixels match A→B→A",
+      "native shared correction: the matched surface suppresses its descendant while a scene-level marker declaring the same id is corrected in the same render, the unmatched surface falls back to its descendant once, every published camera equals its own draw's upload, and a substituted camera fails the same comparison",
       "native builtins and custom: CLI full report per type, slide targets, one FrameSource pixels",
       "browser p0/p25/p75/end and ABA records use the static shader table, including both hero scopes",
       "direct end is identity weight 1, separate from the p0 overlap cutoff",
@@ -6727,7 +8524,8 @@ try {
       "custom scene final projection unavailable and finalPaintRecords absent; shader not serialized",
       "slide .25 background records stay one role each; inner fill is a separate content quad",
       "project overlay identity on slide .25 and direct end; pixels do not claim coverage",
-      "G3 spaces and mappings are not closed; G7 is not measured",
+      "G3 world mapping is binary64 evaluated, draw cameras are float32 uploaded, and raster coverage, mask pixels, occlusion, and custom shader output stay unavailable",
+      "G7 is not measured",
     ],
   };
   await writeFile(

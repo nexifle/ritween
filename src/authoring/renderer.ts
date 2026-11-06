@@ -16,15 +16,21 @@ import { projectRect } from "./project-rect";
 import { planSurface } from "./surface-plan";
 import { checkVertexFloat32 } from "./vertex-float32";
 import {
+  baseFrameMapping,
   childPixelsToParent,
   copySurfaceUniform,
+  EMPTY_FRAME_OCCURRENCES,
   EMPTY_SURFACE_TRACES,
+  MISSING_LAYOUT_SPACE_REASON,
   NON_CLIP_PARENT_REASON,
   projectRectClipChain,
+  ROOT_TARGET_REASON,
   SurfaceProjectionTraces,
+  uploadedCameraMapping,
   type CapturedPaint,
   type CopiedSurfaceUniform,
   type ClipSurfaceShape,
+  type FrameOccurrence,
   type InspectionSurface,
   type PixelRect,
   type SurfaceLevel,
@@ -683,6 +689,8 @@ export class ViewRenderer {
   /** Set by the parent render only for the child call, then cleared. */
   private tracePass?: SurfaceTracePass;
   private surfaceProjection: readonly SurfaceTrace[] = EMPTY_SURFACE_TRACES;
+  private frameOccurrenceSnapshot: readonly FrameOccurrence[] =
+    EMPTY_FRAME_OCCURRENCES;
   private ownsShared = true;
   private surfaces = new Map<
     string,
@@ -877,6 +885,14 @@ export class ViewRenderer {
   surfaceTraces(): readonly SurfaceTrace[] {
     return this.surfaceProjection;
   }
+  /** Frame visits from the last successful collecting render. Empty when inspection is off. */
+  frameOccurrences(): readonly FrameOccurrence[] {
+    return this.frameOccurrenceSnapshot;
+  }
+  /** Same finished traces as {@link surfaceTraces}. Absent is the stage's job, not this array. */
+  surfaceOccurrences(): readonly SurfaceTrace[] {
+    return this.surfaceProjection;
+  }
   render(
     frame: EvaluatedFrame,
     context: RenderContext,
@@ -891,21 +907,20 @@ export class ViewRenderer {
     const incoming = this.tracePass;
     this.tracePass = undefined;
     // Root snapshot dies before the readiness throw, which is outside the catch.
-    if (!incoming) this.surfaceProjection = EMPTY_SURFACE_TRACES;
+    if (!incoming) {
+      this.surfaceProjection = EMPTY_SURFACE_TRACES;
+      this.frameOccurrenceSnapshot = EMPTY_FRAME_OCCURRENCES;
+    }
     if (this.disposed || !this.pipeline || !this.white || !this.sampler)
       throw Error("View renderer is not ready.");
     let book = incoming?.book;
     let sink = incoming?.sink;
     const blocked = incoming?.blocked;
-    // No book and no closure unless this render is collecting or continuing a trace.
-    const ensureBook =
-      collector || incoming
-        ? () => {
-            book ??= new SurfaceProjectionTraces();
-            sink ??= book.roots;
-            return book;
-          }
-        : undefined;
+    // No book and no counter unless this render is collecting or continuing a trace.
+    if (collector || incoming) {
+      book ??= new SurfaceProjectionTraces();
+      sink ??= book.roots;
+    }
     try {
       const {
         scale,
@@ -930,6 +945,29 @@ export class ViewRenderer {
           width: scissorW,
           height: scissorH,
         });
+      const frameId = book?.beginFrame({
+        layoutSpace: frame.frameLayoutSpaceId
+          ? { status: "known", id: frame.frameLayoutSpaceId }
+          : { status: "unavailable", reason: MISSING_LAYOUT_SPACE_REASON },
+        targetResolution: [context.resolution[0], context.resolution[1]],
+        designSize: [size[0], size[1]],
+        scissor: {
+          x: scissorX,
+          y: scissorY,
+          width: scissorW,
+          height: scissorH,
+        },
+        parentSurface:
+          incoming?.occurrenceId !== undefined
+            ? { status: "known", occurrenceId: incoming.occurrenceId }
+            : {
+                status: "unavailable",
+                reason: incoming ? NON_CLIP_PARENT_REASON : ROOT_TARGET_REASON,
+              },
+        baseFrameTransform: baseFrameMapping(frameMatrix),
+      });
+      if (incoming?.childFrame && frameId !== undefined)
+        incoming.childFrame.id = frameId;
       const slots: PublishSlot[] | undefined = collector ? [] : undefined;
       const rasterScale = scale * textResolution;
       const activeSurfaces = new Set(
@@ -1008,39 +1046,37 @@ export class ViewRenderer {
             resolution: [width, height] as const,
           };
           const childSize = plan.childDesignSize;
-          // Paint collector stays on this render. A fork may only receive the trace pass.
+          // Paint collector stays on this render. A fork receives the book even with no
+          // tagged surface, so every visit still gets a frame id.
           let childPass: SurfaceTracePass | undefined;
-          if (ensureBook) {
+          if (book && frameId !== undefined) {
             if (isTaggedSurface(c)) {
-              const active = ensureBook();
-              const opened = active.open(
+              const opened = book.open(
                 c.inspection.id,
                 c.inspection.nodeId,
                 c.path,
                 c.inspectionSurface,
                 [width, height],
+                frameId,
               );
               childPass = {
-                book: active,
+                book,
                 sink: opened.nested,
                 paints: opened.paints,
                 occurrenceId: c.inspection.id,
               };
-            } else if (
-              frameHasTaggedSurface(c.frame) ||
-              (c.kind === "composition" &&
-                c.overlay &&
-                frameHasTaggedSurface(c.overlay))
-            ) {
-              const active = ensureBook();
+            } else {
               childPass = {
-                book: active,
-                sink: sink ?? active.roots,
+                book,
+                sink: sink ?? book.roots,
                 blocked: blocked ?? NON_CLIP_PARENT_REASON,
               };
             }
           }
-          surface.world.tracePass = childPass;
+          const worldSlot = childPass ? { id: undefined as number | undefined } : undefined;
+          surface.world.tracePass = childPass
+            ? { ...childPass, childFrame: worldSlot }
+            : undefined;
           try {
             surface.world.render(
               c.frame,
@@ -1055,9 +1091,21 @@ export class ViewRenderer {
           } finally {
             surface.world.tracePass = undefined;
           }
+          if (
+            book &&
+            isTaggedSurface(c) &&
+            worldSlot?.id !== undefined &&
+            c.kind === "composition"
+          )
+            book.noteRenderedFrame(c.inspection.id, "world", worldSlot.id);
           if (c.overlay) {
             surface.overlay ??= this.fork();
-            surface.overlay.tracePass = childPass;
+            const overlaySlot = childPass
+              ? { id: undefined as number | undefined }
+              : undefined;
+            surface.overlay.tracePass = childPass
+              ? { ...childPass, childFrame: overlaySlot }
+              : undefined;
             try {
               surface.overlay.render(
                 c.overlay,
@@ -1072,6 +1120,12 @@ export class ViewRenderer {
             } finally {
               surface.overlay.tracePass = undefined;
             }
+            if (
+              book &&
+              isTaggedSurface(c) &&
+              overlaySlot?.id !== undefined
+            )
+              book.noteRenderedFrame(c.inspection.id, "overlay", overlaySlot.id);
           } else {
             surface.overlay?.dispose();
             surface.overlay = undefined;
@@ -1288,6 +1342,17 @@ export class ViewRenderer {
           // Collected after the upload, so a record describes the uniforms the GPU receives.
           // A tagged surface is replaced by its leaves. An untagged surface stays unsupported.
           // Debug outlines are appended to the copy above, so `frame.commands` is only real paint.
+          if (
+            book &&
+            frameId !== undefined &&
+            i < frame.commands.length &&
+            c.inspection
+          )
+            book.noteDrawCamera(frameId, {
+              commandId: c.inspection.id,
+              ownerNodeId: c.inspection.nodeId,
+              camera: uploadedCameraMapping(values, (i * stride) / 4),
+            });
           if (book && i < frame.commands.length && isTaggedSurface(c)) {
             // Child traces were accepted before this uniform existed; reconcile only now.
             const raw = book.close(
@@ -1394,6 +1459,8 @@ export class ViewRenderer {
       pass.end();
       if (!incoming) {
         this.surfaceProjection = book?.finish() ?? EMPTY_SURFACE_TRACES;
+        this.frameOccurrenceSnapshot =
+          book?.frameOccurrences() ?? EMPTY_FRAME_OCCURRENCES;
         if (collector && slots) {
           const rootResolution: readonly [number, number] = [
             context.resolution[0],
@@ -1432,7 +1499,10 @@ export class ViewRenderer {
         }
       }
     } catch (error) {
-      if (!incoming) this.surfaceProjection = EMPTY_SURFACE_TRACES;
+      if (!incoming) {
+        this.surfaceProjection = EMPTY_SURFACE_TRACES;
+        this.frameOccurrenceSnapshot = EMPTY_FRAME_OCCURRENCES;
+      }
       throw error;
     }
   }
@@ -1465,21 +1535,7 @@ export class ViewRenderer {
     this.texts.clear();
     this.canvas.width = this.canvas.height = 0;
     this.surfaceProjection = EMPTY_SURFACE_TRACES;
+    this.frameOccurrenceSnapshot = EMPTY_FRAME_OCCURRENCES;
     this.tracePass = undefined;
   }
-}
-
-function frameHasTaggedSurface(frame: EvaluatedFrame): boolean {
-  for (const command of frame.commands) {
-    if (command.kind !== "composition" && command.kind !== "group") continue;
-    if (command.inspectionSurface) return true;
-    if (frameHasTaggedSurface(command.frame)) return true;
-    if (
-      command.kind === "composition" &&
-      command.overlay &&
-      frameHasTaggedSurface(command.overlay)
-    )
-      return true;
-  }
-  return false;
 }

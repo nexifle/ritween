@@ -4561,3 +4561,557 @@ test("public inspection exports do not gain a media paint alias", async () => {
   assert.equal(typeof api.Video, "function");
   assert.equal(typeof api.buildInspectionDocument, "function");
 });
+
+function occurrenceNode(
+  path: string,
+  id: string | undefined,
+  inspectionId: number,
+  children: readonly Record<string, unknown>[] = [],
+  space?: string,
+) {
+  return {
+    path,
+    kind: "box",
+    ...(id ? { id } : {}),
+    inspectionId,
+    ...(space ? { space } : {}),
+    bounds: { x: 0, y: 0, width: 4, height: 3 },
+    transform: [1, 1, 0, 0],
+    children,
+  };
+}
+
+function mappedCamera(matrix = [1, 0, 0, 1, 0, 0]) {
+  return {
+    status: "mapped" as const,
+    source: "uploaded-uniform" as const,
+    precision: "float32" as const,
+    matrix,
+  };
+}
+
+function occurrenceFrame(id: number, space: string, cameras: readonly Record<string, unknown>[]) {
+  return {
+    id,
+    layoutSpace: { status: "known", id: space },
+    targetResolution: [8, 6],
+    designSize: [4, 3],
+    scissor: { x: 0, y: 0, width: 8, height: 6 },
+    parentSurface:
+      id === 0
+        ? { status: "unavailable", reason: "root render target is not a tagged surface." }
+        : { status: "known", occurrenceId: 1 },
+    baseFrameTransform: {
+      status: "mapped",
+      source: "computeFrameTransform",
+      precision: "binary64",
+      matrix: [1, 0, 0, 1, id, 0],
+    },
+    drawCameras: cameras,
+  };
+}
+
+function occurrenceSurface(
+  occurrenceId: number,
+  ownerNodeId: number,
+  frames: { parent: number; world?: number; overlay?: number },
+) {
+  return {
+    occurrenceId,
+    occurrenceIdKind: "evaluation-command",
+    ownerNodeId,
+    path: ownerNodeId === 1 ? "comp" : "leaf",
+    surface: { kind: "composition" },
+    childResolution: [4, 3],
+    parentResolution: [8, 6],
+    uniform: {
+      rect: [0, 0, 4, 3],
+      transform: [1, 1, 0, 0],
+      resolution: [8, 6],
+      opacity: 1,
+      cameraX: [1, 0, 0],
+      cameraY: [0, 1, 0],
+    },
+    parentFrameOccurrenceId: frames.parent,
+    ...(frames.world === undefined ? {} : { worldFrameOccurrenceId: frames.world }),
+    ...(frames.overlay === undefined
+      ? {}
+      : { overlayFrameOccurrenceId: frames.overlay }),
+    projection: { status: "unavailable", reason: "parent mapping is unavailable." },
+  };
+}
+
+test("occurrence collections round-trip schema 2 and stay scoped", () => {
+  const frames = [
+    occurrenceFrame(0, "layout", [
+      { commandId: 4, ownerNodeId: 1, camera: mappedCamera() },
+    ]),
+    occurrenceFrame(1, "comp/world", [
+      { commandId: 5, ownerNodeId: 2, camera: mappedCamera([2, 0, 0, 2, 1.5, 0]) },
+    ]),
+  ];
+  const surfaces = [occurrenceSurface(1, 1, { parent: 0, world: 1 })];
+  const tree = occurrenceNode("comp", "comp", 1, [
+    occurrenceNode("leaf", "leaf", 2, [], "comp/world"),
+  ]);
+  const frame = {
+    tree,
+    commands: [],
+    warnings: [],
+    frameOccurrences: frames,
+    surfaceOccurrences: surfaces,
+    spaceProvenance: [
+      {
+        id: "comp/world",
+        kind: "world",
+        parent: { status: "known", id: "layout" },
+        worldToCompositionViewport: {
+          kind: "world-to-composition-viewport",
+          source: "evaluateCamera",
+          precision: "binary64-evaluated",
+          status: "mapped",
+          matrix: [1, 0, 0, 1, 3.5, 1.25],
+        },
+      },
+    ],
+  };
+  const built = document(
+    inspection([
+      { id: "main", frame },
+      { id: "other", frame },
+    ]),
+  );
+  assert.equal(built.schemaVersion, 2);
+  assert.equal(built.scenes[0].frameOccurrences?.[1].id, 1);
+  assert.equal(built.scenes[1].frameOccurrences?.[1].id, 1);
+  assert.equal(built.scenes[0].spaces.find((space) => space.kind === "world")?.mapping.status, "mapped");
+  const json = serializeInspection(built);
+  assert.equal(measureInspection(built), new TextEncoder().encode(json).length);
+  assert.equal(JSON.parse(json).schemaVersion, 2);
+  const one = document(inspection([{ id: "main", frame }]));
+  const oneBytes = measureInspection(one);
+  assert.equal(oneBytes, new TextEncoder().encode(serializeInspection(one)).length);
+  const bare = {
+    ...frame,
+    frameOccurrences: undefined,
+    surfaceOccurrences: undefined,
+  };
+  const bareBytes = measureInspection(document(inspection([{ id: "main", frame: bare }])));
+  const inserted = new TextEncoder().encode(
+    `,"frameOccurrences":${JSON.stringify(one.scenes[0].frameOccurrences)},"surfaceOccurrences":${JSON.stringify(one.scenes[0].surfaceOccurrences)}`,
+  ).length;
+  assert.equal(oneBytes - bareBytes, inserted);
+  const minimum = (raw: unknown, actual: number) => {
+    let charged = actual;
+    for (let limit = actual; limit >= actual - inserted - 8; limit--) {
+      try {
+        buildInspectionDocument({
+          packageVersion: "0.0.0-test",
+          project,
+          frame: inspection([{ id: "main", frame: raw }]),
+          limit,
+        });
+        charged = limit;
+      } catch {
+        break;
+      }
+    }
+    return charged;
+  };
+  assert.equal(
+    minimum(frame, oneBytes) - minimum(bare, bareBytes),
+    inserted,
+    "published occurrence UTF-8 is charged exactly, not estimated",
+  );
+});
+
+test("occurrence metadata rejects duplicates, dangling refs, cycles, and bad matrices", () => {
+  const tree = occurrenceNode("comp", "comp", 1);
+  const base = {
+    tree,
+    commands: [],
+    warnings: [],
+    frameOccurrences: [occurrenceFrame(0, "layout", [])],
+    surfaceOccurrences: [occurrenceSurface(1, 1, { parent: 0 })],
+  };
+  const reject = (frame: unknown, pattern: RegExp) =>
+    assert.throws(
+      () => document(inspection([{ id: "main", frame }])),
+      (error: unknown) =>
+        error instanceof InspectionSerializationError && pattern.test(error.message),
+    );
+  reject(
+    {
+      ...base,
+      frameOccurrences: [occurrenceFrame(0, "layout", []), occurrenceFrame(0, "layout", [])],
+    },
+    /duplicates frame occurrence/,
+  );
+  reject(
+    {
+      ...base,
+      surfaceOccurrences: [
+        occurrenceSurface(1, 1, { parent: 0 }),
+        { ...occurrenceSurface(2, 1, { parent: 7 }), parentOccurrenceId: 2 },
+      ],
+    },
+    /not recorded/,
+  );
+  reject(
+    {
+      ...base,
+      frameOccurrences: [
+        occurrenceFrame(0, "layout", []),
+        occurrenceFrame(1, "comp/world", []),
+      ],
+      surfaceOccurrences: [
+        { ...occurrenceSurface(1, 1, { parent: 0 }), parentOccurrenceId: 2 },
+        { ...occurrenceSurface(2, 1, { parent: 1 }), parentOccurrenceId: 1 },
+      ],
+    },
+    /parent cycle/,
+  );
+  reject(
+    {
+      ...base,
+      frameOccurrences: [
+        {
+          ...occurrenceFrame(0, "layout", []),
+          baseFrameTransform: {
+            status: "mapped",
+            source: "computeFrameTransform",
+            precision: "binary64",
+            matrix: [1, 0, 0, 1, Number.NaN, 0],
+          },
+        },
+      ],
+    },
+    /not finite|must be a finite number/,
+  );
+});
+
+test("occurrence parent graph rejects cross-namespace cycles and keeps world/overlay containment", () => {
+  const tree = occurrenceNode("comp", "comp", 1);
+  const unavailable = {
+    status: "unavailable" as const,
+    reason: "root render target is not a tagged surface.",
+  };
+  const known = (occurrenceId: number) => ({ status: "known" as const, occurrenceId });
+  const scene = (
+    frameOccurrences: readonly Record<string, unknown>[],
+    surfaceOccurrences: readonly Record<string, unknown>[],
+  ) => ({
+    tree,
+    commands: [],
+    warnings: [],
+    frameOccurrences,
+    surfaceOccurrences,
+  });
+  const reject = (frame: unknown, pattern: RegExp) =>
+    assert.throws(
+      () => document(inspection([{ id: "main", frame }])),
+      (error: unknown) =>
+        error instanceof InspectionSerializationError &&
+        !(error instanceof RangeError) &&
+        pattern.test(error.message),
+    );
+  const accept = (frame: unknown) => {
+    const built = document(inspection([{ id: "main", frame }]));
+    assert.equal(built.scenes[0].inspection, "available");
+    return built;
+  };
+  const contained = scene(
+    [
+      occurrenceFrame(0, "layout", []),
+      { ...occurrenceFrame(1, "comp/world", []), parentSurface: known(0) },
+      { ...occurrenceFrame(2, "comp/overlay", []), parentSurface: known(0) },
+    ],
+    [occurrenceSurface(0, 1, { parent: 0, world: 1, overlay: 2 })],
+  );
+  const kept = accept(contained);
+  assert.equal(kept.scenes[0].frameOccurrences?.[0].parentSurface.status, "unavailable");
+  assert.equal("occurrenceId" in kept.scenes[0].frameOccurrences![0].parentSurface, false);
+  assert.equal(kept.scenes[0].frameOccurrences?.[0].id, 0);
+  assert.equal(kept.scenes[0].surfaceOccurrences?.[0].occurrenceId, 0);
+  assert.equal(kept.scenes[0].surfaceOccurrences?.[0].parentFrameOccurrenceId, 0);
+  assert.equal(kept.scenes[0].surfaceOccurrences?.[0].worldFrameOccurrenceId, 1);
+  assert.equal(kept.scenes[0].surfaceOccurrences?.[0].overlayFrameOccurrenceId, 2);
+  const scoped = document(
+    inspection(
+      [
+        { id: "main", frame: contained },
+        { id: "other", frame: contained },
+      ],
+      { frame: contained },
+    ),
+  );
+  assert.equal(scoped.scenes[0].frameOccurrences?.[1].id, 1);
+  assert.equal(scoped.scenes[1].surfaceOccurrences?.[0].occurrenceId, 0);
+  const overlay = scoped.scenes.find((scene) => scene.scope === "overlay");
+  assert.equal(overlay?.frameOccurrences?.[2].id, 2);
+  assert.equal(overlay?.surfaceOccurrences?.[0].occurrenceId, 0);
+  reject(
+    scene(
+      [occurrenceFrame(0, "layout", []), occurrenceFrame(0, "layout", [])],
+      [occurrenceSurface(1, 1, { parent: 0 })],
+    ),
+    /duplicates frame occurrence/,
+  );
+  reject(
+    scene(
+      [occurrenceFrame(0, "layout", [])],
+      [
+        occurrenceSurface(1, 1, { parent: 0 }),
+        occurrenceSurface(1, 1, { parent: 0 }),
+      ],
+    ),
+    /duplicates surface occurrence/,
+  );
+  reject(
+    scene(
+      [occurrenceFrame(0, "layout", [])],
+      [{ ...occurrenceSurface(1, 1, { parent: 0 }), parentOccurrenceId: 1 }],
+    ),
+    /parent cycle at surface 1/,
+  );
+  reject(
+    scene(
+      [{ ...occurrenceFrame(1, "comp/world", []), parentSurface: known(1) }],
+      [occurrenceSurface(1, 1, { parent: 1, world: 1 })],
+    ),
+    /parent cycle at frame 1/,
+  );
+  reject(
+    scene(
+      [
+        { ...occurrenceFrame(0, "layout", []), parentSurface: known(1) },
+        { ...occurrenceFrame(1, "other", []), parentSurface: known(2) },
+      ],
+      [
+        occurrenceSurface(1, 1, { parent: 1, world: 0, overlay: 1 }),
+        occurrenceSurface(2, 1, { parent: 0, world: 1, overlay: 0 }),
+      ],
+    ),
+    /parent cycle/,
+  );
+  const count = 128;
+  const frames = [];
+  const surfaces = [];
+  for (let index = 0; index < count; index++) {
+    frames.push({
+      ...occurrenceFrame(index, index === 0 ? "layout" : `space/${index}`, []),
+      parentSurface: known(index),
+    });
+    surfaces.push(
+      occurrenceSurface(index, 1, {
+        parent: (index + 1) % count,
+        world: index,
+        overlay: (index + 1) % count,
+      }),
+    );
+  }
+  reject(scene(frames, surfaces), /parent cycle/);
+  const diamond = accept(
+    scene(
+      [
+        occurrenceFrame(0, "layout", []),
+        { ...occurrenceFrame(2, "comp/world", []), parentSurface: known(1) },
+        { ...occurrenceFrame(3, "comp/overlay", []), parentSurface: known(1) },
+      ],
+      [
+        occurrenceSurface(1, 1, { parent: 0, world: 2, overlay: 3 }),
+        { ...occurrenceSurface(4, 2, { parent: 2 }), parentOccurrenceId: 1 },
+      ],
+    ),
+  );
+  assert.equal(diamond.scenes[0].surfaceOccurrences?.[1].parentOccurrenceId, 1);
+  assert.deepEqual(diamond.scenes[0].frameOccurrences?.[0].parentSurface, unavailable);
+});
+
+test("a throwing occurrence getter is a read error and a huge length is rejected first", () => {
+  const tree = occurrenceNode("comp", "comp", 1);
+  const hostile = new Proxy([], {
+    get(_target, key) {
+      if (key === "length") return 1;
+      throw Error("index getter");
+    },
+  });
+  const unavailable = document(
+    inspection([
+      {
+        id: "main",
+        frame: { tree, commands: [], warnings: [], frameOccurrences: hostile },
+      },
+    ]),
+  );
+  assert.equal(unavailable.scenes[0].inspection, "unavailable");
+  assert.match(unavailable.scenes[0].unavailable ?? "", /index getter/);
+  let indexed = false;
+  const huge = new Proxy([], {
+    get(_target, key) {
+      if (key === "length") return 1_000_001;
+      indexed = true;
+      throw Error("index getter");
+    },
+  });
+  assert.throws(
+    () =>
+      document(
+        inspection([
+          {
+            id: "main",
+            frame: { tree, commands: [], warnings: [], surfaceOccurrences: huge },
+          },
+        ]),
+      ),
+    (error: unknown) =>
+      error instanceof InspectionSerializationError &&
+      /before any index is read/.test(error.message),
+  );
+  assert.equal(indexed, false);
+});
+
+test("a target keeps occurrence parents and drops sibling cameras on both routes", () => {
+  const tree = occurrenceNode("comp", "comp", 1, [
+    occurrenceNode("leaf", "leaf", 2, [], "comp/world"),
+    occurrenceNode("sibling", "sibling", 9, [], "comp/world"),
+  ]);
+  const frames = [
+    occurrenceFrame(0, "layout", [
+      { commandId: 4, ownerNodeId: 1, camera: mappedCamera() },
+      { commandId: 8, ownerNodeId: 9, camera: mappedCamera([9, 0, 0, 9, 9, 9]) },
+    ]),
+    occurrenceFrame(1, "comp/world", [
+      { commandId: 5, ownerNodeId: 2, camera: mappedCamera([2, 0, 0, 2, 0, 0]) },
+      { commandId: 6, ownerNodeId: 9, camera: mappedCamera([8, 0, 0, 8, 0, 0]) },
+    ]),
+    occurrenceFrame(2, "comp/overlay", []),
+    occurrenceFrame(3, "other", [
+      { commandId: 7, ownerNodeId: 9, camera: mappedCamera() },
+    ]),
+  ];
+  const surfaces = [
+    occurrenceSurface(1, 1, { parent: 0, world: 1, overlay: 2 }),
+    occurrenceSurface(9, 9, { parent: 3 }),
+  ];
+  const frame = {
+    tree,
+    commands: [
+      {
+        kind: "box",
+        path: "leaf",
+        space: "comp/world",
+        bounds: { x: 0, y: 0, width: 1, height: 1 },
+        transform: [1, 1, 0, 0],
+        opacity: 1,
+      },
+      {
+        kind: "box",
+        path: "sibling",
+        space: "comp/world",
+        bounds: { x: 2, y: 0, width: 1, height: 1 },
+        transform: [1, 1, 0, 0],
+        opacity: 1,
+      },
+    ],
+    warnings: [],
+    frameOccurrences: frames,
+    surfaceOccurrences: surfaces,
+    spaceProvenance: [
+      {
+        id: "comp/world",
+        kind: "world",
+        parent: { status: "known", id: "layout" },
+        owner: { path: "comp", inspectionId: 1 },
+      },
+      {
+        id: "comp/overlay",
+        kind: "composition-overlay",
+        parent: { status: "known", id: "layout" },
+      },
+      {
+        id: "other",
+        kind: "layout",
+        parent: { status: "unavailable", reason: "scope layout root" },
+      },
+    ],
+  };
+  const target = { scope: "scene:main", id: "leaf" };
+  const direct = buildInspectionDocument({
+    packageVersion: "0.0.0-test",
+    project,
+    frame: inspection([{ id: "main", frame }]),
+    target,
+  });
+  const applied = applyInspectionTarget(
+    document(inspection([{ id: "main", frame }])),
+    target,
+  );
+  for (const built of [direct, applied]) {
+    const scene = built.scenes[0];
+    assert.deepEqual(
+      scene.frameOccurrences?.map((entry) => entry.id),
+      [0, 1, 2],
+    );
+    assert.deepEqual(
+      scene.surfaceOccurrences?.map((entry) => entry.occurrenceId),
+      [1],
+    );
+    assert.deepEqual(
+      scene.frameOccurrences?.[1].drawCameras.map((camera) => camera.ownerNodeId),
+      [2],
+    );
+    assert.equal(
+      scene.commands?.some((command) => command.path === "sibling"),
+      false,
+    );
+    assert.ok(scene.spaces.some((space) => space.id === "comp/overlay"));
+    assert.equal(scene.spaces.some((space) => space.id === "other"), false);
+  }
+  const twin = occurrenceNode("comp", "comp", 1, [
+    occurrenceNode("leaf", "leaf", 2, [], "comp/world"),
+    occurrenceNode("again", "again", 2, [], "comp/world"),
+  ]);
+  const ambiguous = buildInspectionDocument({
+    packageVersion: "0.0.0-test",
+    project,
+    frame: inspection([{ id: "main", frame: { ...frame, tree: twin } }]),
+    target,
+  });
+  assert.equal(
+    ambiguous.scenes[0].surfaceOccurrences?.some((surface) => surface.ownerNodeId === 2),
+    false,
+  );
+  const many = Array.from({ length: 2000 }, (_, index) =>
+    occurrenceSurface(100 + index, 9, { parent: 3 }),
+  );
+  const crowded = {
+    ...frame,
+    frameOccurrences: [
+      ...frames,
+      ...Array.from({ length: 2000 }, (_, index) =>
+        occurrenceFrame(100 + index, "other", [
+          { commandId: 100 + index, ownerNodeId: 9, camera: mappedCamera() },
+        ]),
+      ),
+    ],
+    surfaceOccurrences: [...surfaces, ...many],
+  };
+  const kept = buildInspectionDocument({
+    packageVersion: "0.0.0-test",
+    project,
+    frame: inspection([{ id: "main", frame: crowded }]),
+    target,
+  });
+  const keptBytes = measureInspection(kept);
+  assert.ok(keptBytes < 2000 * 64, "pruned records must not be admitted by count times a byte guess");
+  assert.doesNotThrow(() =>
+    buildInspectionDocument({
+      packageVersion: "0.0.0-test",
+      project,
+      frame: inspection([{ id: "main", frame: crowded }]),
+      target,
+      limit: keptBytes,
+    }),
+  );
+});

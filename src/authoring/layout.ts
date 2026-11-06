@@ -10,7 +10,9 @@ import {
   clipInspectionSurface,
   compositionInspectionSurface,
   groupInspectionSurface,
+  type FrameOccurrence,
   type InspectionSurface,
+  type SurfaceTrace,
 } from "./surface-projection";
 import type { Alignment, TextStyle, ViewNode } from "./nodes";
 
@@ -209,7 +211,27 @@ export interface LayoutSpaceProvenance {
     readonly id?: string;
     readonly inspectionId?: number;
   };
+  /**
+   * World → composition viewport from the camera evaluated at mount. Not a GPU uniform
+   * and not a position. Only the mounted world record carries it.
+   */
+  readonly worldToCompositionViewport?: WorldViewportMapping;
 }
+export type WorldViewportMapping =
+  | {
+      readonly kind: "world-to-composition-viewport";
+      readonly source: "evaluateCamera";
+      readonly precision: "binary64-evaluated";
+      readonly status: "mapped";
+      readonly matrix: readonly [number, number, number, number, number, number];
+    }
+  | {
+      readonly kind: "world-to-composition-viewport";
+      readonly source: "evaluateCamera";
+      readonly precision: "binary64-evaluated";
+      readonly status: "unavailable";
+      readonly reason: string;
+    };
 export interface EvaluatedFrame {
   /** Optional world → viewport camera; layout bounds remain in world space. */
   readonly camera?: CameraState;
@@ -226,6 +248,14 @@ export interface EvaluatedFrame {
    * Composition surface does not carry a second copy. Not allocated per ordinary node.
    */
   readonly spaceProvenance?: readonly LayoutSpaceProvenance[];
+  /**
+   * Layout space this frame is rendered in. Set only while inspection is on, from the
+   * id created for that frame — never inferred from a node, name, or matrix.
+   */
+  readonly frameLayoutSpaceId?: string;
+  /** Renderer snapshot. Absent when inspection did not collect; `[]` collected nothing. */
+  readonly frameOccurrences?: readonly FrameOccurrence[];
+  readonly surfaceOccurrences?: readonly SurfaceTrace[];
 }
 export type MeasureText = (
   text: string,
@@ -275,12 +305,32 @@ function layoutSpaceProvenance(): LayoutSpaceProvenance {
   };
 }
 /** Mount one evaluated frame's own layout space as a composition world or overlay. */
+function worldViewportMapping(
+  matrix: readonly number[],
+): WorldViewportMapping {
+  if (matrix.length === 6 && matrix.every((value) => Number.isFinite(value)))
+    return {
+      kind: "world-to-composition-viewport",
+      source: "evaluateCamera",
+      precision: "binary64-evaluated",
+      status: "mapped",
+      matrix: [matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]],
+    };
+  return {
+    kind: "world-to-composition-viewport",
+    source: "evaluateCamera",
+    precision: "binary64-evaluated",
+    status: "unavailable",
+    reason: "evaluateCamera matrix is not six finite values.",
+  };
+}
 function mountSpaceProvenance(
   records: readonly LayoutSpaceProvenance[],
   prefix: string,
   kind: "world" | "composition-overlay",
   parentId: string,
   owner: { readonly path: string; readonly id?: string },
+  worldCamera?: WorldViewportMapping,
 ): LayoutSpaceProvenance[] {
   return records.map((record) => {
     const mounted = record.id === "layout" && record.kind === "layout";
@@ -296,13 +346,61 @@ function mountSpaceProvenance(
                   : `${prefix}/${record.parent.id}`,
             }
           : record.parent;
+    const carried = record.worldToCompositionViewport;
     return {
       id: mounted ? prefix : `${prefix}/${record.id}`,
       kind: mounted ? kind : record.kind,
       parent,
-      ...(mounted ? { owner } : record.owner ? { owner: record.owner } : {}),
+      ...(mounted
+        ? {
+            owner,
+            ...(kind === "world" && worldCamera
+              ? { worldToCompositionViewport: worldCamera }
+              : {}),
+          }
+        : {
+            ...(record.owner ? { owner: record.owner } : {}),
+            ...(carried ? { worldToCompositionViewport: carried } : {}),
+          }),
     };
   });
+}
+function frameHasLayoutSpace(frame: EvaluatedFrame): boolean {
+  if (frame.frameLayoutSpaceId !== undefined) return true;
+  for (const command of frame.commands) {
+    if (command.kind !== "composition" && command.kind !== "group") continue;
+    if (frameHasLayoutSpace(command.frame)) return true;
+    if (
+      command.kind === "composition" &&
+      command.overlay &&
+      frameHasLayoutSpace(command.overlay)
+    )
+      return true;
+  }
+  return false;
+}
+/** Rebase explicit frame space ids with provenance. No-op unless inspection stamped one. */
+function rebaseFrameLayout(frame: EvaluatedFrame, prefix: string): EvaluatedFrame {
+  if (!frameHasLayoutSpace(frame)) return frame;
+  const commands = frame.commands.map((command) => {
+    if (command.kind !== "composition" && command.kind !== "group") return command;
+    const nested = rebaseFrameLayout(command.frame, prefix);
+    if (command.kind === "group") return { ...command, frame: nested };
+    return {
+      ...command,
+      frame: nested,
+      ...(command.overlay
+        ? { overlay: rebaseFrameLayout(command.overlay, prefix) }
+        : {}),
+    };
+  });
+  return {
+    ...frame,
+    commands,
+    ...(frame.frameLayoutSpaceId !== undefined
+      ? { frameLayoutSpaceId: rebaseSpaceId(frame.frameLayoutSpaceId, prefix) }
+      : {}),
+  };
 }
 function detachSpaceProvenance(frame: EvaluatedFrame): {
   frame: EvaluatedFrame;
@@ -697,6 +795,13 @@ function evaluateViewWithCounter(
           ...(node.key ? { id: node.key } : {}),
         };
         const detachedWorld = detachSpaceProvenance(frame);
+        const worldCamera = evaluateCamera(
+          typeof settings.camera === "function"
+            ? settings.camera(env)
+            : (settings.camera ?? {}),
+          time,
+          viewport,
+        );
         // Nested geometry is measured in the world's/overlay's own space. Both the tree and the
         // diagnostics are stamped with that space and keep paths relative to it, so `(space, path)`
         // identifies the same node in both. Legacy warning strings keep their historical prefix.
@@ -706,21 +811,20 @@ function evaluateViewWithCounter(
           "world",
           diagnosticSpace,
           worldOwner,
+          worldViewportMapping(worldCamera.matrix),
+        );
+        const worldFrame = rebaseFrameLayout(
+          detachedWorld.frame,
+          `${spacePath}/world`,
         );
         m.composition = {
-          ...detachedWorld.frame,
+          ...worldFrame,
           tree: rebaseSpace(
             detachedWorld.frame.tree,
             `${spacePath}/world`,
             `${path}/world`,
           ),
-          camera: evaluateCamera(
-            typeof settings.camera === "function"
-              ? settings.camera(env)
-              : (settings.camera ?? {}),
-            time,
-            viewport,
-          ),
+          camera: worldCamera,
         };
         if (settings.overlay) {
           const nested = evaluateViewWithCounter(
@@ -747,8 +851,12 @@ function evaluateViewWithCounter(
               worldOwner,
             ),
           );
+          const overlayFrame = rebaseFrameLayout(
+            detachedOverlay.frame,
+            `${spacePath}/overlay`,
+          );
           m.overlay = {
-            ...detachedOverlay.frame,
+            ...overlayFrame,
             tree: rebaseSpace(
               detachedOverlay.frame.tree,
               `${spacePath}/overlay`,
@@ -1233,7 +1341,14 @@ function evaluateViewWithCounter(
               : clipOutline(s.shape, m.width, m.height),
           imageMask: s.shape.shape === "image" ? s.shape : undefined,
           maskFillRule: s.shape.shape === "path" ? s.shape.fillRule : "nonzero",
-          frame: { tree: clipped, commands: paints, warnings: [] },
+          frame: {
+            tree: clipped,
+            commands: paints,
+            warnings: [],
+            ...(counter
+              ? { frameLayoutSpaceId: `${m.spacePath}/clip` }
+              : {}),
+          },
         });
       return tree;
     }
@@ -1311,6 +1426,7 @@ function evaluateViewWithCounter(
                 time,
                 [width, height],
               ),
+              ...(counter ? { frameLayoutSpaceId: m.diagnosticSpace } : {}),
             },
           });
       }
@@ -1576,5 +1692,6 @@ function evaluateViewWithCounter(
     warnings,
     ...(diagnostics.length ? { diagnostics } : {}),
     spaceProvenance: provenance,
+    ...(counter ? { frameLayoutSpaceId: "layout" } : {}),
   };
 }

@@ -168,6 +168,8 @@ test("Stage publishes paint records only in inspection mode, from the drawn unif
         false,
         "opt-out must not add a paintRecords key",
       );
+      assert.equal("frameOccurrences" in frame, false);
+      assert.equal("surfaceOccurrences" in frame, false);
     } finally {
       offStage.dispose();
     }
@@ -189,6 +191,8 @@ test("Stage publishes paint records only in inspection mode, from the drawn unif
       renderStage(stage, setup, 0, { resolution: [200, 100] });
       const frame = stage.inspect();
       assert.ok(frame?.paintRecords, "inspection mode must publish records");
+      assert.ok(frame.frameOccurrences?.length);
+      assert.ok(frame.surfaceOccurrences);
       const records = frame.paintRecords;
       assert.equal(records.length, 2, "group owner is not a second leaf");
       const [box, nested] = records;

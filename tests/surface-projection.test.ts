@@ -8,10 +8,14 @@ import { ViewRenderer, type PaintRecord } from "../src/authoring/renderer";
 import { mediaKey } from "../src/authoring/media-runtime";
 import { computeFrameTransform } from "../src/authoring/frame-transform";
 import { planSurface } from "../src/authoring/surface-plan";
+import { inverse, multiply } from "../src/engine/render/shared-elements";
 import {
+  EMPTY_FRAME_OCCURRENCES,
   EMPTY_SURFACE_TRACES,
   NON_CLIP_PARENT_REASON,
+  childPixelsToParent,
   projectRectClipChain,
+  type FrameOccurrence,
   type SurfaceTrace,
 } from "../src/authoring/surface-projection";
 import {
@@ -101,8 +105,25 @@ async function withGpuGlobals<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+interface BoundDraw {
+  readonly buffer: object;
+  readonly byteOffset: number;
+}
+/** A draw plus the leading uniform floats its own bind group addressed. */
+interface DrawnCommand extends BoundDraw {
+  readonly row: readonly number[];
+}
+interface UniformWrite {
+  readonly buffer: object;
+  readonly byteOffset: number;
+  readonly data: Float32Array;
+}
+
 function createDevice() {
   const uniformWrites: Float32Array[] = [];
+  const writes: UniformWrite[] = [];
+  const passes: { draws: DrawnCommand[] }[] = [];
+  let pending: BoundDraw | undefined;
   const device = {
     createShaderModule: () => ({}),
     createRenderPipelineAsync: async () => ({ getBindGroupLayout: () => ({}) }),
@@ -112,15 +133,30 @@ function createDevice() {
       usage: descriptor.usage ?? 0,
       destroy() {},
     }),
-    createBindGroup: () => ({}),
+    createBindGroup: (descriptor: {
+      entries: readonly {
+        binding: number;
+        resource: { buffer?: object; offset?: number };
+      }[];
+    }) => {
+      const uniform = descriptor.entries.find((entry) => entry.binding === 0);
+      return {
+        buffer: uniform?.resource.buffer,
+        byteOffset: uniform?.resource.offset ?? 0,
+      };
+    },
     queue: {
       writeTexture() {},
       writeBuffer(
         buffer: { usage?: number },
-        _offset: number,
+        offset: number,
         data: Float32Array,
       ) {
-        if ((buffer.usage ?? 0) & 1) uniformWrites.push(new Float32Array(data));
+        if ((buffer.usage ?? 0) & 1) {
+          const copy = new Float32Array(data);
+          uniformWrites.push(copy);
+          writes.push({ buffer, byteOffset: offset, data: copy });
+        }
       },
       copyExternalImageToTexture() {},
       submit() {},
@@ -133,7 +169,34 @@ function createDevice() {
       maxTextureDimension2D: 8192,
     },
   } as unknown as GPUDevice;
-  return { device, uniformWrites };
+  const encoder = {
+    beginRenderPass: () => {
+      const draws: DrawnCommand[] = [];
+      passes.push({ draws });
+      return {
+        setScissorRect() {},
+        setPipeline() {},
+        setBindGroup(_slot: number, bind: BoundDraw) {
+          pending = bind;
+        },
+        draw() {
+          if (!pending?.buffer) throw Error("draw without a uniform bind");
+          // The whole draw list is uploaded before the pass opens, so the row this bind group
+          // addresses already holds the rect and transform that command packed: identity from
+          // bytes, taken before any visit metadata exists.
+          const block = blockAtDraw(writes, pending);
+          draws.push({
+            buffer: pending.buffer,
+            byteOffset: pending.byteOffset,
+            row: Array.from(block.subarray(0, 8)),
+          });
+        },
+        end() {},
+      };
+    },
+    finish: () => ({}),
+  };
+  return { device, encoder, uniformWrites, writes, passes };
 }
 
 function slices(write: Float32Array) {
@@ -187,15 +250,7 @@ async function renderOnce(
         format: "bgra8unorm",
         resolution: target,
         target: { createView: () => ({}) } as unknown as GPUTexture,
-        encoder: {
-          beginRenderPass: () => ({
-            setScissorRect() {},
-            setPipeline() {},
-            setBindGroup() {},
-            draw() {},
-            end() {},
-          }),
-        } as unknown as GPUCommandEncoder,
+        encoder: gpu.encoder as unknown as GPUCommandEncoder,
         time: 0,
         localTime: 0,
         progress: 0,
@@ -215,9 +270,75 @@ async function renderOnce(
     thrown = error;
   }
   const traces = renderer.surfaceTraces();
+  const frames = renderer.frameOccurrences();
+  const surfaces = renderer.surfaceOccurrences();
   renderer.dispose();
   if (thrown) throw thrown;
-  return { frame, records, traces, uniforms: gpu.uniformWrites.map(slices) };
+  return {
+    frame,
+    records,
+    traces,
+    frames,
+    surfaces,
+    uniforms: gpu.uniformWrites.map(slices),
+    writes: gpu.writes,
+    passes: gpu.passes,
+  };
+}
+
+function postOrderFrames(frame: EvaluatedFrame): EvaluatedFrame[] {
+  const found: EvaluatedFrame[] = [];
+  for (const command of frame.commands) {
+    if (command.kind !== "composition" && command.kind !== "group") continue;
+    found.push(...postOrderFrames(command.frame));
+    if (command.kind === "composition" && command.overlay)
+      found.push(...postOrderFrames(command.overlay));
+  }
+  found.push(frame);
+  return found;
+}
+
+/** The 36-float uniform row the draw's bind-group offset addresses. */
+function blockAtDraw(
+  writes: readonly { buffer: object; byteOffset: number; data: Float32Array }[],
+  draw: BoundDraw,
+) {
+  const write = [...writes].reverse().find(
+    (row) =>
+      row.buffer === draw.buffer &&
+      draw.byteOffset >= row.byteOffset &&
+      draw.byteOffset + 144 <= row.byteOffset + row.data.byteLength,
+  );
+  assert.ok(write, "draw offset is not covered by that buffer's upload");
+  assert.equal(draw.byteOffset % 4, 0);
+  const start = (draw.byteOffset - write!.byteOffset) / 4;
+  return write!.data.subarray(start, start + 36);
+}
+
+/** Camera rows from the uniform write the draw's bind-group offset actually addresses. */
+function cameraAtDraw(
+  writes: readonly { buffer: object; byteOffset: number; data: Float32Array }[],
+  draw: BoundDraw,
+) {
+  return cameraRows(blockAtDraw(writes, draw));
+}
+
+function passForFrame(
+  rendered: {
+    frame: EvaluatedFrame;
+    passes: readonly { draws: readonly BoundDraw[] }[];
+  },
+  source: EvaluatedFrame,
+) {
+  const post = postOrderFrames(rendered.frame);
+  assert.equal(rendered.passes.length, post.length);
+  const index = post.indexOf(source);
+  assert.notEqual(index, -1);
+  return rendered.passes[index];
+}
+
+function cameraRows(block: ArrayLike<number>) {
+  return [block[24], block[28], block[25], block[29], block[26], block[30]];
 }
 
 function mul(a: readonly number[], b: readonly number[]) {
@@ -706,11 +827,16 @@ test("a failed render publishes no snapshot and flat records stay on the top-lev
       /explicit color/,
     );
     assert.equal(failed.surfaceTraces(), EMPTY_SURFACE_TRACES);
+    assert.equal(failed.frameOccurrences(), EMPTY_FRAME_OCCURRENCES);
+    assert.equal(failed.surfaceOccurrences(), EMPTY_SURFACE_TRACES);
     failed.dispose();
     const quiet = new ViewRenderer();
     assert.equal(quiet.surfaceTraces(), EMPTY_SURFACE_TRACES);
     const collectedOff = await renderOnce(clip, { collect: false });
     assert.equal(collectedOff.traces, EMPTY_SURFACE_TRACES);
+    assert.equal(collectedOff.frames, EMPTY_FRAME_OCCURRENCES);
+    assert.equal(collectedOff.surfaces, EMPTY_SURFACE_TRACES);
+    assert.equal("frameOccurrences" in collectedOff.frame, false);
     assert.equal(collectedOff.records.length, 0);
     assert.deepEqual(collectedOff.uniforms.at(-1), good.uniforms.at(-1));
 
@@ -1313,4 +1439,559 @@ test("non-rect chains reuse the outer quad bounds, including scissor and nonfini
     assert.match(blown.reason, /not finite/);
     assert.equal("bounds" in blown, false);
   }
+});
+
+function visitFrames(frame: EvaluatedFrame): EvaluatedFrame[] {
+  const found = [frame];
+  for (const command of frame.commands) {
+    if (command.kind !== "composition" && command.kind !== "group") continue;
+    found.push(...visitFrames(command.frame));
+    if (command.kind === "composition" && command.overlay)
+      found.push(...visitFrames(command.overlay));
+  }
+  return found;
+}
+
+test("frame and surface occurrences follow the renderer's own transforms and uploads", async () => {
+  await withGpuGlobals(async () => {
+    const view = Composition(
+      World(
+        () =>
+          Group([
+            Composition(
+              World(
+                () =>
+                  Box({ width: 12, height: 8, fill: "#112233" })
+                    .scale(-2, 1.5, [0, 0])
+                    .offset(3.5, -1.25)
+                    .id("leaf"),
+                { size: [80, 50] },
+              ),
+              {
+                size: [70, 40],
+                camera: { x: 10.5, y: 3.25, zoom: 1.5, anchor: [0.2, 0.8] },
+                overlay: () =>
+                  Box({ width: 6, height: 5, fill: "#778899" })
+                    .offset(1.5, 2.25)
+                    .id("hud"),
+              },
+            )
+              .id("nested")
+              .offset(6.5, -4.25),
+          ])
+            .id("cluster")
+            .clip()
+            .id("window"),
+        { size: [100, 80] },
+      ),
+      {
+        size: [120, 90],
+        camera: { x: 4.5, y: -2.25, zoom: 0.75, anchor: [0.1, 0.3] },
+      },
+    ).id("comp");
+    const rendered = await renderOnce(view, {
+      design: [120, 90],
+      target: [200, 100],
+    });
+    const again = await renderOnce(view, {
+      design: [120, 90],
+      target: [200, 100],
+    });
+    assert.deepEqual(
+      again.frames.map((frame) => frame.id),
+      rendered.frames.map((frame) => frame.id),
+    );
+    assert.equal(rendered.frames[0]?.id, 0);
+    const sources = visitFrames(rendered.frame);
+    assert.equal(rendered.frames.length, sources.length);
+    const boundCameras: number[][] = [];
+    rendered.frames.forEach((occurrence, index) => {
+      const source = sources[index];
+      assert.equal(occurrence.layoutSpace.status, "known");
+      if (occurrence.layoutSpace.status !== "known") return;
+      assert.equal(occurrence.layoutSpace.id, source.frameLayoutSpaceId);
+      const expected = computeFrameTransform(
+        occurrence.designSize,
+        occurrence.targetResolution,
+        source.camera?.matrix,
+      );
+      assert.equal(occurrence.baseFrameTransform.status, "mapped");
+      if (occurrence.baseFrameTransform.status !== "mapped") return;
+      assert.deepEqual(occurrence.baseFrameTransform.matrix, expected.matrix);
+      assert.equal(occurrence.baseFrameTransform.source, "computeFrameTransform");
+      assert.equal(occurrence.baseFrameTransform.precision, "binary64");
+      assert.deepEqual(occurrence.scissor, {
+        x: Math.ceil(expected.ox),
+        y: Math.ceil(expected.oy),
+        width: Math.max(
+          0,
+          Math.floor(occurrence.targetResolution[0] - expected.ox) -
+            Math.ceil(expected.ox),
+        ),
+        height: Math.max(
+          0,
+          Math.floor(occurrence.targetResolution[1] - expected.oy) -
+            Math.ceil(expected.oy),
+        ),
+      });
+      const pass = passForFrame(rendered, source);
+      assert.equal(occurrence.drawCameras.length, source.commands.length);
+      assert.equal(pass.draws.length, source.commands.length);
+      occurrence.drawCameras.forEach((camera, commandIndex) => {
+        assert.equal(camera.camera.status, "mapped");
+        if (camera.camera.status !== "mapped") return;
+        assert.equal(camera.camera.source, "uploaded-uniform");
+        assert.equal(camera.camera.precision, "float32");
+        const uploaded = cameraAtDraw(rendered.writes, pass.draws[commandIndex]);
+        assert.deepEqual([...camera.camera.matrix], uploaded);
+        boundCameras.push(uploaded);
+        const swapped = pass.draws[(commandIndex + 1) % pass.draws.length];
+        if (swapped !== pass.draws[commandIndex])
+          assert.notDeepEqual(
+            [...camera.camera.matrix],
+            cameraAtDraw(rendered.writes, swapped),
+          );
+      });
+    });
+    // Two frames may upload the same camera (same design, same target, identity camera), so
+    // uniqueness is not a property to assert. Bind equality above is exact per command; this
+    // negative control proves the same binding would reject a swap between distinct uploads.
+    const other = boundCameras.findIndex(
+      (row, index) => index > 0 && row.join(",") !== boundCameras[0].join(","),
+    );
+    assert.ok(other > 0, "the fixture uploads at least two distinct cameras");
+    const swapped = boundCameras.slice();
+    [swapped[0], swapped[other]] = [swapped[other], swapped[0]];
+    // Negative control: frame 0's recorded camera must not match the other frame's upload, so
+    // a binding that crossed frames would fail rather than pass on a global list of matrices.
+    const foreign = cameraAtDraw(
+      rendered.writes,
+      passForFrame(rendered, sources[other]).draws[0],
+    ).join(",");
+    const recordedFirst = rendered.frames[0].drawCameras[0]?.camera;
+    assert.equal(recordedFirst?.status, "mapped");
+    if (recordedFirst?.status === "mapped") {
+      assert.equal([...recordedFirst.matrix].join(","), boundCameras[0].join(","));
+      assert.notEqual([...recordedFirst.matrix].join(","), foreign);
+      assert.notEqual([...recordedFirst.matrix].join(","), swapped[0].join(","));
+    }
+    const leaf = visitFrames(rendered.frame)
+      .flatMap((frame) => frame.commands)
+      .find((command) => command.path.includes("leaf"));
+    assert.equal(leaf?.kind, "box");
+    if (leaf?.kind === "box") {
+      assert.ok(leaf.transform[0] < 0, "negative scale");
+      assert.notEqual(leaf.transform[2], 0, "nonzero position");
+      assert.notEqual(leaf.transform[3], 0);
+    }
+    const hud = visitFrames(rendered.frame)
+      .flatMap((frame) => frame.commands)
+      .find((command) => command.path.includes("hud"));
+    assert.equal(hud?.kind, "box");
+    const nested = rendered.surfaces.find((surface) =>
+      surface.path.endsWith("nested"),
+    );
+    const cluster = rendered.surfaces.find((surface) =>
+      surface.path.endsWith("cluster"),
+    );
+    const window = rendered.surfaces.find((surface) =>
+      surface.path.endsWith("window"),
+    );
+    const outer = rendered.surfaces.find((surface) => surface.path.endsWith("comp"));
+    assert.equal(nested?.surface.kind, "composition");
+    assert.equal(cluster?.surface.kind, "group");
+    assert.equal(window?.surface.kind, "clip");
+    assert.equal(outer?.surface.kind, "composition");
+    assert.equal(nested?.parentOccurrenceId, cluster?.occurrenceId);
+    assert.equal(cluster?.parentOccurrenceId, window?.occurrenceId);
+    assert.equal(window?.parentOccurrenceId, outer?.occurrenceId);
+    assert.notEqual(nested?.parentOccurrenceId, window?.parentOccurrenceId);
+    const world = rendered.frames.find(
+      (frame) => frame.id === nested?.worldFrameOccurrenceId,
+    );
+    const overlay = rendered.frames.find(
+      (frame) => frame.id === nested?.overlayFrameOccurrenceId,
+    );
+    assert.ok(world && overlay);
+    assert.notEqual(world.id, overlay.id);
+    assert.deepEqual(world.targetResolution, overlay.targetResolution);
+    assert.deepEqual(world.parentSurface, overlay.parentSurface);
+    assert.equal(world.parentSurface.status, "known");
+    assert.equal(world.parentSurface.occurrenceId, nested?.occurrenceId);
+    assert.notDeepEqual(world.baseFrameTransform, overlay.baseFrameTransform);
+    assert.equal(world.baseFrameTransform.status, "mapped");
+    if (world.baseFrameTransform.status === "mapped")
+      assert.notEqual(world.baseFrameTransform.matrix[0], world.baseFrameTransform.matrix[4] && 1);
+    const worldPass = passForFrame(rendered, sources[world.id]);
+    const overlayPass = passForFrame(rendered, sources[overlay.id]);
+    const worldCamera = cameraAtDraw(rendered.writes, worldPass.draws[0]);
+    const overlayCamera = cameraAtDraw(rendered.writes, overlayPass.draws[0]);
+    assert.notDeepEqual(worldCamera, overlayCamera);
+    assert.deepEqual(
+      world.drawCameras[0]?.camera.status === "mapped"
+        ? [...world.drawCameras[0].camera.matrix]
+        : undefined,
+      worldCamera,
+    );
+    assert.notDeepEqual(
+      overlay.drawCameras[0]?.camera.status === "mapped"
+        ? [...overlay.drawCameras[0].camera.matrix]
+        : undefined,
+      worldCamera,
+    );
+    const composition = nested;
+    assert.equal(composition?.occurrenceIdKind, "evaluation-command");
+    assert.equal(composition?.worldFrameOccurrenceId, world.id);
+    assert.equal(composition?.overlayFrameOccurrenceId, overlay.id);
+    // The frame that drew the nested composition is the one visiting the cluster group, which
+    // is not the clip frame that drew that group.
+    const nestedVisit = sources.findIndex((source) =>
+      source.commands.some(
+        (command) =>
+          command.kind === "composition" && command.path.endsWith("/nested"),
+      ),
+    );
+    assert.notEqual(nestedVisit, -1);
+    assert.equal(composition?.parentFrameOccurrenceId, nestedVisit);
+    assert.notEqual(composition?.parentFrameOccurrenceId, cluster?.parentFrameOccurrenceId);
+    assert.ok(composition?.childScissor);
+    const outerWorld = rendered.frames.find(
+      (frame) => frame.id === outer?.worldFrameOccurrenceId,
+    );
+    for (const surface of rendered.surfaces) {
+      const local = childPixelsToParent(
+        surface.uniform,
+        surface.childResolution[0],
+        surface.childResolution[1],
+      );
+      if (surface.projection.status === "mapped") {
+        assert.equal(local.status, "mapped");
+        if (local.status === "mapped")
+          assert.deepEqual(surface.projection.childPixelsToParent, local.matrix);
+      }
+    }
+    const worldSpace = rendered.frame.spaceProvenance?.find(
+      (space) => space.kind === "world",
+    );
+    assert.equal(worldSpace?.worldToCompositionViewport?.status, "mapped");
+    assert.notDeepEqual(
+      worldSpace?.worldToCompositionViewport?.status === "mapped"
+        ? worldSpace.worldToCompositionViewport.matrix
+        : undefined,
+      world?.baseFrameTransform.status === "mapped"
+        ? world.baseFrameTransform.matrix
+        : undefined,
+    );
+  });
+});
+
+test("shared correction stays on the matched command and is not applied twice", async () => {
+  await withGpuGlobals(async () => {
+    const view = Composition(
+      World(
+        () =>
+          Box({ width: 8, height: 6, fill: "#112233" }).id("leaf"),
+        { size: [40, 30] },
+      ),
+      { size: [40, 30] },
+    ).id("comp");
+    const plain = await renderOnce(view);
+    const correction = [2, 0, 0, 3, 4, 5] as const;
+    const matched = await renderOnce(view, {
+      sharedTransforms: new Map([["comp", correction]]),
+    });
+    const fallback = await renderOnce(view, {
+      sharedTransforms: new Map([["leaf", correction]]),
+    });
+    const cameraOf = (
+      rendered: typeof plain,
+      space: string,
+      ownerPath: string,
+    ) => {
+      const frame = rendered.frames.find(
+        (entry) =>
+          entry.layoutSpace.status === "known" && entry.layoutSpace.id === space,
+      );
+      if (!frame) return undefined;
+      const source = visitFrames(rendered.frame)[frame.id];
+      const command = source.commands.find((entry) => entry.path === ownerPath);
+      if (!command?.inspection) return undefined;
+      const recorded = frame.drawCameras.find(
+        (camera) => camera.commandId === command.inspection!.id,
+      );
+      // The record must describe the block this command's bind group actually uploads.
+      const drawIndex = source.commands.indexOf(command);
+      const bound = cameraAtDraw(
+        rendered.writes,
+        passForFrame(rendered, source).draws[drawIndex],
+      );
+      assert.equal(recorded?.camera.status, "mapped");
+      if (recorded?.camera.status === "mapped")
+        assert.deepEqual([...recorded.camera.matrix], bound);
+      return recorded;
+    };
+    const plainComp = cameraOf(plain, "layout", "comp");
+    const matchedComp = cameraOf(matched, "layout", "comp");
+    const fallbackComp = cameraOf(fallback, "layout", "comp");
+    const plainLeaf = cameraOf(plain, "comp/world", "leaf");
+    const matchedLeaf = cameraOf(matched, "comp/world", "leaf");
+    const fallbackLeaf = cameraOf(fallback, "comp/world", "leaf");
+    assert.equal(matchedComp?.camera.status, "mapped");
+    assert.notDeepEqual(matchedComp?.camera, plainComp?.camera);
+    assert.deepEqual(matchedLeaf?.camera, plainLeaf?.camera);
+    assert.deepEqual(fallbackComp?.camera, plainComp?.camera);
+    assert.notDeepEqual(fallbackLeaf?.camera, plainLeaf?.camera);
+    assert.equal(
+      matched.frame.spaceProvenance?.find((space) => space.kind === "world")
+        ?.worldToCompositionViewport?.status,
+      "mapped",
+    );
+    assert.deepEqual(
+      matched.frame.spaceProvenance?.find((space) => space.kind === "world")
+        ?.worldToCompositionViewport,
+      plain.frame.spaceProvenance?.find((space) => space.kind === "world")
+        ?.worldToCompositionViewport,
+    );
+  });
+});
+
+test("zero scale stays mapped, and an untagged parent does not invent a scene chain", async () => {
+  await withGpuGlobals(async () => {
+    const zero = await renderOnce(
+      Box({ width: 10, height: 8, fill: "#123456" }).clip().scale(0, 1, [0, 0]),
+    );
+    assert.equal(zero.surfaces[0]?.projection.status, "mapped");
+    if (zero.surfaces[0]?.projection.status === "mapped")
+      assert.ok(zero.surfaces[0].projection.childPixelsToParent.includes(0));
+    const nested = evaluateView(
+      Group([
+        Box({ width: 8, height: 6, fill: "#123456" }).clip().id("inner"),
+      ]).id("outer"),
+      { time: 0, width: 40, height: 30, measureText: measure, inspection: true },
+    );
+    const outer = nested.commands[0];
+    assert.equal(outer.kind, "group");
+    if (outer.kind !== "group") return;
+    const untagged = await renderOnce(Group([]), {
+      frame: {
+        ...nested,
+        commands: [{ ...outer, inspectionSurface: undefined }],
+      },
+    });
+    const inner = untagged.surfaces[0];
+    assert.equal(inner?.projection.status, "unavailable");
+    if (inner?.projection.status === "unavailable")
+      assert.equal(inner.projection.reason, NON_CLIP_PARENT_REASON);
+    assert.equal(inner?.parentOccurrenceId, undefined);
+    assert.ok(
+      untagged.frames.some(
+        (frame) => frame.parentSurface.status === "unavailable",
+      ),
+    );
+  });
+});
+
+test("each published draw camera is the upload its own draw's bind group addressed", async () => {
+  await withGpuGlobals(async () => {
+    // Different cameras per visit plus a shared correction, so a camera equal to *some* published
+    // value is caught; both leaves share one camera, so their ids are swappable without any value
+    // comparison noticing.
+    const view = Composition(
+      World(
+        () =>
+          ZStack(
+            [
+              Box({ width: 6, height: 4, fill: "#112233" }).id("first"),
+              Box({ width: 6, height: 4, fill: "#445566" })
+                .id("second")
+                .offset(4, 3),
+            ],
+            { align: "start" },
+          ),
+        { size: [30, 20] },
+      ),
+      { size: [30, 20], camera: { x: 21, y: 11.5, zoom: 0.75 } },
+    ).id("comp");
+    const rendered = await renderOnce(view, {
+      sharedTransforms: new Map([["comp", [1.5, 0, 0, 1.5, 2, 1]]]),
+    });
+    const visits = postOrderFrames(rendered.frame);
+    assert.equal(visits.length, rendered.passes.length);
+    // The mock keeps the packed rect and transform of the uniform row each draw's bind group
+    // addressed. The renderer iterates `frame.commands` in order and draws that order in one pass,
+    // so that row names the command that issued the draw: the drawn order read back from bytes,
+    // never from `drawCameras`.
+    const drawn = visits.map((visit, passIndex) => {
+      const draws = rendered.passes[passIndex].draws;
+      const packed = visit.commands.flatMap((command) =>
+        command.inspection
+          ? [
+              {
+                id: command.inspection.id,
+                row: [
+                  Math.fround(command.bounds.x),
+                  Math.fround(command.bounds.y),
+                  Math.fround(command.bounds.width),
+                  Math.fround(command.bounds.height),
+                  ...command.transform.map((value) => Math.fround(value)),
+                ],
+              },
+            ]
+          : [],
+      );
+      assert.equal(draws.length, packed.length, `pass ${passIndex} drew its commands`);
+      return {
+        pass: passIndex,
+        draws,
+        ids: draws.map((draw, index) => {
+          const matches = packed.filter((entry) =>
+            entry.row.every((value, position) => value === draw.row[position]),
+          );
+          assert.equal(matches.length, 1, `draw ${index} of pass ${passIndex} is one command`);
+          return matches[0].id;
+        }),
+      };
+    });
+    // A pass is paired with a recorded visit by the command ids it holds — set membership only —
+    // then the published *sequence* is compared with the drawn one. Swapped ids keep every set,
+    // every camera value and the draw ledger identical, so only this comparison rejects them.
+    const pairVisits = (frames: readonly FrameOccurrence[]) =>
+      frames.map((recorded) => {
+        const published = recorded.drawCameras.map((camera) => camera.commandId);
+        const sorted = [...published].sort((a, b) => a - b);
+        const matches = drawn.filter(
+          (pass) =>
+            pass.ids.length === sorted.length &&
+            [...pass.ids].sort((a, b) => a - b).every((id, index) => id === sorted[index]),
+        );
+        assert.equal(matches.length, 1, `visit ${recorded.id} is one render pass`);
+        assert.deepEqual(
+          published,
+          matches[0].ids,
+          `visit ${recorded.id} publishes its command ids in the order drawn`,
+        );
+        return { recorded, pass: matches[0].pass, draws: matches[0].draws };
+      });
+    const paired = pairVisits(rendered.frames);
+    // Two recorded visits may not be satisfied by the same render pass.
+    const claimed = new Set<number>();
+    let checked = 0;
+    for (const { recorded, pass, draws } of paired) {
+      assert.equal(claimed.has(pass), false, `visit ${recorded.id} reuses a pass`);
+      claimed.add(pass);
+      assert.equal(
+        draws.length,
+        recorded.drawCameras.length,
+        `visit ${recorded.id} drew exactly its published commands`,
+      );
+      for (const [index, camera] of recorded.drawCameras.entries()) {
+        assert.equal(camera.camera.status, "mapped", `visit ${recorded.id}`);
+        assert.deepEqual(
+          camera.camera.status === "mapped" ? [...camera.camera.matrix] : undefined,
+          cameraAtDraw(rendered.writes, draws[index]),
+          `visit ${recorded.id} command ${camera.commandId} is that draw's own upload`,
+        );
+        checked += 1;
+      }
+    }
+    const published = rendered.frames.reduce(
+      (total, entry) => total + entry.drawCameras.length,
+      0,
+    );
+    assert.equal(checked, published, `checked ${checked} of ${published} draw cameras`);
+    assert.ok(checked >= 3, "fixture publishes three draw cameras");
+    // Negative control on identity alone: same cameras, swapped ids, no camera value touched.
+    const matricesOf = (frame: FrameOccurrence) =>
+      frame.drawCameras.map((camera) =>
+        camera.camera.status === "mapped" ? camera.camera.matrix : undefined,
+      );
+    const identical = paired.find(({ recorded }) => {
+      const [a, b] = matricesOf(recorded);
+      return a !== undefined && b !== undefined && a.every((value, at) => value === b[at]);
+    });
+    assert.ok(identical, "fixture has a visit with two identical draw cameras");
+    const [first, second] = identical.recorded.drawCameras;
+    assert.notEqual(first.commandId, second.commandId);
+    const swapped: FrameOccurrence = {
+      ...identical.recorded,
+      drawCameras: identical.recorded.drawCameras.map((camera) =>
+        camera === first
+          ? { ...camera, commandId: second.commandId }
+          : camera === second
+            ? { ...camera, commandId: first.commandId }
+            : camera,
+      ),
+    };
+    for (const [index, camera] of swapped.drawCameras.entries())
+      assert.deepEqual(
+        camera.camera.status === "mapped" ? [...camera.camera.matrix] : undefined,
+        cameraAtDraw(rendered.writes, identical.draws[index]),
+        "identical cameras survive the swap, so only the drawn order can reject it",
+      );
+    assert.throws(
+      () =>
+        pairVisits(
+          rendered.frames.map((frame) => (frame.id === swapped.id ? swapped : frame)),
+        ),
+      /publishes its command ids in the order drawn/,
+      "swapping ids between identical cameras must fail the drawn order",
+    );
+    // Negative control through the camera comparison. The root visit draws one command whose upload
+    // is this render's frame matrix; the surface visit draws its leaves through another camera.
+    const root = paired.find((e) => e.recorded.parentSurface.status === "unavailable");
+    const inner = paired.find(
+      (e) =>
+        e.recorded.id !== root?.recorded.id &&
+        e.recorded.parentSurface.status === "known",
+    );
+    assert.ok(root && inner, "fixture has a root visit and a surface visit");
+    assert.equal(root.draws.length, root.recorded.drawCameras.length);
+    const rootUpload = cameraAtDraw(rendered.writes, root.draws[0]);
+    const reused = matricesOf(inner.recorded).some(
+      (matrix) =>
+        matrix !== undefined &&
+        rootUpload.every(
+          (value, position) => Math.fround(value) === Math.fround(matrix[position]),
+        ),
+    );
+    assert.equal(reused, false, "a surface visit's camera is not the root's upload");
+    assert.deepEqual(
+      rootUpload,
+      rendered.frames[0].drawCameras[0].camera.status === "mapped"
+        ? rendered.frames[0].drawCameras[0].camera.matrix.map((value) =>
+            Math.fround(value),
+          )
+        : undefined,
+      "the root upload is the root visit's own published camera",
+    );
+  });
+});
+
+test("a nonfinite base transform is unavailable and carries no matrix", async () => {
+  await withGpuGlobals(async () => {
+    const evaluated = evaluateView(Box({ width: 4, height: 4, fill: "#123456" }), {
+      time: 0,
+      width: 20,
+      height: 10,
+      measureText: measure,
+      inspection: true,
+    });
+    const rendered = await renderOnce(Box({ width: 1, height: 1 }), {
+      frame: {
+        ...evaluated,
+        camera: {
+          position: [0, 0],
+          zoom: 1,
+          rotation: 0,
+          anchor: [0, 0],
+          matrix: [Number.POSITIVE_INFINITY, 0, 0, 1, 0, 0],
+          inverse: [0, 0, 0, 1, 0, 0],
+        },
+      },
+    });
+    assert.equal(rendered.frames[0]?.baseFrameTransform.status, "unavailable");
+    assert.equal("matrix" in rendered.frames[0]!.baseFrameTransform, false);
+    assert.equal(rendered.frames[0]?.drawCameras[0]?.camera.status, "unavailable");
+    assert.equal("matrix" in (rendered.frames[0]?.drawCameras[0]?.camera ?? {}), false);
+  });
 });

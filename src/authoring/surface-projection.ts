@@ -49,6 +49,8 @@ export type SurfaceMapping =
  */
 export interface SurfaceTrace {
   readonly occurrenceId: number;
+  /** Evaluation command id. Not a frame occurrence id. */
+  readonly occurrenceIdKind: "evaluation-command";
   readonly ownerNodeId: number;
   readonly path: string;
   readonly surface: InspectionSurface;
@@ -56,15 +58,111 @@ export interface SurfaceTrace {
   readonly parentResolution: readonly [number, number];
   readonly uniform: CopiedSurfaceUniform;
   readonly projection: SurfaceMapping;
+  /** Integer scissor the child render set, when that render recorded one. */
+  readonly childScissor?: PixelRect;
   /** Parent tagged surface occurrence, when this surface was drawn into one. */
   readonly parentOccurrenceId?: number;
+  /** Frame occurrence that drew this surface command. */
+  readonly parentFrameOccurrenceId: number;
+  /** World frame that rendered into this surface, when that render happened. */
+  readonly worldFrameOccurrenceId?: number;
+  /** Overlay frame that rendered into this surface, when that render happened. */
+  readonly overlayFrameOccurrenceId?: number;
 }
 
 /** A tagged surface drawn into an untagged parent has no scene chain. */
 export const NON_CLIP_PARENT_REASON =
   "parent surface is not a tagged clip or group; scene mapping is unavailable.";
+export const ROOT_TARGET_REASON =
+  "root render target is not a tagged surface.";
+export const MISSING_LAYOUT_SPACE_REASON =
+  "frame has no explicit layout-space id.";
 
 export const EMPTY_SURFACE_TRACES: readonly SurfaceTrace[] = Object.freeze([]);
+export const EMPTY_FRAME_OCCURRENCES: readonly FrameOccurrence[] = Object.freeze(
+  [],
+);
+
+export type KnownOccurrence = {
+  readonly status: "known";
+  readonly occurrenceId: number;
+};
+export type UnavailableOccurrence = {
+  readonly status: "unavailable";
+  readonly reason: string;
+};
+export type KnownLayoutSpace = {
+  readonly status: "known";
+  readonly id: string;
+};
+export type FrameTransformMapping =
+  | {
+      readonly status: "mapped";
+      readonly source: "computeFrameTransform";
+      readonly precision: "binary64";
+      readonly matrix: Matrix6;
+    }
+  | { readonly status: "unavailable"; readonly reason: string };
+export type UploadedCameraMapping =
+  | {
+      readonly status: "mapped";
+      readonly source: "uploaded-uniform";
+      readonly precision: "float32";
+      readonly matrix: Matrix6;
+    }
+  | { readonly status: "unavailable"; readonly reason: string };
+/** One render visit. `id` is the root render's frame counter, not a command or node id. */
+export interface FrameOccurrence {
+  readonly id: number;
+  readonly layoutSpace: KnownLayoutSpace | UnavailableOccurrence;
+  readonly targetResolution: readonly [number, number];
+  readonly designSize: readonly [number, number];
+  readonly scissor: PixelRect;
+  readonly parentSurface: KnownOccurrence | UnavailableOccurrence;
+  readonly baseFrameTransform: FrameTransformMapping;
+  readonly drawCameras: readonly FrameDrawCamera[];
+}
+export interface FrameDrawCamera {
+  readonly commandId: number;
+  readonly ownerNodeId: number;
+  readonly camera: UploadedCameraMapping;
+}
+
+export function baseFrameMapping(
+  matrix: readonly number[],
+): FrameTransformMapping {
+  const mapped = finiteMatrix(matrix, "base frame transform");
+  if (mapped.status === "unavailable") return mapped;
+  return {
+    status: "mapped",
+    source: "computeFrameTransform",
+    precision: "binary64",
+    matrix: mapped.matrix,
+  };
+}
+
+/** Canvas `[a, b, c, d, e, f]` copied from the float32 camera rows after `values.set`. */
+export function uploadedCameraMapping(
+  values: Float32Array,
+  offset: number,
+): UploadedCameraMapping {
+  const matrix: Matrix6 = [
+    values[offset + 24],
+    values[offset + 28],
+    values[offset + 25],
+    values[offset + 29],
+    values[offset + 26],
+    values[offset + 30],
+  ];
+  const mapped = finiteMatrix(matrix, "uploaded camera");
+  if (mapped.status === "unavailable") return mapped;
+  return {
+    status: "mapped",
+    source: "uploaded-uniform",
+    precision: "float32",
+    matrix: mapped.matrix,
+  };
+}
 
 const IDENTITY: Matrix6 = [1, 0, 0, 1, 0, 0];
 
@@ -253,6 +351,9 @@ interface PendingSurface {
   readonly paints: CapturedPaint[];
   readonly childScissor?: PixelRect;
   readonly sceneBlocked?: string;
+  readonly parentFrameOccurrenceId: number;
+  readonly worldFrameOccurrenceId?: number;
+  readonly overlayFrameOccurrenceId?: number;
 }
 
 interface OpenSurface {
@@ -263,7 +364,21 @@ interface OpenSurface {
   readonly childResolution: readonly [number, number];
   readonly nested: PendingSurface[];
   readonly paints: CapturedPaint[];
+  readonly parentFrameOccurrenceId: number;
   childScissor?: PixelRect;
+  worldFrameOccurrenceId?: number;
+  overlayFrameOccurrenceId?: number;
+}
+
+interface MutableFrame {
+  readonly id: number;
+  readonly layoutSpace: FrameOccurrence["layoutSpace"];
+  readonly targetResolution: readonly [number, number];
+  readonly designSize: readonly [number, number];
+  readonly scissor: PixelRect;
+  readonly parentSurface: FrameOccurrence["parentSurface"];
+  readonly baseFrameTransform: FrameTransformMapping;
+  readonly drawCameras: FrameDrawCamera[];
 }
 
 /**
@@ -274,6 +389,44 @@ export class SurfaceProjectionTraces {
   readonly roots: PendingSurface[] = [];
   readonly blocked: PendingSurface[] = [];
   private readonly opens = new Map<number, OpenSurface>();
+  private nextFrameId = 0;
+  private readonly frames: MutableFrame[] = [];
+
+  /** One id per render visit, including root, world, overlay, group and clip. */
+  beginFrame(frame: Omit<FrameOccurrence, "id" | "drawCameras">): number {
+    const id = this.nextFrameId++;
+    this.frames.push({ ...frame, id, drawCameras: [] });
+    return id;
+  }
+
+  noteDrawCamera(frameId: number, camera: FrameDrawCamera) {
+    const frame = this.frames[frameId];
+    if (frame && frame.id === frameId) frame.drawCameras.push(camera);
+  }
+
+  noteRenderedFrame(
+    occurrenceId: number,
+    role: "world" | "overlay",
+    frameId: number,
+  ) {
+    const open = this.opens.get(occurrenceId);
+    if (!open) return;
+    if (role === "world") open.worldFrameOccurrenceId = frameId;
+    else open.overlayFrameOccurrenceId = frameId;
+  }
+
+  frameOccurrences(): readonly FrameOccurrence[] {
+    return this.frames.map((frame) => ({
+      id: frame.id,
+      layoutSpace: frame.layoutSpace,
+      targetResolution: frame.targetResolution,
+      designSize: frame.designSize,
+      scissor: frame.scissor,
+      parentSurface: frame.parentSurface,
+      baseFrameTransform: frame.baseFrameTransform,
+      drawCameras: frame.drawCameras.slice(),
+    }));
+  }
 
   open(
     occurrenceId: number,
@@ -281,6 +434,7 @@ export class SurfaceProjectionTraces {
     path: string,
     surface: InspectionSurface,
     childResolution: readonly [number, number],
+    parentFrameOccurrenceId: number,
   ): { readonly nested: PendingSurface[]; readonly paints: CapturedPaint[] } {
     const nested: PendingSurface[] = [];
     const paints: CapturedPaint[] = [];
@@ -292,6 +446,7 @@ export class SurfaceProjectionTraces {
       childResolution: [childResolution[0], childResolution[1]],
       nested,
       paints,
+      parentFrameOccurrenceId,
     });
     return { nested, paints };
   }
@@ -328,6 +483,13 @@ export class SurfaceProjectionTraces {
       paints: open.paints,
       ...(open.childScissor ? { childScissor: open.childScissor } : {}),
       ...(sceneBlocked ? { sceneBlocked } : {}),
+      parentFrameOccurrenceId: open.parentFrameOccurrenceId,
+      ...(open.worldFrameOccurrenceId !== undefined
+        ? { worldFrameOccurrenceId: open.worldFrameOccurrenceId }
+        : {}),
+      ...(open.overlayFrameOccurrenceId !== undefined
+        ? { overlayFrameOccurrenceId: open.overlayFrameOccurrenceId }
+        : {}),
     };
   }
 
@@ -401,6 +563,8 @@ export interface SurfaceTracePass {
   readonly paints?: CapturedPaint[];
   readonly occurrenceId?: number;
   readonly blocked?: string;
+  /** Filled by the child render with the frame id that visit allocated. */
+  readonly childFrame?: { id?: number };
 }
 
 function copyMatrix(matrix: Matrix6): Matrix6 {
@@ -442,6 +606,7 @@ function emit(
   }
   traces.push({
     occurrenceId: surface.occurrenceId,
+    occurrenceIdKind: "evaluation-command",
     ownerNodeId: surface.ownerNodeId,
     path: surface.path,
     surface: surface.surface,
@@ -449,7 +614,15 @@ function emit(
     parentResolution: surface.parentResolution,
     uniform: surface.uniform,
     projection,
+    ...(surface.childScissor ? { childScissor: surface.childScissor } : {}),
     ...(parentOccurrenceId !== undefined ? { parentOccurrenceId } : {}),
+    parentFrameOccurrenceId: surface.parentFrameOccurrenceId,
+    ...(surface.worldFrameOccurrenceId !== undefined
+      ? { worldFrameOccurrenceId: surface.worldFrameOccurrenceId }
+      : {}),
+    ...(surface.overlayFrameOccurrenceId !== undefined
+      ? { overlayFrameOccurrenceId: surface.overlayFrameOccurrenceId }
+      : {}),
   });
   const nextBlocked =
     reason ??

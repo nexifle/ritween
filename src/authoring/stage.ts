@@ -286,7 +286,14 @@ function createViewScene(
         records && ((record) => records.push(record)),
       );
       // Published only after a successful render; earlier snapshots and their records stay as they were.
-      frame = records ? { ...evaluated, paintRecords: records } : evaluated;
+      frame = records
+        ? {
+            ...evaluated,
+            paintRecords: records,
+            frameOccurrences: renderer.frameOccurrences(),
+            surfaceOccurrences: renderer.surfaceOccurrences(),
+          }
+        : evaluated;
     },
     inspect: () => frame,
     dispose() {

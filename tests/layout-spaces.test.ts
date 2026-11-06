@@ -123,6 +123,41 @@ test("nested composition, world, clip, group and overlay publish boundary descri
   assert.equal(overlay.owner?.inspectionId, world.owner?.inspectionId);
   assert.equal(overlay.mapping.status, "unavailable");
   assert.equal("matrix" in overlay.mapping, false);
+  assert.equal(world.mapping.status, "mapped");
+  if (world.mapping.status === "mapped") {
+    assert.equal(world.mapping.kind, "world-to-composition-viewport");
+    assert.equal(world.mapping.source, "evaluateCamera");
+    assert.equal(world.mapping.precision, "binary64-evaluated");
+    assert.equal(world.mapping.matrix.length, 6);
+    assert.equal("matrix" in overlay.mapping, false);
+  }
+  const compositionCommand = frame.commands[0];
+  assert.equal(compositionCommand.kind, "composition");
+  if (compositionCommand.kind === "composition") {
+    assert.equal(frame.frameLayoutSpaceId, "layout");
+    assert.equal(compositionCommand.frame.frameLayoutSpaceId, "comp/world");
+    assert.equal(compositionCommand.overlay?.frameLayoutSpaceId, "comp/overlay");
+    assert.deepEqual(
+      world.mapping.status === "mapped" ? world.mapping.matrix : undefined,
+      compositionCommand.frame.camera?.matrix,
+    );
+    const nestedCommands = [
+      ...compositionCommand.frame.commands,
+      ...compositionCommand.frame.commands.flatMap((command) =>
+        command.kind === "group" || command.kind === "composition"
+          ? command.frame.commands
+          : [],
+      ),
+    ];
+    const clip = nestedCommands.find((command) => command.path.endsWith("window"));
+    assert.equal(clip?.kind, "composition");
+    if (clip?.kind === "composition")
+      assert.equal(clip.frame.frameLayoutSpaceId, "comp/world/cluster/window/clip");
+    const group = compositionCommand.frame.commands.find((command) => command.kind === "group");
+    assert.equal(group?.kind, "group");
+    if (group?.kind === "group")
+      assert.equal(group.frame.frameLayoutSpaceId, "comp/world");
+  }
   assert.equal(
     spaces.some((space) => space.id.includes("cluster") && space.kind !== "clip-local"),
     false,

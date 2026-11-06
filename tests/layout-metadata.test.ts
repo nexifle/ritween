@@ -1169,6 +1169,8 @@ const expectedRole = (kind: string): "content" | "background" | "surface" =>
 
 /** Command-only opt-in metadata: identity/role and the Clip surface tag. Nothing else may differ. */
 const commandInspectionKeys = new Set(["inspection", "inspectionSurface"]);
+/** Frame-only opt-in metadata: the layout space the renderer was told this visit uses. */
+const frameInspectionKeys = new Set(["frameLayoutSpaceId"]);
 /** Tree metadata: the new identity plus the pre-existing layout metadata from G3.3/G3.4a. */
 const treeInspectionKeys = new Set([
   "inspection",
@@ -1180,10 +1182,12 @@ const treeInspectionKeys = new Set([
 const withoutInspectionMetadata = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(withoutInspectionMetadata);
   if (value === null || typeof value !== "object") return value;
-  // A layout node is the only shape that carries `children`; a command never does.
+  // A layout node is the only shape that carries `children`; only a frame carries `commands`.
   const keys = Array.isArray((value as { children?: unknown }).children)
     ? treeInspectionKeys
-    : commandInspectionKeys;
+    : Array.isArray((value as { commands?: unknown }).commands)
+      ? frameInspectionKeys
+      : commandInspectionKeys;
   const stripped: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value))
     if (!keys.has(key)) stripped[key] = withoutInspectionMetadata(entry);

@@ -87,8 +87,21 @@ test("strict schema, limits and schedules reject malformed inputs", () => {
     { ...rule, typo: 1 },
     { ...rule, a: { ...rule.a, path: "x" } },
     { ...rule, temporal: { start: 1, end: 2, samples: [1.5, 1] } },
+    { ...rule, temporal: { start: 1, end: 2, samples: [1, 1] } },
+    { ...rule, temporal: { start: 1, end: 2, samples: [2] } },
+    { ...rule, temporal: { start: 2, end: 2, samples: [2] } },
+    { ...rule, temporal: { start: 1, end: 2, samples: [0] } },
+    { ...rule, a: { ...rule.a, bounds: "ink" } },
+    { ...rule, a: { ...rule.a, id: "" } },
+    { ...rule, minimum: Infinity },
+    { ...rule, tolerance: Infinity },
   ])
     assert.throws(() => parseRules(json(r)));
+  const empty = parseRules(json({ ...rule, temporal: { start: 1, end: 2, samples: [] } }));
+  assert.equal(summarizeRuleSchedule(empty, [])[0].coverageFailure, true);
+  const inclusive = parseRules(json({ ...rule, temporal: { start: 1, end: 2, includeEnd: true, samples: [1, 2] } }));
+  assert.equal(evaluateRules(document(2), inclusive)[0].status, "pass");
+  assert.equal(evaluateRules(document(2.01), inclusive)[0].status, "not-applicable");
   assert.throws(() => parseRules(" ".repeat(1024 * 1024 + 1)));
   assert.throws(() =>
     parseRules(

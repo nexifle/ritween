@@ -12,6 +12,7 @@ const { values } = parseArgs({
     project: { type: "string" },
     rules: { type: "string" },
     output: { type: "string", default: "artifacts/g4/schedule.json" },
+    expected: { type: "string" },
   },
 });
 if (!values.project || !values.rules)
@@ -96,6 +97,15 @@ try {
           schedule.times.length > 1
             ? [schedule.times[0], schedule.times.at(-1), schedule.times[0]]
             : [];
+        // Calibrate unchanged renders before A/B/A, not after comparing states.
+        const calibration = [];
+        if (seekTimes.length) for (let repeat = 0; repeat < 3; repeat++) {
+          await source.render(seekTimes[0]);
+          await capture(seekTimes[0]);
+          calibration.push(captures.at(-1).png);
+        }
+        const pixelCalibration = { repeats: calibration.length, identical: calibration.length === 3 && calibration.every((p) => p === calibration[0]), allowedChangedPixels: 0, method: "Repeated identical PNG bytes imply identical decoded pixels in this controlled session" };
+        if (calibration.length && !pixelCalibration.identical) throw Error("Unchanged pixel calibration failed");
         const seek = [];
         for (const time of seekTimes) {
           await source.render(time);
@@ -125,11 +135,15 @@ try {
           ...schedule,
           captures,
           fontProof: manifest.fontProof,
-          environment: { browser: navigator.userAgent, gpu: (await navigator.gpu.requestAdapter())?.info },
+          environment: { browser: navigator.userAgent, gpu: await (async () => {
+            const info = (await navigator.gpu.requestAdapter())?.info;
+            return info ? Object.fromEntries(["vendor", "architecture", "device", "description", "isFallbackAdapter"].map((key) => [key, info[key]])) : null;
+          })() },
           identity: { projectPath, packageVersion, project: project.name },
           method: "CPU assertions after real browser render; not raster proof",
           reviewerStatus: "not-reviewed",
           seekEvidence,
+          pixelCalibration,
         };
       } finally {
         source.dispose();
@@ -151,6 +165,15 @@ try {
     const path = join(captureDir, `${index}-${capture.time}.png`);
     await writeFile(path, Buffer.from(capture.png, "base64"));
     report.captures[index] = { time: capture.time, path, method: "WebGPU FrameSource canvas PNG", reviewerStatus: "not-reviewed" };
+  }
+  if (values.expected) {
+    const { checkExpectedMeasurements } = await import("./authoring-rule-oracles.mjs");
+    report.independentOracle = checkExpectedMeasurements(report, JSON.parse(await readFile(values.expected, "utf8")));
+    // Expected negative checks remain CPU failures, but are successful rejection
+    // evidence only when their exact status and measurement match the oracle.
+    const expected = JSON.parse(await readFile(values.expected, "utf8"));
+    report.failed = report.independentOracle.failed || report.summary.some((r) => r.coverageFailure) || report.results.some((r) =>
+      ["fail", "indeterminate"].includes(r.status) && !expected.some((e) => e.ruleId === r.id && e.time === r.time && e.status === r.status));
   }
   await writeFile(values.output, JSON.stringify(report, null, 2));
   if (report.failed) process.exitCode = 1;

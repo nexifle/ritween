@@ -1,3 +1,8 @@
+import {
+  sceneAudioEnvelope,
+  sceneAudioGain,
+  type SceneAudioEnvelope,
+} from "./audio-envelope";
 import { MAX_ASSET_BYTES, MAX_AUDIO_SOURCE_BYTES } from "../media/limits";
 import {
   audibleAudioTracks,
@@ -719,6 +724,7 @@ function installRecorder(
 type Voice = { ids: number[]; start: number; stop: number };
 
 type ClipBus = {
+  envelope?: SceneAudioEnvelope;
   trackId: string;
   clipId: string;
   mute: GainNode;
@@ -815,6 +821,7 @@ async function recordScoreUnlocked(
           RealGain,
           budget,
           signal,
+          sceneAudioEnvelope(project, clip),
         );
       }
     }
@@ -848,6 +855,7 @@ async function recordClip(
   RealGain: typeof GainNode,
   budget: Budget,
   signal?: AbortSignal,
+  envelope?: SceneAudioEnvelope,
 ) {
   signal?.throwIfAborted();
   const before = nodes.length;
@@ -857,6 +865,7 @@ async function recordClip(
   const mute = new RealGain(ctx, { gain: 1 });
   bus.connect(mute).connect(sum);
   buses.push({
+    envelope,
     trackId,
     clipId: clip.id,
     mute,
@@ -1112,6 +1121,10 @@ export async function prepareOfflineAudio(
   const connected = new Set<Edge>();
   // Clip windows retain the original full-mix envelope, independent of voices.
   for (const bus of score.buses) {
+    if (bus.envelope) {
+      armBus(bus, 0, 0, 0);
+      continue;
+    }
     const start = bus.start,
       end = start + bus.duration,
       ramp = Math.min(0.005, bus.duration / 2);
@@ -1512,6 +1525,35 @@ export class LiveMix {
 }
 
 function armBus(bus: ClipBus, origin: number, from: number, audioNow: number) {
+  if (bus.envelope) {
+    const e = bus.envelope,
+      start = Math.max(bus.start, e.start),
+      end = Math.min(bus.start + bus.duration, e.end);
+    const param = bus.gain;
+    param.cancelScheduledValues(audioNow);
+    const now = Math.max(from, audioNow - origin);
+    param.setValueAtTime(
+      now >= start && now < end ? sceneAudioGain(e, now) : 0,
+      audioNow,
+    );
+    if (end <= now) return;
+    const edge = Math.min(0.005, Math.max(0, (end - start) / 2));
+    const points = [
+      start,
+      start + edge,
+      e.start + e.fadeIn,
+      e.end - e.fadeOut,
+      end - edge,
+      end,
+    ]
+      .filter((t) => t > now && t >= start && t <= end)
+      .sort((a, b) => a - b);
+    for (const time of [...new Set(points)]) {
+      const gain = time === start || time === end ? 0 : sceneAudioGain(e, time);
+      param.linearRampToValueAtTime(gain, Math.max(audioNow, origin + time));
+    }
+    return;
+  }
   const ramp = Math.min(0.005, bus.duration / 2);
   const open = origin + bus.start;
   const close = open + bus.duration;

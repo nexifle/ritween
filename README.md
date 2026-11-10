@@ -131,7 +131,9 @@ The bundled project is a 45-second composition with eight scenes and two audio t
 | [`src/project/audio/`](src/project/audio/)           | Procedural audio sources                                     |
 | [`src/engine/types.ts`](src/engine/types.ts)         | Public scene, project, and audio contracts                   |
 
-Each scene implements three lifecycle methods:
+For titles, cards, and 2D bar layouts, use the [declarative authoring foundation](docs/authoring.md): `Stage`, `Text`, `Box`, `Circle`, `Line`, Stack layout, `Group`/`ForEach`, Image/Video nodes, motion presets, and Camera 2D. Reusable `World`s, nested `Composition`s, and timeline `Shot`s support screen-space overlays and overlap transitions. They use the same Scene/preview/export pipeline. A runnable example lives in [`examples/authoring/manifest.ts`](examples/authoring/manifest.ts). For a logo or HUD that stays fixed across transitions, use `project.overlay: () => Overlay(...)`; see [`examples/project-overlay/manifest.ts`](examples/project-overlay/manifest.ts).
+
+Custom WebGPU scenes remain available. Each scene implements three lifecycle methods:
 
 ```ts
 import type { Scene } from "ritween";

@@ -6,6 +6,14 @@ Use assets supplied by the user. Do not replace footage/images with procedural v
 
 Place files in the consumer project's `public/` directory. Access `public/media/shot.mp4` as `/media/shot.mp4`, not `/public/media/shot.mp4` or a filesystem path such as `/Users/...`. Media helpers use same-origin URLs and do not provide uploads or arbitrary filesystem access.
 
+## Media inside declarative compositions
+
+Prefer `Image` and `Video` nodes when footage shares a layout with text, graphics,
+or other media. Use `StageEntry` for a direct view or `World` + `Shot` for reusable
+content. See [composition](composition.md#overlay-scope-and-resource-ownership)
+for clip registration and clock rules. Multiple media nodes do not require a
+custom shader. The helpers below remain useful for standalone full-scene footage.
+
 ## Ready-made scenes
 
 ```ts
@@ -90,7 +98,7 @@ Within the scene:
 3. `render`: sample `resource.texture` in a shader. The scene determines placement, 3D geometry, masks, effects, and compositing. The engine submits the command encoder.
 4. `dispose`: call `dispose()` on every resource and destroy scene-owned GPU resources.
 
-Do not share video resource instances across renderers/devices. Registering descriptors only supplies audio; the scene must still load and draw the texture to produce visuals. Use a custom scene for multiple textures rather than stacking full-screen scene helpers.
+Do not share video resource instances across renderers/devices. Registering descriptors only supplies audio; the scene must still load and draw the texture to produce visuals. Use declarative Image/Video nodes for ordinary multi-media layouts, or a custom scene for specialized texture processing; do not stack clearing full-screen scene helpers.
 
 Scenes with asynchronous preparation must use `Renderer.renderAsync()` or `FrameSource.render()`, not synchronous `Renderer.render()`. Preview and CLI provide the asynchronous path.
 

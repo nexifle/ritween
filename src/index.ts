@@ -1,7 +1,10 @@
 /// <reference types="@webgpu/types" preserve="true" />
 export type {
   Scene,
+  SceneInspection,
   SceneEntry,
+  SharedElement,
+  Transition,
   FramePreparationContext,
   MediaClip,
   Project,
@@ -16,7 +19,47 @@ export type {
   ProjectSettings,
   ProjectExportSettings,
 } from "./engine/types";
+export type {
+  FrameInspection,
+  InspectedScene,
+  InspectedLayer,
+  InspectionClock,
+  TransitionDraw,
+} from "./engine/render/renderer";
 export { Renderer } from "./engine/render/renderer";
+export {
+  INSPECTION_SCHEMA_VERSION,
+  MAX_INSPECTION_BYTES,
+  InspectionReadError,
+  InspectionSerializationError,
+  InspectionTargetError,
+  buildInspectionDocument,
+  measureInspection,
+  parseInspectionTarget,
+  serializeInspection,
+} from "./engine/inspect/report";
+export type {
+  InspectionBounds,
+  InspectionSize,
+  InspectionCapability,
+  InspectionClockFields,
+  InspectionCommand,
+  InspectionDiagnostic,
+  InspectionDocument,
+  InspectionLayoutNode,
+  InspectionLayoutSpaceKind,
+  InspectionScene,
+  InspectionSpaceDescriptor,
+  InspectionSpaceMapping,
+  InspectionSpaceOwner,
+  InspectionSpaceParent,
+  InspectionSeverity,
+  FinalPaintRecord,
+  FinalProjection,
+  InspectionTarget,
+  InspectionTargetResult,
+} from "./engine/inspect/report";
+export * from "./authoring/index";
 export { audioFile } from "./engine/decode/audio-file";
 export type { AudioFileOptions } from "./engine/decode/audio-file";
 export {
@@ -42,11 +85,26 @@ export type { EncodingOptions } from "./engine/export/settings";
 export { resolveEncodingOptions } from "./engine/export/settings";
 export {
   evaluate,
+  evaluateActive,
   validateProject,
   frameCount,
   frameTiming,
 } from "./engine/timeline";
 
+export {
+  parseRules,
+  evaluateRules,
+  summarizeRuleSchedule,
+  MAX_RULES_BYTES,
+  MAX_RULES,
+  RulesInputError,
+} from "./engine/inspect/rules";
+export type {
+  RuleTarget,
+  InspectionRule,
+  RulesFile,
+  RuleResult,
+} from "./engine/inspect/rules";
 export { FrameSource } from "./engine/render/frame-source";
 export type { FrameSourceOptions } from "./engine/render/frame-source";
 

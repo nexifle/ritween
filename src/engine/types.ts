@@ -11,18 +11,46 @@ export interface RenderContext extends SetupContext {
   time: number;
   localTime: number;
   progress: number;
+  /** Output-pixel affine corrections for matched authoring elements. */
+  sharedTransforms?: ReadonlyMap<string, readonly number[]>;
+  /** Internal local-render-target to output mapping for nested shared elements. */
+  sharedSpace?: readonly number[];
+  /** Whether the renderer has opted in to inspection layout metadata for this frame. */
+  readonly inspection?: boolean;
 }
 export interface FramePreparationContext {
   time: number;
   localTime: number;
   progress: number;
   signal?: AbortSignal;
+  /** Whether the renderer has opted in to inspection layout metadata for this frame. */
+  readonly inspection?: boolean;
+}
+/** Structural frame data for inspection; authoring frames satisfy it without engine imports.
+ * A provider must return a frame that is not mutated after submission: the renderer captures the
+ * returned object by reference, so in-place edits after submit would surface in the snapshot.
+ * Raw scene metadata is untrusted; G1b must sanitize it before publishing as trusted output.
+ */
+export interface SceneInspection {
+  readonly tree: unknown;
+  readonly commands: readonly unknown[];
+  readonly warnings: readonly string[];
+  readonly camera?: unknown;
 }
 export interface Scene {
   setup(context: SetupContext): void | Promise<void>;
   prepareFrame?(context: FramePreparationContext): void | Promise<void>;
   /** Pure timeline evaluation: do not integrate deltas or depend on previous frames. */
   render(context: RenderContext): void;
+  /** Optional deterministic screen-space element poses, evaluated before rendering. */
+  sharedElements?(context: RenderContext): readonly SharedElement[];
+  /** Optional zero-argument inspection snapshot of the last rendered frame.
+   * Left untyped so scenes that already own a property named `inspect` keep
+   * compiling; the renderer calls it with this receiver and validates the result
+   * against {@link SceneInspection}, reporting anything else as unavailable.
+   * Return a frame that will not be mutated after submission.
+   */
+  inspect?: unknown;
   dispose(): void;
 }
 export interface MediaClip {
@@ -35,6 +63,23 @@ export interface MediaClip {
   muted?: boolean;
   volume?: number;
 }
+export interface SharedElement {
+  readonly id: string;
+  /** Unit rectangle to output pixels: [a, b, c, d, e, f]. */
+  readonly matrix: readonly number[];
+}
+export type Transition =
+  | { readonly type: "cut" }
+  | {
+      readonly type:
+        "crossfade" | "wipe" | "slide" | "zoom" | "shared" | "custom";
+      readonly duration: number;
+      /** Custom WGSL defining fn transition(uv: vec2f, progress: f32) -> vec4f. */
+      readonly shader?: string;
+      /** Scene-linked audio fades by default; false preserves its original envelope. */
+      readonly audioCrossfade?: boolean;
+      readonly direction?: "left" | "right" | "up" | "down";
+    };
 export interface SceneEntry {
   mediaClips?: readonly MediaClip[];
   id: string;
@@ -43,7 +88,8 @@ export interface SceneEntry {
   start: number;
   duration: number;
   create: () => Scene;
-  transition: { type: "cut" };
+  /** Incoming transition: overlaps the end of the preceding scene. */
+  transition: Transition;
 }
 /** Clip-local time maps through `at`. Context time 0 is composition time 0. */
 export interface AudioHost {
@@ -60,6 +106,8 @@ export interface AudioClipSource {
   dispose?(): void;
 }
 export interface AudioClip {
+  /** Link to a scene to follow its incoming/outgoing transition audio envelope. */
+  sceneId?: string;
   muted?: boolean;
   id: string;
   name: string;
@@ -97,6 +145,10 @@ export interface Project {
   aspectRatio: readonly [number, number];
   duration: number;
   scenes: readonly SceneEntry[];
+  /** Persistent screen-space layer, rendered after scene transitions. Must preserve target contents.
+   * Owns one Scene per renderer. localTime equals project time; progress spans the project.
+   */
+  overlay?: () => Scene;
   /** Separate from scenes. Omitted tracks mean a silent picture. */
   audioTracks?: readonly AudioTrack[];
 }

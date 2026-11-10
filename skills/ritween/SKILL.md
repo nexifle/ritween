@@ -7,21 +7,51 @@ description: >-
   or MP4 export, even without an explicit request for a skill. Not intended for
   developing framework internals or working with other video frameworks.
 metadata:
-  ritween-version: "0.2.4"
+  ritween-version: "0.3.0"
 ---
 
 # Creating videos with Ritween
 
-Help the user produce a runnable project, not just code snippets. This skill targets Ritween 0.2.4. Check the installed version before using examples; for a different version, inspect its types and CLI help. Do not automatically change the user's dependency version.
+Help the user produce a runnable project, not just code snippets. This skill targets Ritween 0.3.0. Check the installed version before using examples; for a different version, inspect its types and CLI help. Do not automatically change the user's dependency version.
+
+## Content-driven layout validation
+
+For variable text, cards, safe areas, scrolling or state changes, follow the mandatory
+[nine-step layout workflow](references/layout-validation.md), including public type
+checks, real-font inspection, scheduled rules, all-state visual review, same-renderer
+ABA seeking and export gating. Rules are not aesthetic approval.
 
 ## Workflow
 
 1. Inspect the existing project and the brief: message, duration, aspect ratio, assets, audio, and output location. Reuse the existing project where possible. Choose simple defaults for nonblocking details; ask about unresolved creative decisions or destructive changes.
 2. Check that the `ritween` command is available on `PATH`. Use it directly in the normal user workflow. If missing, explain global installation with `npm install -g ritween` and obtain authorization before installing. Do not assume the user has a framework checkout.
 3. For new videos or changes to visual direction, storytelling, or motion, read [motion design](references/motion-design.md): turn the brief into a subject-specific direction, a short beat sheet, and purposeful choreography before coding. Preserve existing brand decisions for narrow edits; skip this reference for purely technical fixes. Read the [authoring reference](references/authoring.md) for contracts and a minimal example. Create the manifest and scenes using public imports from `ritween`, not deep imports into `src/engine`.
-4. Arrange scenes consecutively without gaps or overlaps, and derive animation from timeline time. For audio, read the [audio reference](references/audio.md). For supplied images, BGM/SFX, or footage, read [local media assets](references/media-assets.md); prioritize those assets rather than replacing them with synthesis or procedural visuals.
+4. Prefer `StageEntry` for a direct view, or `World` + `Shot` for reusable content and camera shots. Read [composition](references/composition.md) for nested `Composition`, clock mapping, overlap transitions, and persistent overlays. Derive animation from timeline time; cuts are consecutive, while non-cut transitions require explicit overlap. For audio, read the [audio reference](references/audio.md). For supplied images, BGM/SFX, or footage, read [local media assets](references/media-assets.md); prioritize those assets rather than replacing them with synthesis or procedural visuals.
 5. Run manifest validation and the project's available typecheck. Follow [preview and export](references/preview-export.md): inspect keyframes for composition and legibility, review playback for pacing and choreography, verify seeking, then export MP4 when requested. Technical success alone does not establish visual quality.
 6. Report changed files, run commands, output locations, actual validation results, and blockers. Distinguish typechecked code from browser-verified output. Do not claim success when export fails.
+
+## Project organization
+
+Keep `manifest.ts` as the composition root: project metadata, imports, timeline
+assembly, and project-level audio/overlay wiring. Do not put an entire multi-scene
+video, large datasets, geometry, and reusable components into one manifest.
+
+- Put each substantial scene or World in a descriptive module under `src/scenes/`.
+  Export a World or an entry factory as appropriate; assemble timing in the manifest.
+- Extract repeated visual elements into `src/components/` and substantial datasets
+  into `src/data/`. Keep scene-specific helpers beside their owning scene; do not
+  create a shared abstraction for a single use. Put audio implementations in
+  `src/audio/`.
+- Keep one source of truth for data, clip descriptors, and timing. Pass dependencies
+  into factories rather than importing the manifest from scene modules. Do not create
+  circular imports or duplicate constants just to split files.
+- Set entry `source` to the actual authoring module, relative to the manifest
+  directory. It is inspector metadata, not a replacement for a TypeScript import.
+- A tiny one-scene example may stay in one file. For a substantive multi-beat video,
+  establish modules before the manifest becomes a large implementation file. Split
+  by responsibility, not arbitrary line counts; do not create one file per primitive.
+- During revisions, preserve these boundaries. Before finishing, check that the
+  manifest reads as a timeline and project assembly rather than a drawing program.
 
 ## Motion quality and intent
 
@@ -37,9 +67,11 @@ Help the user produce a runnable project, not just code snippets. This skill tar
 - Scenes must be seekable: rendering the same time produces the same image independently of previous frames. Do not integrate deltas, use `Date.now()`, or use unseeded randomness for animation.
 - Each `create` factory returns a fresh instance. GPU state belongs to one renderer instance; release scene-owned resources in `dispose`.
 - Use `device`, `format`, `resolution`, `encoder`, and `target` from the context. The renderer submits the command buffer.
-- TSX is a module format; JSX and DOM elements do not automatically become GPU graphics. Do not invent text components, layout systems, or drawing APIs that Ritween does not export.
-- The reference version supports only `cut` transitions. Implement fades within a scene rather than overlapping scene entries or inventing transition APIs.
-- The CLI provides only `preview`, `frame`, and `export`; there is no `init` or `create` command.
+- Prefer public declarative nodes and immutable modifiers for ordinary 2D videos, but treat them as conveniences, not a creative boundary. Build custom elements with functions returning nodes, data-driven geometry, paths, and time-derived values; use a custom WebGPU Scene when direct rendering better serves the brief. Declarative entries and custom Scenes can coexist in one project's timeline. Reuse built-in layout, text, motion, and media where useful rather than rebuilding them unnecessarily.
+- TSX is a module format; JSX and DOM elements do not automatically become GPU graphics. Use exported factories such as `Text`, `VStack`, and `Composition`, not invented JSX components.
+- The incoming scene owns its transition. For non-cut transitions, start it at the previous scene's end minus transition duration; never introduce gaps or triple overlaps. See [composition](references/composition.md).
+- All Stages and Overlays require `Renderer.renderAsync()`, even without media. CLI, preview, and export already handle this. World clock remapping does not remap Video playback, which uses project time.
+- The CLI provides `preview`, `frame`, `inspect`, and `export`; there is no `init` or `create` command.
 - Do not overwrite output files or use `--force` without the user's permission.
 
 ## Optional implementation references
@@ -48,6 +80,7 @@ Read only the references needed for the current task, not the entire collection.
 
 | Task                                                                   | Reference                                                            |
 | ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Reusable Worlds, nested viewports, Shots, transitions, and overlays    | [Composition API](references/composition.md)                         |
 | Custom GPU pipelines, uniforms, text assets, and resource lifecycle    | [GPU scene workflow](references/gpu-scene-workflow.md)               |
 | Curved paths, smooth timing, mesh deformation, instancing, and strokes | [Geometry and motion](references/gpu-geometry-motion.md)             |
 | Illustrative lighting, hatching, and 3D outlines                       | [Stylized surfaces](references/stylized-surface-rendering.md)        |
@@ -66,14 +99,18 @@ Use a small structure that requires neither framework source files nor a custom 
 ```text
 my-video/
   src/
-    scenes/
+    scenes/      # Scene/World definitions and their local helpers
+      *.ts
+    components/  # Reused visual components, when needed
+      *.ts
+    data/        # Substantial datasets, when needed
       *.ts
     audio/
       *.ts
-    manifest.ts
   public/       # Optional user assets
+  manifest.ts
 ```
 
 Use `ritween` directly after global installation with `npm install -g ritween`. A global CLI can run a consumer manifest without a framework checkout. If the project intentionally uses a local dependency, expose its executable through a package-manager script instead; local installation alone does not put `ritween` on the interactive shell's `PATH`. Do not build an installer or template generator for an ordinary video task.
 
-The reference clear-color scene checks the rendering pipeline; it is not a visual quality target. For real videos, implement composition, typography/assets, and motion appropriate to the brief using a genuine WebGPU pipeline. Do not claim visual elements exist merely because they appear in the final report.
+The reference clear-color scene checks the rendering pipeline; it is not a visual quality target. For real videos, implement composition, typography/assets, and motion appropriate to the brief using public authoring nodes. Start with `StageEntry`, or use `World` + `Shot` when content needs reuse or multiple cameras; reserve handwritten WebGPU pipelines for custom rendering. Do not claim visual elements exist merely because they appear in the final report.

@@ -1,0 +1,4421 @@
+/**
+ * Whitelisted inspection JSON for `ritween inspect`
+ * (docs/plans/declarative-layout-hardening.md §7 "CLI contract").
+ *
+ * The document is built from untrusted scene metadata: a raw Scene decides what
+ * `inspect()` returns, so every field is read through an explicit whitelist and
+ * checked. Two failure kinds stay distinct:
+ *
+ * - `InspectionReadError`: a property access or iteration threw (hostile getter,
+ *   broken proxy). The scope is published as unavailable with that reason, the
+ *   same way a Scene without the capability is reported.
+ * - `InspectionSerializationError`: readable data violates the contract (a
+ *   non-finite coordinate, a missing path). Output is rejected instead of
+ *   publishing geometry a consumer could mistake for measurement.
+ *
+ * Only metadata is published: no GPU textures, media sources, draw command
+ * outlines, or text runs. Legacy `EvaluatedFrame.tree.path` strings are kept
+ * verbatim; the owning scene scope is published beside them, never merged into
+ * the path.
+ */
+import type {
+  FrameInspection,
+  InspectedLayer,
+  InspectionClock,
+  TransitionDraw,
+} from "../render/renderer";
+
+/** Bumped whenever a published field changes meaning; consumers must reject unknowns. */
+export const INSPECTION_SCHEMA_VERSION = 2;
+/** stdout/file budget in UTF-8 bytes. Over the budget the command fails; it never truncates. */
+export const MAX_INSPECTION_BYTES = 64 * 1024 * 1024;
+/** Serialized documents are bounded by budget; safe limit guards against stack overflow. */
+const MAX_DOCUMENT_DEPTH = 1024;
+const SCOPE_PATTERN = /^(?:scene:.+|overlay)$/;
+/** `,"inspectionId":` in a layout node, charged when the field is present. */
+const LAYOUT_INSPECTION_ID_KEY = 16;
+/** `,"paintRecords":[]` in a scene, charged when the field is present; commas are per record. */
+const PAINT_RECORDS_STRUCTURE = 18;
+/**
+ * Work budget of one target scan: one unit per raw node entry and per children index read.
+ * A work limit, not an output size — a pruned branch still costs units while publishing no bytes.
+ */
+const MAX_RAW_TARGET_WORK = 1_000_000;
+
+export class InspectionReadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InspectionReadError";
+  }
+}
+export class InspectionSerializationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InspectionSerializationError";
+  }
+}
+/** Malformed target syntax; a usage error before any rendering starts. */
+export class InspectionTargetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InspectionTargetError";
+  }
+}
+
+export interface InspectionBounds {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+export interface InspectionSize {
+  readonly width: number;
+  readonly height: number;
+}
+/** One placed layout node. `path` is the authored per-frame path, relative to `space`. */
+export interface InspectionLayoutNode {
+  readonly path: string;
+  readonly kind: string;
+  /** Author-declared ID from `ViewNode.id()`; absent for anonymous nodes, never synthetic. */
+  readonly id?: string;
+  /** Coordinate space of `bounds`/`transform`. Absent means this frame's own `layout` space.
+   * Clip descendants use `${clip space}/clip` and inherit it, so `allocatedSlot` is always in
+   * the same space as the node's own `bounds`. */
+  readonly space?: string;
+  /** Raw composition path prefix for legacy warning attribution. */
+  readonly warningPrefix?: string;
+  /** Parent-offered dimensions at measurement time; opt-in inspection metadata. */
+  readonly offeredSize?: InspectionSize;
+  /** Layout slot allocated by parent container; opt-in inspection metadata. */
+  readonly allocatedSlot?: InspectionBounds;
+  /** Union of leaf content layout bounds in this node's own space; absent when nothing
+   * aggregates there, including at Clip and Composition space boundaries. Layout geometry,
+   * never paint, visibility or ink. */
+  readonly contentBounds?: InspectionBounds;
+  readonly safeBounds?: InspectionBounds;
+  /** Identity from the frame's one evaluation counter; absent when inspection is disabled. */
+  readonly inspectionId?: number;
+  readonly bounds: InspectionBounds;
+  readonly transform: readonly number[];
+  readonly children: readonly InspectionLayoutNode[];
+}
+/** Paint metadata only: draw sources, outlines, text runs and frames are not serialized. */
+export interface InspectionCommand {
+  readonly kind: string;
+  readonly path: string;
+  /** Coordinate space of `bounds`/`transform`; absent means this frame's `layout` space. */
+  readonly space?: string;
+  readonly bounds: InspectionBounds;
+  readonly transform: readonly number[];
+  readonly opacity: number;
+  readonly sharedId?: string;
+  /** `background` for a modifier's own measured-bounds paint; content paints omit it. */
+  readonly paintRole?: string;
+  /** Wrapper-declared semantic target carried by that wrapper's own paint. */
+  readonly matchId?: string;
+  /** Command identity and the node whose `place()` emitted it; absent without inspection. */
+  readonly inspection?: {
+    readonly id: number;
+    readonly nodeId: number;
+    readonly role: "content" | "background" | "surface";
+  };
+  /**
+   * Ordered paint-correction candidates this paint accepts, innermost declaration first.
+   * A transition applies the first one it supplies, so the report can explain which scope a
+   * paint actually followed. Separately bounded from `sharedId`/`matchId`, which are the
+   * matching identity.
+   */
+  readonly correctionIds?: readonly string[];
+}
+export type InspectionSeverity = "warning" | "error";
+/** Structured conflict; `warnings` keeps the legacy strings unchanged. */
+export interface InspectionDiagnostic {
+  /** Stable code, for example `offered-size-overflow` or `unavailable-inspection`. */
+  readonly code: string;
+  readonly severity: InspectionSeverity;
+  /** Qualified scene instance (`scene:<entry id>`) or `overlay`; IDs are scoped to it. */
+  readonly scope: string;
+  /** Author-declared node ID. Repeats across scopes are different nodes. */
+  readonly id?: string;
+  /** Exact node path inside `scope`; `.` marks the scope root itself. */
+  readonly path: string;
+  /** Evaluation-local clock at detection plus the inspected frame's composition time. */
+  readonly clock: { readonly local: number; readonly project: number };
+  /** Coordinate space of `path`, `bounds`, `excess` and `deficit`. */
+  readonly space: string;
+  readonly message: string;
+  readonly bounds?: InspectionBounds;
+  readonly excess?: { readonly width: number; readonly height: number };
+  readonly deficit?: number;
+}
+export type InspectionClockFields = InspectionClock;
+export type InspectionLayoutSpaceKind =
+  | "layout"
+  | "clip-local"
+  | "world"
+  | "composition-overlay";
+export type InspectionSpaceParent =
+  | { readonly status: "known"; readonly id: string }
+  | { readonly status: "unavailable"; readonly reason: string };
+/**
+ * Layout spaces stay unavailable unless evaluation recorded a source. A world mapping is
+ * `evaluateCamera` binary64, not a GPU uniform and not a raster capture.
+ */
+export type InspectionSpaceMapping =
+  | { readonly status: "unavailable"; readonly reason: string }
+  | {
+      readonly status: "unavailable";
+      readonly reason: string;
+      readonly kind: "world-to-composition-viewport";
+      readonly source: "evaluateCamera";
+      readonly precision: "binary64-evaluated";
+    }
+  | {
+      readonly status: "mapped";
+      readonly kind: "world-to-composition-viewport";
+      readonly source: "evaluateCamera";
+      readonly precision: "binary64-evaluated";
+      readonly matrix: readonly [number, number, number, number, number, number];
+    };
+export type InspectionMatrix6 = readonly [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
+export type InspectionOccurrenceRef =
+  | { readonly status: "known"; readonly occurrenceId: number }
+  | { readonly status: "unavailable"; readonly reason: string };
+export type InspectionLayoutSpaceRef =
+  | { readonly status: "known"; readonly id: string }
+  | { readonly status: "unavailable"; readonly reason: string };
+export type InspectionFrameTransform =
+  | {
+      readonly status: "mapped";
+      readonly source: "computeFrameTransform";
+      readonly precision: "binary64";
+      readonly matrix: InspectionMatrix6;
+    }
+  | { readonly status: "unavailable"; readonly reason: string };
+export type InspectionUploadedCamera =
+  | {
+      readonly status: "mapped";
+      readonly source: "uploaded-uniform";
+      readonly precision: "float32";
+      readonly matrix: InspectionMatrix6;
+    }
+  | { readonly status: "unavailable"; readonly reason: string };
+/** Render-visit counter for one snapshot. Not a node id and not a command id. */
+export interface InspectionFrameOccurrence {
+  readonly id: number;
+  readonly layoutSpace: InspectionLayoutSpaceRef;
+  readonly targetResolution: readonly [number, number];
+  readonly designSize: readonly [number, number];
+  readonly scissor: InspectionBounds;
+  readonly parentSurface: InspectionOccurrenceRef;
+  readonly baseFrameTransform: InspectionFrameTransform;
+  readonly drawCameras: readonly InspectionFrameDrawCamera[];
+}
+export interface InspectionFrameDrawCamera {
+  readonly commandId: number;
+  readonly ownerNodeId: number;
+  readonly camera: InspectionUploadedCamera;
+}
+export type InspectionSurfaceKind =
+  | { readonly kind: "clip"; readonly shape: string }
+  | { readonly kind: "group" }
+  | { readonly kind: "composition" };
+/**
+ * One drawn tagged surface. `occurrenceId` is the evaluation command id, not a frame
+ * occurrence id. Projection is the existing trace resolver result.
+ */
+export interface InspectionSurfaceOccurrence {
+  readonly occurrenceId: number;
+  readonly occurrenceIdKind: "evaluation-command";
+  readonly ownerNodeId: number;
+  readonly path: string;
+  readonly surface: InspectionSurfaceKind;
+  readonly childResolution: readonly [number, number];
+  readonly parentResolution: readonly [number, number];
+  readonly uniform: InspectionSurfaceUniform;
+  readonly childScissor?: InspectionBounds;
+  readonly parentOccurrenceId?: number;
+  readonly parentFrameOccurrenceId: number;
+  readonly worldFrameOccurrenceId?: number;
+  readonly overlayFrameOccurrenceId?: number;
+  readonly projection: InspectionSurfaceProjectionMapping;
+}
+export interface InspectionSurfaceUniform {
+  readonly rect: readonly [number, number, number, number];
+  readonly transform: readonly [number, number, number, number];
+  readonly resolution: readonly [number, number];
+  readonly opacity: number;
+  readonly cameraX: readonly [number, number, number];
+  readonly cameraY: readonly [number, number, number];
+}
+export type InspectionSurfaceProjectionMapping =
+  | {
+      readonly status: "mapped";
+      readonly childPixelsToParent: InspectionMatrix6;
+      readonly parentToScene: InspectionMatrix6;
+      readonly childPixelsToScene: InspectionMatrix6;
+    }
+  | { readonly status: "unavailable"; readonly reason: string };
+export interface InspectionSpaceOwner {
+  readonly path: string;
+  readonly id?: string;
+  readonly inspectionId?: number;
+}
+export type InspectionSpaceDescriptor = {
+  readonly id: string;
+  readonly parent: InspectionSpaceParent;
+  readonly mapping: InspectionSpaceMapping;
+} & (
+  | {
+      readonly kind: InspectionLayoutSpaceKind;
+      readonly owner?: InspectionSpaceOwner;
+    }
+  | { readonly kind: "unavailable"; readonly reason: string }
+);
+export interface InspectionScene {
+  /** Qualified scope: `scene:<entry id>` or `overlay`. */
+  readonly scope: string;
+  readonly id: string;
+  readonly name: string;
+  /** Project, scene-local and progress clocks of this frame. */
+  readonly clock: InspectionClockFields;
+  readonly inspection: "available" | "unavailable";
+  /** Why inspection is unavailable. A raw Scene is never published as an empty tree. */
+  readonly unavailable?: string;
+  /** Scoped layout-space descriptors. Only a world with a recorded camera source is mapped. */
+  readonly spaces: readonly InspectionSpaceDescriptor[];
+  /**
+   * Absent when the provider did not collect; `[]` when collection found nothing. Frame ids
+   * are this snapshot's render counter. Not a GPU raster capture.
+   */
+  readonly frameOccurrences?: readonly InspectionFrameOccurrence[];
+  /**
+   * Absent when the provider did not collect; `[]` when collection found nothing.
+   * `occurrenceId` is an evaluation command id, not a frame occurrence id.
+   */
+  readonly surfaceOccurrences?: readonly InspectionSurfaceOccurrence[];
+  readonly tree?: InspectionLayoutNode;
+  readonly commands?: readonly InspectionCommand[];
+  /**
+   * Absent when the provider supplies no collection at all; `[]` when it collected and found
+   * nothing. Records are ideal projected top-level Box, Text, and Media draw quads in
+   * `scene-target-pixels` before transition projection. A Text quad is the texture/line box,
+   * not glyph ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or ink
+   * coverage. A tagged Clip, Group, or nested authoring Composition chain adds
+   * `surfaceProjection` for those quads: rect-only, Group-only, and Composition-only chains
+   * keep `rect-clipped-draw-quad`, and any non-rect Clip publishes `outer-clipped-draw-quad`.
+   * Composition adds no mask shape. That is still not mask pixels, fragment visibility,
+   * occlusion, clamp-to-edge sampling, or a GPU rounding guarantee. Output projection for this
+   * unit is `finalPaintRecords`. Project overlay uses the same pre-transition records in its own
+   * scope when the provider recorded paint. This is not completed G3.
+   */
+  readonly paintRecords?: readonly InspectionPaintRecord[];
+  /**
+   * Absent when the provider supplied no `paintRecords`, or when this unit cannot project the
+   * draw. `[]` means the collection was present and empty. Output-pixel scene contribution, not
+   * leaf opacity or pixel proof. Each record's bounds are the ideal projected recorded draw quad,
+   * not fragment coverage or the full clamp-to-edge sampling contribution.
+   */
+  readonly finalPaintRecords?: readonly FinalPaintRecord[];
+  /** Recorded compositor placement, not clipping or raster coverage. */
+  readonly outputLayoutMapping?: {
+    readonly matrix: InspectionMatrix6;
+    readonly selection: InspectionBounds;
+  };
+  readonly finalProjection: FinalProjection;
+  /** Legacy `EvaluatedFrame.warnings` strings, preserved verbatim and in order. */
+  readonly warnings?: readonly string[];
+}
+export type FinalProjection =
+  | { readonly status: "available"; readonly scope: "recorded-leaves" }
+  | { readonly status: "unavailable"; readonly reason: string };
+/**
+ * Output-pixel contribution of one recorded leaf. `sceneWeight` is the mix factor, not leaf opacity.
+ * `bounds` is the ideal projected recorded draw quad clipped to the shader-selected rectangle, not
+ * fragment coverage or the full sampling contribution. `accuracy: "exact-rectangle"` names only
+ * that ideal quad. Clamp-to-edge sampling can contribute outside it; this record does not include
+ * that raster coverage.
+ */
+export type FinalPaintRecord = {
+  readonly path: string;
+  readonly inspection?: NonNullable<InspectionPaintRecord["inspection"]>;
+  readonly paintRole: "content" | "background";
+  readonly space: "output-pixels";
+  readonly resolution: readonly [number, number];
+  readonly sceneWeight: number;
+} & (
+  | {
+      readonly kind: "box";
+      readonly accuracy: "exact-rectangle" | "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance: "projected-box-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
+    }
+  | {
+      readonly kind: "text";
+      readonly accuracy: "exact-rectangle" | "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance: "projected-text-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
+    }
+  | {
+      readonly kind: "media";
+      readonly accuracy: "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance:
+        | "projected-image-draw-quad"
+        | "projected-video-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
+    }
+  | {
+      readonly kind: string;
+      readonly accuracy: "unavailable";
+      readonly unsupported: string;
+      readonly geometryVisible: false;
+    }
+);
+/** Matching node of an exact `--target` filter, with its ancestor context retained. */
+export interface InspectionTargetResult {
+  readonly scope: string;
+  readonly id: string;
+  readonly path: string;
+  /** Total matches in the scope; more than one is rejected before this is published. */
+  readonly matches: number;
+}
+export interface InspectionCapability {
+  /** Snapshot of the last completed frame; no pixel readback. */
+  readonly inspection: "structural-snapshot";
+  readonly geometry: {
+    /** Placed node rectangles from `evaluateView`, in that scene's layout space. */
+    readonly layout: "exact-rectangle";
+    /**
+     * `partial`: top-level Box, Text, and Media draw quads are recorded, as their ideal projection
+     * in `scene-target-pixels` before transition. A Text quad is the texture/line box, not glyph
+     * ink. A Media quad is the fitted texture rectangle, not alpha, crop-UV, or pixel coverage.
+     * Nothing here is fragment coverage, occlusion, clamp-to-edge sampling, or a GPU rounding
+     * guarantee. Clip, Group, and nested authoring Composition leaves record an outer draw quad,
+     * not mask pixels. Composition is not a World or Overlay boundary. Project overlay is its own
+     * scope when recorded; that is not a composition overlay. Built-in output is `finalPaintRecords`.
+     * Custom transition output stays unavailable. G3 is not complete. This is not a G4 API.
+     */
+    readonly paint: "partial";
+  };
+  readonly transitions: {
+    /** `partial` is recorded-leaf output quads, including project-overlay identity. Not coverage, occlusion, or clamp-to-edge. Custom scene output stays unavailable. Not G3-complete and not G4. */
+    readonly projection: "partial" | "unavailable";
+    readonly reason: string;
+  };
+}
+export interface InspectionDocument {
+  readonly schemaVersion: number;
+  readonly packageVersion: string;
+  readonly project: {
+    readonly name: string;
+    readonly duration: number;
+    readonly resolution: readonly [number, number];
+  };
+  /** `requested` is the exact argument; `effective` is the composition time it evaluated at. */
+  readonly time: { readonly requested: number; readonly effective: number };
+  readonly capability: InspectionCapability;
+  readonly scenes: readonly InspectionScene[];
+  readonly diagnostics: readonly InspectionDiagnostic[];
+  readonly target?: InspectionTargetResult;
+}
+export interface InspectionTarget {
+  readonly scope: string;
+  readonly id: string;
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+/**
+ * Describe a rejected value for an error message. `String(value)` runs an object's
+ * `Symbol.toPrimitive`/`toString`, which is a non-whitelisted read of untrusted metadata,
+ * so non-primitive values are named by type instead.
+ */
+function describeValue(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "object") return "an object";
+  if (typeof value === "function") return "a function";
+  if (typeof value === "symbol") return "a symbol";
+  return String(value);
+}
+/** `Array.isArray` reads the prototype slot, which a revoked proxy answers by throwing. */
+function isArray(value: unknown): value is readonly unknown[] {
+  return reading(() => Array.isArray(value));
+}
+/** Read one whitelisted property; a throwing getter reports a read error, not a crash. */
+function read(target: unknown, key: string, where: string): unknown {
+  if (typeof target !== "object" || target === null)
+    throw new InspectionSerializationError(
+      `${where} must be an object, received ${target === null ? "null" : typeof target}.`,
+    );
+  try {
+    return (target as Record<string, unknown>)[key];
+  } catch (error) {
+    throw new InspectionReadError(
+      `${where}.${key} could not be read: ${describe(error)}`,
+    );
+  }
+}
+/**
+ * Run a task with JS built-ins that read scene metadata replaced. Scene arrays and
+ * objects may be proxies whose `length`, index or iterator throws; every such access
+ * must surface as {@link InspectionReadError} so one hostile scope degrades to
+ * unavailable instead of failing the whole inspection.
+ */
+function reading<T>(task: () => T): T {
+  try {
+    return task();
+  } catch (error) {
+    if (
+      error instanceof InspectionReadError ||
+      error instanceof InspectionSerializationError
+    )
+      throw error;
+    throw new InspectionReadError(
+      `scene metadata could not be read: ${describe(error)}`,
+    );
+  }
+}
+export class InspectionBudget {
+  readonly limit: number;
+  private currentBytes = 0;
+
+  constructor(limit = MAX_INSPECTION_BYTES) {
+    this.limit = limit;
+  }
+
+  get bytes(): number {
+    return this.currentBytes;
+  }
+
+  charge(amount: number): void {
+    this.currentBytes += amount;
+    if (this.currentBytes > this.limit) {
+      throw overBudget(this.currentBytes, this.limit);
+    }
+  }
+
+  chargeText(text: string): void {
+    let cost = 2; // Quotes
+    for (let index = 0; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (
+        code === 0x22 ||
+        code === 0x5c ||
+        (code >= 8 && code <= 10) ||
+        code === 12 ||
+        code === 13
+      ) {
+        cost += 2;
+      } else if (code < 0x20) {
+        cost += 6;
+      } else if (code < 0x80) {
+        cost += 1;
+      } else if (code < 0x800) {
+        cost += 2;
+      } else if (code >= 0xd800 && code <= 0xdbff) {
+        const low = text.charCodeAt(index + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) {
+          cost += 4;
+          index++;
+        } else {
+          cost += 6;
+        }
+      } else if (code >= 0xdc00 && code <= 0xdfff) {
+        cost += 6;
+      } else {
+        cost += 3;
+      }
+    }
+    this.charge(cost);
+  }
+}
+
+/**
+ * Element count without trusting an array length getter. A hostile `length` reports a
+ * read error; a non-integer or negative one is a malformed value.
+ */
+function size(value: readonly unknown[], where: string): number {
+  if (!isArray(value))
+    throw new InspectionSerializationError(
+      `${where} must be an array, received ${typeof value}.`,
+    );
+  const length = reading(() => value.length);
+  if (!Number.isSafeInteger(length) || length < 0)
+    throw new InspectionSerializationError(
+      `${where}.length must be a non-negative integer, received ${String(length)}.`,
+    );
+  return length;
+}
+/** Visit each element through one read boundary, including the index and iterator access. */
+function each<T>(
+  value: readonly unknown[],
+  where: string,
+  visit: (entry: unknown, index: number) => T,
+  budget?: InspectionBudget,
+): T[] {
+  const count = size(value, where);
+  const out: T[] = [];
+  for (let index = 0; index < count; index++) {
+    budget?.charge(1);
+    out.push(reading(() => visit(value[index], index)));
+  }
+  return out;
+}
+function text(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): string {
+  if (typeof value !== "string")
+    throw new InspectionSerializationError(
+      `${where} must be a string, received ${typeof value}.`,
+    );
+  budget?.chargeText(value);
+  return value;
+}
+function finite(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value))
+    throw new InspectionSerializationError(
+      `${where} must be a finite number, received ${describeValue(value)}.`,
+    );
+  budget?.charge(String(value).length);
+  return value;
+}
+function list(value: unknown, where: string): readonly unknown[] {
+  if (!isArray(value))
+    throw new InspectionSerializationError(
+      `${where} must be an array, received ${typeof value}.`,
+    );
+  return value;
+}
+function bounds(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): InspectionBounds {
+  // `{"x":,"y":,"width":,"height":}` with the two braces, excluding the values.
+  budget?.charge(30);
+  return {
+    x: finite(read(value, "x", where), `${where}.x`, budget),
+    y: finite(read(value, "y", where), `${where}.y`, budget),
+    width: finite(read(value, "width", where), `${where}.width`, budget),
+    height: finite(read(value, "height", where), `${where}.height`, budget),
+  };
+}
+function inspectionSize(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): InspectionSize {
+  budget?.charge(15);
+  return {
+    width: finite(read(value, "width", where), `${where}.width`, budget),
+    height: finite(read(value, "height", where), `${where}.height`, budget),
+  };
+}
+function transform(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): readonly number[] {
+  const count = size(list(value, where), where);
+  if (count !== 4)
+    throw new InspectionSerializationError(
+      `${where} must have 4 entries, received ${count}.`,
+    );
+  budget?.charge(5);
+  return each(
+    list(value, where),
+    where,
+    (entry, index) => finite(entry, `${where}[${index}]`, budget),
+    budget,
+  );
+}
+/** Exact enum member; any other value would publish a role or accuracy the schema cannot name. */
+function oneOf<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  where: string,
+): T {
+  if (
+    typeof value === "string" &&
+    (allowed as readonly string[]).includes(value)
+  )
+    return value as T;
+  throw new InspectionSerializationError(
+    `${where} must be ${allowed.map((entry) => `"${entry}"`).join(" or ")}, received ${describeValue(value)}.`,
+  );
+}
+/** Inspection IDs come from one evaluation-local counter, so they are safe non-negative integers. */
+function safeId(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    throw new InspectionSerializationError(
+      `${where} must be a non-negative safe integer, received ${describeValue(value)}.`,
+    );
+  budget?.charge(String(value).length);
+  return value;
+}
+/** `scene-target-pixels` resolution tuple: exactly two finite numbers. */
+function resolutionTuple(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): readonly [number, number] {
+  const entries = list(value, where);
+  const count = size(entries, where);
+  if (count !== 2)
+    throw new InspectionSerializationError(
+      `${where} must have 2 entries, received ${count}.`,
+    );
+  budget?.charge(3);
+  return [
+    finite(
+      reading(() => entries[0]),
+      `${where}[0]`,
+      budget,
+    ),
+    finite(
+      reading(() => entries[1]),
+      `${where}[1]`,
+      budget,
+    ),
+  ];
+}
+/**
+ * Structural fields one target scan read from a raw node, so the targeted construction reuses
+ * them instead of running the getters a second time. Values stay raw: validation and charging
+ * happen at the same place as an ordinary read.
+ */
+interface RawNodeSnapshot {
+  readonly id: unknown;
+  readonly children: unknown;
+  /** 0 when `children` is not an array, so the scan reads a length only where one exists. */
+  readonly childCount: number;
+  /** Every index the scan read, in order; construction never touches the array again. */
+  readonly childValues: unknown[];
+  /** True when the scan read `inspectionId`, including when the value was `undefined`. */
+  readonly inspectionIdRead: boolean;
+  readonly inspectionId: unknown;
+  /** Raw `path`/`space` of the targeted node only; every other node reads them once on construction. */
+  readonly path: unknown;
+  readonly space: unknown;
+  readonly matched: boolean;
+}
+function snapshotFor(
+  snapshots: WeakMap<object, RawNodeSnapshot> | undefined,
+  value: unknown,
+): RawNodeSnapshot | undefined {
+  return typeof value === "object" && value !== null
+    ? snapshots?.get(value)
+    : undefined;
+}
+function readNodeHeader(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+  visited?: Set<unknown>,
+  snapshot?: RawNodeSnapshot,
+) {
+  if (typeof value === "object" && value !== null) {
+    if (visited?.has(value)) {
+      throw new InspectionSerializationError(
+        `Layout tree ${where} contains a cycle.`,
+      );
+    }
+    visited?.add(value);
+  }
+  budget?.charge(47);
+  const childrenRaw = list(
+    snapshot === undefined ? read(value, "children", where) : snapshot.children,
+    `${where}.children`,
+  );
+  const id = snapshot === undefined ? read(value, "id", where) : snapshot.id;
+  const space =
+    snapshot?.matched === true ? snapshot.space : read(value, "space", where);
+  const pathVal = text(
+    snapshot?.matched === true ? snapshot.path : read(value, "path", where),
+    `${where}.path`,
+    budget,
+  );
+  const kindVal = text(read(value, "kind", where), `${where}.kind`, budget);
+  const idVal = id === undefined ? undefined : text(id, `${where}.id`, budget);
+  if (idVal !== undefined) budget?.charge(6);
+  const spaceVal =
+    space === undefined ? undefined : text(space, `${where}.space`, budget);
+  if (spaceVal !== undefined) budget?.charge(9);
+  const rawWarningPrefix = read(value, "warningPrefix", where);
+  let warningPrefixVal: string | undefined;
+  if (rawWarningPrefix !== undefined) {
+    warningPrefixVal = text(rawWarningPrefix, `${where}.warningPrefix`, budget);
+  }
+  const rawOfferedSize = read(value, "offeredSize", where);
+  let offeredSizeVal: InspectionSize | undefined;
+  if (rawOfferedSize !== undefined) {
+    offeredSizeVal = inspectionSize(
+      rawOfferedSize,
+      `${where}.offeredSize`,
+      budget,
+    );
+  }
+  const rawAllocatedSlot = read(value, "allocatedSlot", where);
+  let allocatedSlotVal: InspectionBounds | undefined;
+  if (rawAllocatedSlot !== undefined) {
+    allocatedSlotVal = bounds(
+      rawAllocatedSlot,
+      `${where}.allocatedSlot`,
+      budget,
+    );
+  }
+  const rawSafeBounds = read(value, "safeBounds", where);
+  if (rawSafeBounds !== undefined) budget?.charge(14);
+  const safeBoundsVal = rawSafeBounds === undefined ? undefined : bounds(rawSafeBounds, `${where}.safeBounds`, budget);
+  const rawContentBounds = read(value, "contentBounds", where);
+  let contentBoundsVal: InspectionBounds | undefined;
+  if (rawContentBounds !== undefined) {
+    contentBoundsVal = bounds(
+      rawContentBounds,
+      `${where}.contentBounds`,
+      budget,
+    );
+  }
+  const rawInspectionId =
+    snapshot?.inspectionIdRead === true
+      ? snapshot.inspectionId
+      : read(value, "inspectionId", where);
+  let inspectionIdVal: number | undefined;
+  if (rawInspectionId !== undefined) {
+    budget?.charge(LAYOUT_INSPECTION_ID_KEY);
+    inspectionIdVal = safeId(rawInspectionId, `${where}.inspectionId`, budget);
+  }
+  const boundsVal = bounds(
+    read(value, "bounds", where),
+    `${where}.bounds`,
+    budget,
+  );
+  const transformVal = transform(
+    read(value, "transform", where),
+    `${where}.transform`,
+    budget,
+  );
+
+  return {
+    value,
+    where,
+    childrenRaw,
+    pathVal,
+    kindVal,
+    idVal,
+    spaceVal,
+    warningPrefixVal,
+    offeredSizeVal,
+    allocatedSlotVal,
+    contentBoundsVal,
+    safeBoundsVal,
+    inspectionIdVal,
+    boundsVal,
+    transformVal,
+  };
+}
+
+/** Construct an InspectionLayoutNode and its subtree iteratively with cycle detection. */
+function constructLayoutTree(
+  rootValue: unknown,
+  rootWhere: string,
+  budget?: InspectionBudget,
+  snapshots?: WeakMap<object, RawNodeSnapshot>,
+): InspectionLayoutNode {
+  const visited = new Set<unknown>();
+
+  interface StackEntry {
+    header: ReturnType<typeof readNodeHeader>;
+    /** Snapshotted structural fields of a target scan; absent on the untargeted path. */
+    snapshot: RawNodeSnapshot | undefined;
+    childIndex: number;
+    childrenBuilt: InspectionLayoutNode[];
+  }
+
+  const rootSnapshot = snapshotFor(snapshots, rootValue);
+  const stack: StackEntry[] = [
+    {
+      header: readNodeHeader(
+        rootValue,
+        rootWhere,
+        budget,
+        visited,
+        rootSnapshot,
+      ),
+      snapshot: rootSnapshot,
+      childIndex: 0,
+      childrenBuilt: [],
+    },
+  ];
+
+  while (stack.length > 0) {
+    const top = stack[stack.length - 1];
+    const childCount =
+      top.snapshot === undefined
+        ? top.header.childrenRaw.length
+        : top.snapshot.childCount;
+
+    if (top.childIndex < childCount) {
+      const idx = top.childIndex++;
+      budget?.charge(1);
+      const childRaw =
+        top.snapshot === undefined
+          ? reading(() => top.header.childrenRaw[idx])
+          : top.snapshot.childValues[idx];
+      const childWhere = `${top.header.where}.children[${idx}]`;
+      const childSnapshot = snapshotFor(snapshots, childRaw);
+      stack.push({
+        header: readNodeHeader(
+          childRaw,
+          childWhere,
+          budget,
+          visited,
+          childSnapshot,
+        ),
+        snapshot: childSnapshot,
+        childIndex: 0,
+        childrenBuilt: [],
+      });
+    } else {
+      stack.pop();
+      const node: InspectionLayoutNode = {
+        path: top.header.pathVal,
+        kind: top.header.kindVal,
+        ...(top.header.idVal === undefined ? {} : { id: top.header.idVal }),
+        ...(top.header.spaceVal === undefined
+          ? {}
+          : { space: top.header.spaceVal }),
+        ...(top.header.offeredSizeVal === undefined
+          ? {}
+          : { offeredSize: top.header.offeredSizeVal }),
+        ...(top.header.allocatedSlotVal === undefined
+          ? {}
+          : { allocatedSlot: top.header.allocatedSlotVal }),
+        ...(top.header.safeBoundsVal === undefined ? {} : { safeBounds: top.header.safeBoundsVal }),
+        ...(top.header.contentBoundsVal === undefined
+          ? {}
+          : { contentBounds: top.header.contentBoundsVal }),
+        ...(top.header.inspectionIdVal === undefined
+          ? {}
+          : { inspectionId: top.header.inspectionIdVal }),
+        bounds: top.header.boundsVal,
+        transform: top.header.transformVal,
+        children: top.childrenBuilt,
+      };
+      if (top.header.warningPrefixVal) {
+        Object.defineProperty(node, "warningPrefix", {
+          value: top.header.warningPrefixVal,
+          enumerable: false,
+          configurable: true,
+        });
+      }
+
+      if (stack.length > 0) {
+        stack[stack.length - 1].childrenBuilt.push(node);
+      } else {
+        return node;
+      }
+    }
+  }
+
+  throw new InspectionSerializationError("Failed to construct layout tree.");
+}
+
+/** One raw node on the scan stack. Matches keep this link instead of copying ancestors. */
+interface RawScanFrame {
+  readonly node: object;
+  readonly parent: RawScanFrame | undefined;
+}
+interface RawTargetMatch {
+  node: unknown;
+  /** Parent chain is shared through `frame.parent`; copied only for the unique match. */
+  frame: RawScanFrame;
+  path: string;
+  space?: string;
+}
+
+interface RawTargetScan {
+  matches: RawTargetMatch[];
+  /** Structural fields construction would otherwise read again, keyed by raw node object. */
+  snapshots: WeakMap<object, RawNodeSnapshot>;
+  /** Every `inspectionId` in the tree; filled only when a paint record needs owner identity. */
+  ownerCounts: Map<number, number>;
+}
+
+function overTargetWork(): InspectionSerializationError {
+  return new InspectionSerializationError(
+    `Layout tree target scan is over its ${MAX_RAW_TARGET_WORK}-unit work limit. Discarded branches spend work units without publishing bytes, so reduce the targeted scope's node count and retry.`,
+  );
+}
+function overProvenanceWork(): InspectionSerializationError {
+  return new InspectionSerializationError(
+    `Layout space provenance is over its ${MAX_RAW_TARGET_WORK}-unit work limit. Reduce the number of space provenance records and retry.`,
+  );
+}
+/**
+ * One bounded pass over the raw source tree: locate the target, snapshot the structural fields
+ * its construction needs, and count owner identities when a paint record must be attributed.
+ * Work units bound the traversal itself; they are unrelated to the output byte budget.
+ */
+function scanRawTargetTree(
+  root: unknown,
+  targetId: string,
+  indexesOwners: boolean,
+): RawTargetScan {
+  const matches: RawTargetMatch[] = [];
+  const snapshots = new WeakMap<object, RawNodeSnapshot>();
+  const ownerCounts = new Map<number, number>();
+  const visited = new Set<unknown>();
+  let work = 0;
+
+  interface ScanFrame {
+    node: object;
+    snapshot: RawNodeSnapshot;
+    parent: ScanFrame | undefined;
+    nextIndex: number;
+  }
+
+  const stack: ScanFrame[] = [];
+
+  const enter = (value: unknown, parent: ScanFrame | undefined): void => {
+    work += 1;
+    if (work > MAX_RAW_TARGET_WORK) throw overTargetWork();
+    if (typeof value !== "object" || value === null) return;
+    if (visited.has(value))
+      throw new InspectionSerializationError("Layout tree contains a cycle.");
+    visited.add(value);
+
+    const node = value as Record<string, unknown>;
+    const id = reading(() => node.id);
+    const matched = typeof id === "string" && id === targetId;
+    const rawPath = matched ? reading(() => node.path) : undefined;
+    const rawSpace = matched ? reading(() => node.space) : undefined;
+    const rawChildren = reading(() => node.children);
+    const childCount = isArray(rawChildren)
+      ? size(rawChildren, "layout tree.children")
+      : 0;
+    const inspectionId = indexesOwners
+      ? reading(() => node.inspectionId)
+      : undefined;
+    if (inspectionId !== undefined) {
+      const ownerId = safeId(inspectionId, "layout tree.inspectionId");
+      ownerCounts.set(ownerId, (ownerCounts.get(ownerId) ?? 0) + 1);
+    }
+    const snapshot: RawNodeSnapshot = {
+      id,
+      children: rawChildren,
+      childCount,
+      childValues: [],
+      inspectionIdRead: indexesOwners,
+      inspectionId,
+      path: rawPath,
+      space: rawSpace,
+      matched,
+    };
+    snapshots.set(value, snapshot);
+    const frame: ScanFrame = { node: value, snapshot, parent, nextIndex: 0 };
+    if (matched) {
+      matches.push({
+        node: value,
+        frame,
+        path: reading(() => String(rawPath ?? "")),
+        space: reading(() =>
+          typeof rawSpace === "string" ? rawSpace : undefined,
+        ),
+      });
+    }
+    stack.push(frame);
+  };
+
+  enter(root, undefined);
+  while (stack.length > 0) {
+    const top = stack[stack.length - 1];
+    if (top.nextIndex >= top.snapshot.childCount) {
+      stack.pop();
+      continue;
+    }
+    const index = top.nextIndex++;
+    work += 1;
+    if (work > MAX_RAW_TARGET_WORK) throw overTargetWork();
+    const children = top.snapshot.children as readonly unknown[];
+    const child = reading(() => children[index]);
+    top.snapshot.childValues.push(child);
+    enter(child, top);
+  }
+
+  return { matches, snapshots, ownerCounts };
+}
+
+/** Construct only the target node subtree and its direct ancestor chain, skipping discarded siblings. */
+function constructTargetedLayoutTree(
+  match: RawTargetMatch,
+  scope: string,
+  budget?: InspectionBudget,
+  snapshots?: WeakMap<object, RawNodeSnapshot>,
+): InspectionLayoutNode {
+  let currentChild = constructLayoutTree(
+    match.node,
+    `${scope}.tree.${match.path}`,
+    budget,
+    snapshots,
+  );
+
+  // One chain, and only after the scan has proved this is the only match.
+  const ancestors: unknown[] = [];
+  for (
+    let cursor = match.frame.parent;
+    cursor !== undefined;
+    cursor = cursor.parent
+  )
+    ancestors.push(cursor.node);
+  ancestors.reverse();
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    const rawAncestor = ancestors[i];
+    const where = `${scope}.tree.ancestor[${i}]`;
+    const header = readNodeHeader(
+      rawAncestor,
+      where,
+      budget,
+      undefined,
+      snapshotFor(snapshots, rawAncestor),
+    );
+    currentChild = {
+      path: header.pathVal,
+      kind: header.kindVal,
+      ...(header.idVal === undefined ? {} : { id: header.idVal }),
+      ...(header.spaceVal === undefined ? {} : { space: header.spaceVal }),
+      ...(header.offeredSizeVal === undefined
+        ? {}
+        : { offeredSize: header.offeredSizeVal }),
+      ...(header.allocatedSlotVal === undefined
+        ? {}
+        : { allocatedSlot: header.allocatedSlotVal }),
+      ...(header.safeBoundsVal === undefined ? {} : { safeBounds: header.safeBoundsVal }),
+      ...(header.contentBoundsVal === undefined
+        ? {}
+        : { contentBounds: header.contentBoundsVal }),
+      ...(header.inspectionIdVal === undefined
+        ? {}
+        : { inspectionId: header.inspectionIdVal }),
+      bounds: header.boundsVal,
+      transform: header.transformVal,
+      children: [currentChild],
+    };
+    if (header.warningPrefixVal) {
+      Object.defineProperty(currentChild, "warningPrefix", {
+        value: header.warningPrefixVal,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+  }
+
+  return currentChild;
+}
+
+/**
+ * Safely check if a warning attributes to a retained node without allocating unbounded
+ * slice strings on huge warning messages. Preserves JS/Unicode whitespace semantics
+ * without arbitrary cutoff length.
+ */
+function checkWarningAttribution(
+  warning: string,
+  retainedPaths: Set<string>,
+  maxPathLen: number,
+): boolean {
+  let start = 0;
+  while (start < warning.length && /\s/.test(warning[start])) {
+    start++;
+  }
+
+  const colonIndex = warning.indexOf(":", start);
+  if (colonIndex === -1) {
+    return true;
+  }
+
+  let end = colonIndex;
+  while (end > start && /\s/.test(warning[end - 1])) {
+    end--;
+  }
+
+  if (start === end) {
+    return true;
+  }
+
+  const pathLength = end - start;
+  if (pathLength > maxPathLen) {
+    return false;
+  }
+
+  const path = warning.slice(start, end);
+  return retainedPaths.has(path);
+}
+
+/** Collect retained paths and coordinate spaces iteratively without call stack limits. */
+function collectRetained(root: InspectionLayoutNode): {
+  retained: Map<string, Set<string>>;
+  retainedAttributionPaths: Set<string>;
+  maxRetainedPathLength: number;
+  /** Inspection IDs the retained nodes carry, for attributing a paint record to its owner. */
+  ownerIds: Set<number>;
+} {
+  const retained = new Map<string, Set<string>>();
+  const retainedAttributionPaths = new Set<string>();
+  const ownerIds = new Set<number>();
+  let maxRetainedPathLength = 0;
+
+  const addAttribution = (p: string) => {
+    retainedAttributionPaths.add(p);
+    if (p.length > maxRetainedPathLength) maxRetainedPathLength = p.length;
+  };
+
+  const stack: { node: InspectionLayoutNode; inherited: string }[] = [
+    { node: root, inherited: "layout" },
+  ];
+
+  while (stack.length > 0) {
+    const { node, inherited } = stack.pop()!;
+    const nodeSpace = node.space ?? inherited;
+    let paths = retained.get(nodeSpace);
+    if (!paths) {
+      paths = new Set<string>();
+      retained.set(nodeSpace, paths);
+    }
+    paths.add(node.path);
+    if (node.inspectionId !== undefined) ownerIds.add(node.inspectionId);
+
+    addAttribution(node.path);
+    if (nodeSpace !== "layout") {
+      addAttribution(`${nodeSpace}/${node.path}`);
+    }
+    const prefix = (node as { warningPrefix?: string }).warningPrefix;
+    if (prefix) {
+      addAttribution(`${prefix}/${node.path}`);
+    }
+
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push({ node: node.children[i], inherited: nodeSpace });
+    }
+  }
+
+  return {
+    retained,
+    retainedAttributionPaths,
+    maxRetainedPathLength,
+    ownerIds,
+  };
+}
+/** How many nodes of a constructed scope tree carry each wanted inspection ID. */
+function countOwnerIds(
+  root: InspectionLayoutNode,
+  wanted: ReadonlySet<number>,
+): Map<number, number> {
+  const counts = new Map<number, number>();
+  const stack: InspectionLayoutNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    const id = node.inspectionId;
+    if (id !== undefined && wanted.has(id))
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push(node.children[i]);
+    }
+  }
+  return counts;
+}
+function command(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): InspectionCommand {
+  budget?.charge(45);
+  const sharedId = read(value, "sharedId", where);
+  const matchId = read(value, "matchId", where);
+  const correctionIds = read(value, "correctionIds", where);
+  const paintRole = read(value, "paintRole", where);
+  const space = read(value, "space", where);
+  const kindVal = text(read(value, "kind", where), `${where}.kind`, budget);
+  const pathVal = text(read(value, "path", where), `${where}.path`, budget);
+  const spaceVal =
+    space === undefined ? undefined : text(space, `${where}.space`, budget);
+  if (spaceVal !== undefined) budget?.charge(9);
+  const sharedIdVal =
+    sharedId === undefined
+      ? undefined
+      : text(sharedId, `${where}.sharedId`, budget);
+  if (sharedIdVal !== undefined) budget?.charge(12);
+  const matchIdVal =
+    matchId === undefined
+      ? undefined
+      : text(matchId, `${where}.matchId`, budget);
+  if (matchIdVal !== undefined) budget?.charge(12);
+  const correctionIdsVal =
+    correctionIds === undefined
+      ? undefined
+      : each(
+          list(correctionIds, `${where}.correctionIds`),
+          `${where}.correctionIds`,
+          (entry, index) =>
+            text(entry, `${where}.correctionIds[${index}]`, budget),
+          budget,
+        );
+  const paintRoleVal =
+    paintRole === undefined
+      ? undefined
+      : text(paintRole, `${where}.paintRole`, budget);
+  if (paintRoleVal !== undefined) budget?.charge(12);
+  const rawInspection = read(value, "inspection", where);
+  let inspectionVal: InspectionCommand["inspection"];
+  if (rawInspection !== undefined) {
+    budget?.charge(PAINT_INSPECTION_KEY);
+    inspectionVal = paintIdentity(rawInspection, `${where}.inspection`, budget);
+  }
+  return {
+    kind: kindVal,
+    path: pathVal,
+    ...(spaceVal === undefined ? {} : { space: spaceVal }),
+    bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+    transform: transform(
+      read(value, "transform", where),
+      `${where}.transform`,
+      budget,
+    ),
+    opacity: finite(read(value, "opacity", where), `${where}.opacity`, budget),
+    ...(sharedIdVal === undefined ? {} : { sharedId: sharedIdVal }),
+    ...(matchIdVal === undefined ? {} : { matchId: matchIdVal }),
+    ...(correctionIdsVal === undefined
+      ? {}
+      : { correctionIds: correctionIdsVal }),
+    ...(paintRoleVal === undefined ? {} : { paintRole: paintRoleVal }),
+    ...(inspectionVal === undefined ? {} : { inspection: inspectionVal }),
+  };
+}
+/**
+ * Whitelisted form of one `PaintRecord` (`src/authoring/renderer.ts`): the published metadata,
+ * never the record's owner objects. `bounds` is the ideal projected draw quad in scene-target
+ * pixels — Box fill quad, Text texture/line box, or Media fitted texture quad, not glyph ink,
+ * media alpha, crop-UV coverage, pixel visibility, or GPU rounding — and is absent exactly when
+ * `accuracy` is `unavailable`. Media accuracy is only `conservative`.
+ */
+export type InspectionPaintRecord = {
+  readonly path: string;
+  /** Present only when the frame was evaluated with inspection enabled. */
+  readonly inspection?: {
+    readonly id: number;
+    readonly nodeId: number;
+    readonly role: "content" | "background" | "surface";
+  };
+  readonly paintRole: "content" | "background";
+  readonly space: "scene-target-pixels";
+  readonly resolution: readonly [number, number];
+} & (
+  | {
+      readonly kind: "box";
+      readonly accuracy: "exact-rectangle" | "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance: "projected-box-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
+    }
+  | {
+      readonly kind: "text";
+      readonly accuracy: "exact-rectangle" | "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance: "projected-text-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
+    }
+  | {
+      readonly kind: "media";
+      readonly accuracy: "conservative";
+      readonly bounds: InspectionBounds;
+      readonly provenance:
+        | "projected-image-draw-quad"
+        | "projected-video-draw-quad";
+      readonly geometryVisible: boolean;
+      readonly surfaceProjection?: InspectionSurfaceProjection;
+    }
+  | {
+      readonly kind: string;
+      readonly accuracy: "unavailable";
+      readonly unsupported: string;
+    }
+);
+/** JSON structure of a paint record minus its values, charged before the first field is read. */
+const PAINT_RECORD_STRUCTURE = 65;
+/** `,"inspection":` key in the outer record, charged when the field is present. */
+const PAINT_INSPECTION_KEY = 14;
+/** Braces and keys of the identity object, excluding its values. */
+const PAINT_IDENTITY_STRUCTURE = 25;
+/** `,"bounds":`, `,"provenance":` and `,"geometryVisible":`, excluding their values. */
+const PAINT_GEOMETRY_STRUCTURE = 43;
+/** `,"unsupported":`, excluding its value. */
+const PAINT_UNAVAILABLE_STRUCTURE = 15;
+/** `,"surfaceProjection":` on a geometry record, charged only when the field is present. */
+const SURFACE_PROJECTION_KEY = 21;
+/** `{"boundaries":[],"coverage":""}` excluding the coverage token and boundary items. */
+const SURFACE_PROJECTION_BODY = 31;
+/** `{"occurrenceId":,"kind":}` excluding the id digits and the quoted kind. */
+const SURFACE_BOUNDARY_ITEM = 25;
+/** `,"shape":""` excluding the shape token. Charged before the shape is read. */
+const SURFACE_BOUNDARY_SHAPE = 11;
+const SURFACE_COVERAGES = [
+  "rect-clipped-draw-quad",
+  "outer-clipped-draw-quad",
+] as const;
+const SURFACE_KINDS = ["group", "clip", "composition"] as const;
+const SURFACE_SHAPES = ["rect", "rounded", "circle", "path", "image"] as const;
+export type InspectionSurfaceBoundary =
+  | { readonly occurrenceId: number; readonly kind: "group" }
+  | { readonly occurrenceId: number; readonly kind: "composition" }
+  | {
+      readonly occurrenceId: number;
+      readonly kind: "clip";
+      readonly shape: (typeof SURFACE_SHAPES)[number];
+    };
+export interface InspectionSurfaceProjection {
+  /** Leaf target first. Group and Composition boundaries carry no mask shape. */
+  readonly boundaries: readonly InspectionSurfaceBoundary[];
+  readonly coverage: (typeof SURFACE_COVERAGES)[number];
+}
+function surfaceProjection(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): InspectionSurfaceProjection {
+  budget?.charge(SURFACE_PROJECTION_KEY + SURFACE_PROJECTION_BODY);
+  const coverage = oneOf(
+    read(value, "coverage", where),
+    SURFACE_COVERAGES,
+    `${where}.coverage`,
+  );
+  budget?.charge(coverage.length);
+  const rawBoundaries = list(
+    read(value, "boundaries", where),
+    `${where}.boundaries`,
+  );
+  const count = size(rawBoundaries, `${where}.boundaries`);
+  if (count < 1)
+    throw new InspectionSerializationError(
+      `${where}.boundaries must have at least one surface.`,
+    );
+  const boundaries: InspectionSurfaceBoundary[] = [];
+  let nonRect = false;
+  for (let index = 0; index < count; index++) {
+    if (index > 0) budget?.charge(1);
+    budget?.charge(SURFACE_BOUNDARY_ITEM);
+    const entry = reading(() => rawBoundaries[index]);
+    const itemWhere = `${where}.boundaries[${index}]`;
+    const occurrenceId = safeId(
+      read(entry, "occurrenceId", itemWhere),
+      `${itemWhere}.occurrenceId`,
+      budget,
+    );
+    const kind = oneOf(
+      read(entry, "kind", itemWhere),
+      SURFACE_KINDS,
+      `${itemWhere}.kind`,
+    );
+    budget?.charge(kind.length + 2);
+    if (kind === "group" || kind === "composition") {
+      if (read(entry, "shape", itemWhere) !== undefined)
+        throw new InspectionSerializationError(
+          `${itemWhere}.shape must be absent when kind is "${kind}".`,
+        );
+      boundaries.push({ occurrenceId, kind });
+      continue;
+    }
+    budget?.charge(SURFACE_BOUNDARY_SHAPE);
+    const shape = oneOf(
+      read(entry, "shape", itemWhere),
+      SURFACE_SHAPES,
+      `${itemWhere}.shape`,
+    );
+    budget?.charge(shape.length);
+    if (shape !== "rect") nonRect = true;
+    boundaries.push({ occurrenceId, kind, shape });
+  }
+  if (nonRect !== (coverage === "outer-clipped-draw-quad"))
+    throw new InspectionSerializationError(
+      nonRect
+        ? `${where}.coverage must be "outer-clipped-draw-quad" when a clip shape is not "rect".`
+        : `${where}.coverage must be "rect-clipped-draw-quad" when every clip shape is "rect".`,
+    );
+  return { boundaries, coverage };
+}
+function paintIdentity(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): NonNullable<InspectionPaintRecord["inspection"]> {
+  budget?.charge(PAINT_IDENTITY_STRUCTURE);
+  const idVal = safeId(read(value, "id", where), `${where}.id`, budget);
+  const nodeIdVal = safeId(
+    read(value, "nodeId", where),
+    `${where}.nodeId`,
+    budget,
+  );
+  const roleVal = oneOf(
+    read(value, "role", where),
+    ["content", "background", "surface"] as const,
+    `${where}.role`,
+  );
+  budget?.charge(roleVal.length + 2);
+  return { id: idVal, nodeId: nodeIdVal, role: roleVal };
+}
+/**
+ * Read one raw paint record through an explicit whitelist. Every other field stays unread, so
+ * an unrelated getter is never touched, and an `unavailable` record publishes `unsupported`
+ * without reading or claiming bounds.
+ */
+export function paintRecord(
+  value: unknown,
+  where: string,
+  budget?: InspectionBudget,
+): InspectionPaintRecord {
+  budget?.charge(PAINT_RECORD_STRUCTURE);
+  const kindVal = text(read(value, "kind", where), `${where}.kind`, budget);
+  const pathVal = text(read(value, "path", where), `${where}.path`, budget);
+  const rawInspection = read(value, "inspection", where);
+  let inspectionVal: InspectionPaintRecord["inspection"];
+  if (rawInspection !== undefined) {
+    budget?.charge(PAINT_INSPECTION_KEY);
+    inspectionVal = paintIdentity(rawInspection, `${where}.inspection`, budget);
+  }
+  const paintRoleVal = oneOf(
+    read(value, "paintRole", where),
+    ["content", "background"] as const,
+    `${where}.paintRole`,
+  );
+  budget?.charge(paintRoleVal.length + 2);
+  const spaceVal = oneOf(
+    read(value, "space", where),
+    ["scene-target-pixels"] as const,
+    `${where}.space`,
+  );
+  budget?.charge(spaceVal.length + 2);
+  const resolutionVal = resolutionTuple(
+    read(value, "resolution", where),
+    `${where}.resolution`,
+    budget,
+  );
+  const accuracyVal = oneOf(
+    read(value, "accuracy", where),
+    ["exact-rectangle", "conservative", "unavailable"] as const,
+    `${where}.accuracy`,
+  );
+  budget?.charge(accuracyVal.length + 2);
+  // Charge the branch before building either result, so `budget.bytes` never trails the JSON.
+  budget?.charge(
+    accuracyVal === "unavailable"
+      ? PAINT_UNAVAILABLE_STRUCTURE
+      : PAINT_GEOMETRY_STRUCTURE,
+  );
+  const identity = {
+    kind: kindVal,
+    path: pathVal,
+    ...(inspectionVal === undefined ? {} : { inspection: inspectionVal }),
+    paintRole: paintRoleVal,
+    space: spaceVal,
+    resolution: resolutionVal,
+  } as const;
+  if (accuracyVal === "unavailable")
+    return {
+      ...identity,
+      accuracy: accuracyVal,
+      unsupported: text(
+        read(value, "unsupported", where),
+        `${where}.unsupported`,
+        budget,
+      ),
+    };
+  if (kindVal !== "box" && kindVal !== "text" && kindVal !== "media")
+    throw new InspectionSerializationError(
+      `${where}.kind must be "box" or "text" or "media" when accuracy is "${accuracyVal}", received "${kindVal}": only top-level Box, Text, and Media draw quads have projected geometry.`,
+    );
+  const geometryVisibleVal = read(value, "geometryVisible", where);
+  if (typeof geometryVisibleVal !== "boolean")
+    throw new InspectionSerializationError(
+      `${where}.geometryVisible must be a boolean, received ${typeof geometryVisibleVal}.`,
+    );
+  budget?.charge(geometryVisibleVal ? 4 : 5);
+  // The discriminator is charged by its published length, so the longer Text token is not free.
+  const geometry = {
+    path: pathVal,
+    ...(inspectionVal === undefined ? {} : { inspection: inspectionVal }),
+    paintRole: paintRoleVal,
+    space: spaceVal,
+    resolution: resolutionVal,
+    accuracy: accuracyVal,
+    geometryVisible: geometryVisibleVal,
+  };
+  const rawSurface = read(value, "surfaceProjection", where);
+  const surfaceProjectionVal =
+    rawSurface === undefined
+      ? undefined
+      : surfaceProjection(rawSurface, `${where}.surfaceProjection`, budget);
+  const projected =
+    surfaceProjectionVal === undefined
+      ? {}
+      : { surfaceProjection: surfaceProjectionVal };
+  if (kindVal === "media") {
+    if (accuracyVal !== "conservative")
+      throw new InspectionSerializationError(
+        `${where}.accuracy must be "conservative" when kind is "media", received "${accuracyVal}": a media quad is the ideal texture rectangle, not proven pixel or ink coverage.`,
+      );
+    const provenanceVal = oneOf(
+      read(value, "provenance", where),
+      ["projected-image-draw-quad", "projected-video-draw-quad"] as const,
+      `${where}.provenance`,
+    );
+    budget?.charge(provenanceVal.length + 2);
+    return {
+      ...geometry,
+      kind: "media",
+      accuracy: "conservative",
+      provenance: provenanceVal,
+      bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+      ...projected,
+    };
+  }
+  if (kindVal === "text") {
+    const provenanceVal = oneOf(
+      read(value, "provenance", where),
+      ["projected-text-draw-quad"] as const,
+      `${where}.provenance`,
+    );
+    budget?.charge(provenanceVal.length + 2);
+    return {
+      ...geometry,
+      kind: "text",
+      provenance: provenanceVal,
+      bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+      ...projected,
+    };
+  }
+  const provenanceVal = oneOf(
+    read(value, "provenance", where),
+    ["projected-box-draw-quad"] as const,
+    `${where}.provenance`,
+  );
+  budget?.charge(provenanceVal.length + 2);
+  return {
+    ...geometry,
+    kind: "box",
+    provenance: provenanceVal,
+    bounds: bounds(read(value, "bounds", where), `${where}.bounds`, budget),
+    ...projected,
+  };
+}
+/** Frames with no projectable layer keep this byte-for-byte so existing budgets stay put. */
+const TRANSITION_UNAVAILABLE_REASON =
+  "Top-level Box and Text draw quads, plus Media texture quads, are ideal pre-transition projections in scene-target pixels, not glyph ink, media alpha, fragment visibility, occlusion, or GPU rounding. A Media quad stays conservative after contain, cover, or crop; crop UVs do not prove ink. A tagged Clip, Group, or nested authoring Composition chain records the outer draw quad, not mask pixels or fragment coverage. Composition adds no mask shape and is not a World or Overlay boundary. Stage overlay, project overlay, and transition output stay unavailable; G3 is not complete. Inspect a non-overlapping time for exact results.";
+const TRANSITION_PARTIAL_REASON =
+  "Recorded-leaf output projection is partial, not full visibility and not a GPU rounding guarantee. All built-ins are covered at recorded-leaf level. Direct, crossfade, and shared kind-0 leaves use the uploaded float32 mix factor and an identity clip to the output viewport. Zoom uses that mix factor with a center scale. Slide and wipe use weight 1 inside the shader-selected region and 0 where that leaf is absent; that is not the crossfade or zoom mix factor. sceneWeight is potential scene contribution, not leaf opacity, glyph ink, media alpha, occlusion, fragment visibility, or a GPU rounding guarantee. Conservative bounds stay conservative. Published bounds are the ideal projected recorded draw quad, not fragment coverage or the full sampling contribution. accuracy exact-rectangle names only that ideal quad. Clamp-to-edge sampling can contribute outside it; these bounds do not include that raster coverage. Custom shaders are not projected. Stage overlay remains unrecorded. Project overlay is identity only when its provider recorded paint, using the project clock and no scene mix. G3 is not complete.";
+const FINAL_UNCAPTURED =
+  "Transition draw was not captured, so output projection is not published.";
+const FINAL_SCENE =
+  "Scene inspection is unavailable, so transition output is not projected.";
+const FINAL_CUSTOM =
+  "Custom transition output is not projected; pre-transition paint records remain available. G3 is not complete.";
+const FINAL_BRANCH =
+  "Uploaded transition controls do not match a rectangular recorded-leaf branch, so output projection is not published.";
+const FINAL_OVERFLOW =
+  "Transition projection is not finite, so output projection is not published.";
+const FINAL_CONTROLS =
+  "Uploaded transition controls are not finite, so output projection is not published.";
+const FINAL_OUTPUT =
+  "Output resolution is not a finite viewport, so output projection is not published.";
+const FINAL_ENDPOINT =
+  "Scene is not an endpoint of the captured transition, so output projection is not published.";
+const FINAL_KIND =
+  "Transition kind is not a recorded-leaf projection this unit can publish.";
+const FINAL_DRAW_READ =
+  "Transition draw metadata could not be read, so output projection is not published.";
+const FINAL_OMITTED =
+  "Scope was omitted by the target filter, so output projection is not published.";
+const FINAL_PAINT_RECORDS_STRUCTURE = `,"finalPaintRecords":[]`.length;
+const FINAL_PROJECTION_PREFIX = `,"finalProjection":`.length;
+const DRAW_KINDS = [
+  "direct",
+  "crossfade",
+  "shared",
+  "slide",
+  "zoom",
+  "wipe",
+  "custom",
+] as const;
+type DrawRead =
+  | { readonly ok: true; readonly draw?: TransitionDraw }
+  | { readonly ok: false; readonly reason: string };
+type OutputRect = {
+  readonly x0: number;
+  readonly y0: number;
+  readonly x1: number;
+  readonly y1: number;
+};
+type AvailablePlan = {
+  readonly status: "available";
+  readonly weight: number;
+  readonly output: readonly [number, number];
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly translateX: number;
+  readonly translateY: number;
+  readonly selection: OutputRect;
+  /** Slide/wipe: 1 inside the selection, 0 where absent. Not a mix factor. */
+  readonly mask: boolean;
+};
+type LayerPlan =
+  | AvailablePlan
+  | { readonly status: "unavailable"; readonly reason: string };
+function chargeJson(
+  budget: InspectionBudget | undefined,
+  prefix: number,
+  value: unknown,
+) {
+  budget?.charge(
+    prefix + new TextEncoder().encode(JSON.stringify(value)).length,
+  );
+}
+function finishProjection(
+  projection: FinalProjection,
+  budget?: InspectionBudget,
+): FinalProjection {
+  chargeJson(budget, FINAL_PROJECTION_PREFIX, projection);
+  return projection;
+}
+function finitePair(value: unknown): readonly [number, number] | undefined {
+  if (!isArray(value)) return undefined;
+  const count = reading(() => value.length);
+  if (count !== 2) return undefined;
+  const width = reading(() => value[0]);
+  const height = reading(() => value[1]);
+  if (typeof width !== "number" || typeof height !== "number") return undefined;
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width < 0 ||
+    height < 0
+  )
+    return undefined;
+  return [width, height];
+}
+function finiteUniform(
+  value: unknown,
+): readonly [number, number, number, number] | undefined {
+  if (!isArray(value)) return undefined;
+  const count = reading(() => value.length);
+  if (count !== 4) return undefined;
+  const uniform = [0, 1, 2, 3].map((index) => reading(() => value[index]));
+  if (uniform.some((entry) => typeof entry !== "number" || !Number.isFinite(entry)))
+    return undefined;
+  // Finite JS values such as 1e100 become non-finite in float32; reject those too.
+  const rounded = [
+    Math.fround(uniform[0] as number),
+    Math.fround(uniform[1] as number),
+    Math.fround(uniform[2] as number),
+    Math.fround(uniform[3] as number),
+  ] as const;
+  if (rounded.some((entry) => !Number.isFinite(entry))) return undefined;
+  return rounded;
+}
+/** Whitelist the renderer-owned draw. Direct draws do not read uniforms or shaders. */
+function readTransitionDraw(frame: FrameInspection): DrawRead {
+  let raw: unknown;
+  try {
+    raw = (frame as { transitionDraw?: unknown }).transitionDraw;
+  } catch (error) {
+    return { ok: false, reason: `${FINAL_DRAW_READ} ${describe(error)}` };
+  }
+  if (raw === undefined) return { ok: true };
+  if (typeof raw !== "object" || raw === null)
+    return { ok: false, reason: FINAL_KIND };
+  try {
+    const kind = (raw as { kind?: unknown }).kind;
+    if (
+      typeof kind !== "string" ||
+      !(DRAW_KINDS as readonly string[]).includes(kind)
+    )
+      return { ok: false, reason: FINAL_KIND };
+    const output = finitePair((raw as { output?: unknown }).output);
+    if (!output) return { ok: false, reason: FINAL_OUTPUT };
+    if (kind === "direct") return { ok: true, draw: { kind: "direct", output } };
+    const uniform = finiteUniform((raw as { uniform?: unknown }).uniform);
+    if (!uniform) return { ok: false, reason: FINAL_CONTROLS };
+    if (kind === "custom") return { ok: true, draw: { kind, output, uniform } };
+    if (
+      kind === "crossfade" ||
+      kind === "shared" ||
+      kind === "slide" ||
+      kind === "zoom" ||
+      kind === "wipe"
+    ) {
+      const outgoingId = (raw as { outgoingId?: unknown }).outgoingId;
+      const incomingId = (raw as { incomingId?: unknown }).incomingId;
+      if (typeof outgoingId !== "string" || typeof incomingId !== "string")
+        return { ok: false, reason: FINAL_ENDPOINT };
+      return {
+        ok: true,
+        draw: { kind, output, uniform, outgoingId, incomingId },
+      };
+    }
+    return { ok: false, reason: FINAL_KIND };
+  } catch (error) {
+    return { ok: false, reason: `${FINAL_DRAW_READ} ${describe(error)}` };
+  }
+}
+function finiteF32(value: number): number | undefined {
+  const rounded = Math.fround(value);
+  return Number.isFinite(rounded) ? rounded : undefined;
+}
+function fullSelection(output: readonly [number, number]): OutputRect {
+  return { x0: 0, y0: 0, x1: output[0], y1: output[1] };
+}
+function emptySelection(): OutputRect {
+  return { x0: 0, y0: 0, x1: 0, y1: 0 };
+}
+function identityPlan(
+  weight: number,
+  output: readonly [number, number],
+): AvailablePlan {
+  return {
+    status: "available",
+    weight,
+    output,
+    scaleX: 1,
+    scaleY: 1,
+    translateX: 0,
+    translateY: 0,
+    selection: fullSelection(output),
+    mask: false,
+  };
+}
+/** Same cuts as the compositor fragment `if`s. Undefined is the kind-0 mix, not a provider tag. */
+function shaderBranch(kind: number): "wipe" | "slide" | "zoom" | undefined {
+  if (kind > 0.5 && kind < 1.5) return "wipe";
+  if (kind > 1.5 && kind < 2.5) return "slide";
+  if (kind > 2.5) return "zoom";
+  return undefined;
+}
+function endpointRole(
+  id: string,
+  outgoingId: string,
+  incomingId: string,
+): "outgoing" | "incoming" | undefined {
+  if (outgoingId === incomingId) return undefined;
+  if (id === incomingId) return "incoming";
+  if (id === outgoingId) return "outgoing";
+  return undefined;
+}
+function axisSpan(min: number, max: number): { min: number; max: number } {
+  return max > min ? { min, max } : { min: 0, max: 0 };
+}
+/** Closed bounds of the positive-area complement. A zero-area mask does not cover. */
+function complementRect(mask: OutputRect, output: readonly [number, number]): OutputRect | undefined {
+  const width = output[0];
+  const height = output[1];
+  if (!(mask.x1 > mask.x0 && mask.y1 > mask.y0))
+    return { x0: 0, y0: 0, x1: width, y1: height };
+  if (mask.x0 <= 0 && mask.y0 <= 0 && mask.x1 >= width && mask.y1 >= height)
+    return emptySelection();
+  const fullWidth = mask.x0 <= 0 && mask.x1 >= width;
+  const fullHeight = mask.y0 <= 0 && mask.y1 >= height;
+  if (fullHeight && mask.x0 <= 0 && mask.x1 < width)
+    return { x0: mask.x1, y0: 0, x1: width, y1: height };
+  if (fullHeight && mask.x1 >= width && mask.x0 > 0)
+    return { x0: 0, y0: 0, x1: mask.x0, y1: height };
+  if (fullWidth && mask.y0 <= 0 && mask.y1 < height)
+    return { x0: 0, y0: mask.y1, x1: width, y1: height };
+  if (fullWidth && mask.y1 >= height && mask.y0 > 0)
+    return { x0: 0, y0: 0, x1: width, y1: mask.y0 };
+  return undefined;
+}
+function slidePlacement(
+  role: "outgoing" | "incoming",
+  progress: number,
+  dx: number,
+  dy: number,
+  output: readonly [number, number],
+): { readonly selection: OutputRect; readonly translateX: number; readonly translateY: number } | { readonly error: string } {
+  // A diagonal complement is not one rectangle; do not publish an invented AABB.
+  if (dx !== 0 && dy !== 0) return { error: FINAL_BRANCH };
+  const remaining = finiteF32(1 - progress);
+  if (remaining === undefined) return { error: FINAL_OVERFLOW };
+  const shiftX = finiteF32(dx * remaining * output[0]);
+  const shiftY = finiteF32(dy * remaining * output[1]);
+  const translateX = finiteF32(role === "outgoing" ? dx * progress * output[0] : -(shiftX ?? Number.NaN));
+  const translateY = finiteF32(role === "outgoing" ? dy * progress * output[1] : -(shiftY ?? Number.NaN));
+  if (
+    shiftX === undefined ||
+    shiftY === undefined ||
+    translateX === undefined ||
+    translateY === undefined
+  )
+    return { error: FINAL_OVERFLOW };
+  const x = axisSpan(Math.max(0, -shiftX), Math.min(output[0], output[0] - shiftX));
+  const y = axisSpan(Math.max(0, -shiftY), Math.min(output[1], output[1] - shiftY));
+  const incoming = { x0: x.min, y0: y.min, x1: x.max, y1: y.max };
+  const selection = role === "incoming" ? incoming : complementRect(incoming, output);
+  if (!selection) return { error: FINAL_BRANCH };
+  return { selection, translateX, translateY };
+}
+function wipeSelection(
+  role: "outgoing" | "incoming",
+  progress: number,
+  dx: number,
+  dy: number,
+  output: readonly [number, number],
+): OutputRect | { readonly error: string } {
+  const horizontal = Math.abs(dx) > 0.5;
+  const extent = horizontal ? output[0] : output[1];
+  const positive = dx + dy > 0;
+  let incomingMin = 0;
+  let incomingMax = 0;
+  let outgoingMin = 0;
+  let outgoingMax = extent;
+  // p=0 and p=1 are lines in the shader, not a float sliver of area.
+  if (extent === 0 || progress === 0) {
+    incomingMin = 0;
+    incomingMax = 0;
+    outgoingMin = 0;
+    outgoingMax = extent;
+  } else if (progress === 1) {
+    incomingMin = 0;
+    incomingMax = extent;
+    outgoingMin = 0;
+    outgoingMax = 0;
+  } else {
+    const mark = finiteF32(positive ? progress * extent : (1 - progress) * extent);
+    if (mark === undefined) return { error: FINAL_OVERFLOW };
+    const cut = Math.min(Math.max(mark, 0), extent);
+    if (positive) {
+      incomingMin = 0;
+      incomingMax = cut;
+      outgoingMin = cut;
+      outgoingMax = extent;
+    } else {
+      incomingMin = cut;
+      incomingMax = extent;
+      outgoingMin = 0;
+      outgoingMax = cut;
+    }
+  }
+  const span = axisSpan(
+    role === "incoming" ? incomingMin : outgoingMin,
+    role === "incoming" ? incomingMax : outgoingMax,
+  );
+  return horizontal
+    ? { x0: span.min, y0: 0, x1: span.max, y1: output[1] }
+    : { x0: 0, y0: span.min, x1: output[0], y1: span.max };
+}
+function layerPlan(drawRead: DrawRead, scope: string, id: string): LayerPlan {
+  if (!drawRead.ok) return { status: "unavailable", reason: drawRead.reason };
+  const draw = drawRead.draw;
+  if (!draw) return { status: "unavailable", reason: FINAL_UNCAPTURED };
+  if (scope === "overlay" || draw.kind === "direct")
+    return identityPlan(1, draw.output);
+  if (draw.kind === "custom")
+    return { status: "unavailable", reason: FINAL_CUSTOM };
+  if (draw.kind !== "crossfade" && draw.kind !== "shared" && draw.kind !== "slide" && draw.kind !== "zoom" && draw.kind !== "wipe")
+    return { status: "unavailable", reason: FINAL_KIND };
+  const progress = draw.uniform[0];
+  const role = endpointRole(id, draw.outgoingId, draw.incomingId);
+  if (draw.kind === "crossfade" || draw.kind === "shared") {
+    if (shaderBranch(draw.uniform[1]) !== undefined)
+      return { status: "unavailable", reason: FINAL_BRANCH };
+    if (!role) return { status: "unavailable", reason: FINAL_ENDPOINT };
+    const weight = role === "incoming" ? progress : finiteF32(1 - progress);
+    if (weight === undefined) return { status: "unavailable", reason: FINAL_OVERFLOW };
+    return identityPlan(weight, draw.output);
+  }
+  if (shaderBranch(draw.uniform[1]) !== draw.kind)
+    return { status: "unavailable", reason: FINAL_BRANCH };
+  if (!role) return { status: "unavailable", reason: FINAL_ENDPOINT };
+  if (draw.kind === "zoom") {
+    const scale = finiteF32(role === "outgoing" ? 1 + progress : 0.5 + 0.5 * progress);
+    const weight = role === "incoming" ? progress : finiteF32(1 - progress);
+    if (scale === undefined || weight === undefined)
+      return { status: "unavailable", reason: FINAL_OVERFLOW };
+    const translateX = finiteF32(((1 - scale) * draw.output[0]) / 2);
+    const translateY = finiteF32(((1 - scale) * draw.output[1]) / 2);
+    if (translateX === undefined || translateY === undefined)
+      return { status: "unavailable", reason: FINAL_OVERFLOW };
+    return {
+      status: "available",
+      weight,
+      output: draw.output,
+      scaleX: scale,
+      scaleY: scale,
+      translateX,
+      translateY,
+      selection: fullSelection(draw.output),
+      mask: false,
+    };
+  }
+  const dx = draw.uniform[2];
+  const dy = draw.uniform[3];
+  if (draw.kind === "slide") {
+    const placed = slidePlacement(role, progress, dx, dy, draw.output);
+    if ("error" in placed) return { status: "unavailable", reason: placed.error };
+    return {
+      status: "available",
+      weight: 1,
+      output: draw.output,
+      scaleX: 1,
+      scaleY: 1,
+      translateX: placed.translateX,
+      translateY: placed.translateY,
+      selection: placed.selection,
+      mask: true,
+    };
+  }
+  const selection = wipeSelection(role, progress, dx, dy, draw.output);
+  if ("error" in selection) return { status: "unavailable", reason: selection.error };
+  return {
+    status: "available",
+    weight: 1,
+    output: draw.output,
+    scaleX: 1,
+    scaleY: 1,
+    translateX: 0,
+    translateY: 0,
+    selection,
+    mask: true,
+  };
+}
+function mapBounds(
+  bounds: InspectionBounds,
+  plan: AvailablePlan,
+): { x0: number; y0: number; x1: number; y1: number } | undefined {
+  const left = Math.min(bounds.x, bounds.x + bounds.width);
+  const right = Math.max(bounds.x, bounds.x + bounds.width);
+  const top = Math.min(bounds.y, bounds.y + bounds.height);
+  const bottom = Math.max(bounds.y, bounds.y + bounds.height);
+  const xs = [left, right].map((x) => plan.scaleX * x + plan.translateX);
+  const ys = [top, bottom].map((y) => plan.scaleY * y + plan.translateY);
+  if (![...xs, ...ys].every(Number.isFinite)) return undefined;
+  return {
+    x0: Math.min(xs[0], xs[1]),
+    y0: Math.min(ys[0], ys[1]),
+    x1: Math.max(xs[0], xs[1]),
+    y1: Math.max(ys[0], ys[1]),
+  };
+}
+function clipMapped(
+  mapped: { x0: number; y0: number; x1: number; y1: number },
+  clip: OutputRect,
+): InspectionBounds | undefined {
+  const x = Math.max(mapped.x0, clip.x0);
+  const y = Math.max(mapped.y0, clip.y0);
+  const right = Math.min(mapped.x1, clip.x1);
+  const bottom = Math.min(mapped.y1, clip.y1);
+  const width = right - x;
+  const height = bottom - y;
+  if (![x, y, width, height].every(Number.isFinite)) return undefined;
+  if (width > 0 && height > 0) return { x, y, width, height };
+  return { x, y, width: 0, height: 0 };
+}
+/**
+ * Shared leaf correction is already in the record. Slide and wipe weights are
+ * regional, not the crossfade/zoom mix factor. No inverse of a zero extent.
+ */
+function projectRecord(
+  record: InspectionPaintRecord,
+  plan: AvailablePlan,
+): FinalPaintRecord | undefined {
+  const output = plan.output;
+  if (record.accuracy === "unavailable") {
+    const sceneWeight = plan.mask ? 0 : plan.weight;
+    if (!Number.isFinite(sceneWeight)) return undefined;
+    return {
+      path: record.path,
+      ...(record.inspection ? { inspection: record.inspection } : {}),
+      paintRole: record.paintRole,
+      space: "output-pixels",
+      resolution: [output[0], output[1]],
+      sceneWeight,
+      kind: record.kind,
+      accuracy: "unavailable",
+      unsupported: record.unsupported,
+      geometryVisible: false,
+    };
+  }
+  const mapped = mapBounds(record.bounds, plan);
+  if (!mapped) return undefined;
+  const bounds = plan.mask
+    ? clipMapped(mapped, plan.selection)
+    : clipMapped(mapped, {
+        x0: 0,
+        y0: 0,
+        x1: output[0],
+        y1: output[1],
+      });
+  if (!bounds) return undefined;
+  const sceneWeight = plan.mask
+    ? bounds.width > 0 && bounds.height > 0
+      ? 1
+      : 0
+    : plan.weight;
+  if (!Number.isFinite(sceneWeight)) return undefined;
+  const geometryVisible =
+    record.geometryVisible &&
+    sceneWeight !== 0 &&
+    bounds.width > 0 &&
+    bounds.height > 0;
+  const shared = {
+    path: record.path,
+    ...(record.inspection ? { inspection: record.inspection } : {}),
+    paintRole: record.paintRole,
+    space: "output-pixels" as const,
+    resolution: [output[0], output[1]] as const,
+    sceneWeight,
+  };
+  const surface =
+    record.surfaceProjection === undefined
+      ? {}
+      : { surfaceProjection: record.surfaceProjection };
+  if (record.kind === "media")
+    return {
+      ...shared,
+      kind: "media",
+      accuracy: "conservative",
+      provenance: record.provenance,
+      bounds,
+      geometryVisible,
+      ...surface,
+    };
+  if (record.kind === "text")
+    return {
+      ...shared,
+      kind: "text",
+      accuracy: record.accuracy,
+      provenance: record.provenance,
+      bounds,
+      geometryVisible,
+      ...surface,
+    };
+  return {
+    ...shared,
+    kind: "box",
+    accuracy: record.accuracy,
+    provenance: record.provenance,
+    bounds,
+    geometryVisible,
+    ...surface,
+  };
+}
+function ownedRecords<
+  T extends { readonly inspection?: { readonly nodeId: number } },
+>(
+  records: readonly T[] | undefined,
+  ownerIds: ReadonlySet<number>,
+  ownerCounts: ReadonlyMap<number, number> | undefined,
+): T[] | undefined {
+  if (records === undefined) return undefined;
+  return records.filter((record) => {
+    const nodeId = record.inspection?.nodeId;
+    return (
+      nodeId !== undefined &&
+      ownerIds.has(nodeId) &&
+      ownerCounts?.get(nodeId) === 1
+    );
+  });
+}
+/**
+ * Whether a targeted report may keep one raw record: its identity must name a retained node, and
+ * that ID must belong to exactly one node of the full source tree. Paths and spaces are never a
+ * fallback owner, so an untagged record or an orphan cannot be attributed and is dropped.
+ */
+function keepsPaintRecord(
+  record: unknown,
+  where: string,
+  ownerIds: ReadonlySet<number>,
+  ownerCounts: ReadonlyMap<number, number>,
+): boolean {
+  const raw = reading(() =>
+    typeof record === "object" && record !== null
+      ? (record as Record<string, unknown>).inspection
+      : undefined,
+  );
+  if (raw === undefined) return false;
+  const nodeId = safeId(
+    read(raw, "nodeId", `${where}.inspection`),
+    `${where}.inspection.nodeId`,
+  );
+  return ownerIds.has(nodeId) && ownerCounts.get(nodeId) === 1;
+}
+/**
+ * Read one layer's `paintRecords` collection. Absent stays absent, an empty array stays `[]`, and
+ * every kept record is serialized through {@link paintRecord} instead of being cloned. The field
+ * and brackets are charged before any element is visited. After the first retained record, the
+ * next comma is checked before that candidate's index or identity getter and charged only if the
+ * candidate is retained, so a filtered record never pays a separator.
+ * `count` is the length the caller already read through the shared array boundary.
+ */
+function readPaintRecords(
+  entries: readonly unknown[],
+  where: string,
+  count: number,
+  budget: InspectionBudget | undefined,
+  keeps: (record: unknown, where: string) => boolean,
+  onKept?: (record: InspectionPaintRecord) => void,
+): InspectionPaintRecord[] {
+  budget?.charge(PAINT_RECORDS_STRUCTURE);
+  const out: InspectionPaintRecord[] = [];
+  for (let index = 0; index < count; index++) {
+    const separator = out.length > 0;
+    if (separator && budget !== undefined && budget.bytes >= budget.limit)
+      throw overBudget(budget.bytes + 1, budget.limit);
+    const recordWhere = `${where}[${index}]`;
+    const rawRecord = reading(() => entries[index]);
+    if (!keeps(rawRecord, recordWhere)) continue;
+    if (separator) budget?.charge(1);
+    const published = reading(() => paintRecord(rawRecord, recordWhere, budget));
+    out.push(published);
+    onKept?.(published);
+  }
+  return out;
+}
+function severity(value: unknown, where: string): InspectionSeverity {
+  if (value === "warning" || value === "error") return value;
+  throw new InspectionSerializationError(
+    `${where} must be "warning" or "error", received ${describeValue(value)}.`,
+  );
+}
+/** Structured diagnostics an authoring frame emits beside its legacy warning strings. */
+function diagnostics(
+  value: unknown,
+  scope: string,
+  project: number,
+  budget?: InspectionBudget,
+): InspectionDiagnostic[] {
+  if (value === undefined) return [];
+  const entries = list(value, `${scope}.diagnostics`);
+  return each(
+    entries,
+    `${scope}.diagnostics`,
+    (entry, index) => {
+      budget?.charge(78);
+      const where = `${scope}.diagnostics[${index}]`;
+      const id = read(entry, "id", where);
+      const rawBounds = read(entry, "bounds", where);
+      const excess = read(entry, "excess", where);
+      const deficit = read(entry, "deficit", where);
+      const codeVal = text(read(entry, "code", where), `${where}.code`, budget);
+      const severityVal = severity(
+        read(entry, "severity", where),
+        `${where}.severity`,
+      );
+      budget?.charge(severityVal.length + 2);
+      budget?.chargeText(scope);
+      const idVal =
+        id === undefined ? undefined : text(id, `${where}.id`, budget);
+      if (idVal !== undefined) budget?.charge(6);
+      const pathVal = text(read(entry, "path", where), `${where}.path`, budget);
+      const localTime = finite(
+        read(entry, "localTime", where),
+        `${where}.localTime`,
+        budget,
+      );
+      budget?.charge(String(project).length);
+      const spaceVal = text(
+        read(entry, "space", where),
+        `${where}.space`,
+        budget,
+      );
+      const messageVal = text(
+        read(entry, "message", where),
+        `${where}.message`,
+        budget,
+      );
+      return {
+        code: codeVal,
+        severity: severityVal,
+        scope,
+        ...(idVal === undefined ? {} : { id: idVal }),
+        path: pathVal,
+        clock: { local: localTime, project },
+        space: spaceVal,
+        message: messageVal,
+        ...(rawBounds === undefined
+          ? {}
+          : { bounds: bounds(rawBounds, `${where}.bounds`, budget) }),
+        ...(excess === undefined
+          ? {}
+          : {
+              excess: {
+                width: finite(
+                  read(excess, "width", `${where}.excess`),
+                  `${where}.excess.width`,
+                  budget,
+                ),
+                height: finite(
+                  read(excess, "height", `${where}.excess`),
+                  `${where}.excess.height`,
+                  budget,
+                ),
+              },
+            }),
+        ...(deficit === undefined
+          ? {}
+          : { deficit: finite(deficit, `${where}.deficit`, budget) }),
+      };
+    },
+    budget,
+  );
+}
+interface LayerContext {
+  readonly scope: string;
+  readonly id: string;
+  readonly name: string;
+  readonly clock: InspectionClockFields;
+}
+function unavailableScene(
+  context: LayerContext,
+  reason: string,
+  budget?: InspectionBudget,
+): { scene: InspectionScene; diagnostics: InspectionDiagnostic[] } {
+  return {
+    scene: {
+      scope: context.scope,
+      id: context.id,
+      name: context.name,
+      clock: context.clock,
+      inspection: "unavailable",
+      unavailable: reason,
+      spaces: [],
+      finalProjection: finishProjection(
+        { status: "unavailable", reason: FINAL_SCENE },
+        budget,
+      ),
+    },
+    diagnostics: [
+      {
+        code: "unavailable-inspection",
+        severity: "warning",
+        scope: context.scope,
+        path: ".",
+        clock: { local: context.clock.localTime, project: context.clock.time },
+        space: "layout",
+        message: reason,
+      },
+    ],
+  };
+}
+/** Read one layer inside the read-error boundary: hostile data degrades to unavailable. */
+function inspectLayer(
+  layer: InspectedLayer,
+  context: LayerContext,
+  options?: {
+    budget?: InspectionBudget;
+    target?: InspectionTarget;
+    drawRead?: DrawRead;
+  },
+): {
+  scene: InspectionScene;
+  diagnostics: InspectionDiagnostic[];
+  targetMatchInfo?: { path: string };
+} {
+  if (layer.frame === undefined)
+    return unavailableScene(context, layer.unavailable, options?.budget);
+  const budget = options?.budget;
+  const isTargetedScope =
+    options?.target && options.target.scope === context.scope;
+  const isOtherScope =
+    options?.target && options.target.scope !== context.scope;
+
+  if (isOtherScope) {
+    return {
+      scene: {
+        scope: context.scope,
+        id: context.id,
+        name: context.name,
+        clock: context.clock,
+        inspection: "available",
+        spaces: [],
+        tree: {
+          path: "root",
+          kind: "skipped",
+          bounds: { x: 0, y: 0, width: 0, height: 0 },
+          transform: [1, 1, 0, 0],
+          children: [],
+        },
+        commands: [],
+        warnings: [],
+        finalProjection: finishProjection(
+          { status: "unavailable", reason: FINAL_OMITTED },
+          budget,
+        ),
+      },
+      diagnostics: [],
+    };
+  }
+
+  try {
+    const frame = layer.frame;
+    const provenance = readSpaceProvenance(frame, context.scope);
+    budget?.charge(150);
+    budget?.chargeText(context.scope);
+    budget?.chargeText(context.id);
+    budget?.chargeText(context.name);
+
+    const rawTree = read(frame, "tree", context.scope);
+    // Read once: a targeted scope needs the collection's length before the scan to know whether
+    // owner indexing is worth it at all, and every scope serializes the same array later.
+    const rawPaintRecords = read(frame, "paintRecords", context.scope);
+    const paintRecordsWhere = `${context.scope}.paintRecords`;
+    const paintEntries =
+      rawPaintRecords === undefined
+        ? undefined
+        : list(rawPaintRecords, paintRecordsWhere);
+    const paintRecordsCount =
+      paintEntries === undefined ? 0 : size(paintEntries, paintRecordsWhere);
+    const occurrences = readOccurrenceCollections(frame, context.scope);
+
+    let tree: InspectionLayoutNode;
+    let targetMatchInfo: { path: string } | undefined;
+    let rawOwnerCounts = new Map<number, number>();
+
+    if (isTargetedScope && options?.target) {
+      const scan = scanRawTargetTree(
+        rawTree,
+        options.target.id,
+        paintRecordsCount > 0 ||
+          (occurrences.frames?.length ?? 0) > 0 ||
+          (occurrences.surfaces?.length ?? 0) > 0,
+      );
+      const matches = scan.matches;
+      if (matches.length === 0) {
+        throw new InspectionTargetError(
+          `No node has ID "${options.target.id}" in ${context.scope}. Targets match authored ViewNode.id() values; anonymous nodes cannot be targeted.`,
+        );
+      }
+      if (matches.length > 1) {
+        throw new InspectionTargetError(
+          `${matches.length} nodes have ID "${options.target.id}" in ${context.scope}: ${matches.map((m) => `${m.space ?? "layout"}:${m.path}`).join(", ")}. IDs must be unique inside one scope.`,
+        );
+      }
+      const match = matches[0];
+      targetMatchInfo = { path: match.path };
+      tree = constructTargetedLayoutTree(
+        match,
+        context.scope,
+        budget,
+        scan.snapshots,
+      );
+      rawOwnerCounts = scan.ownerCounts;
+    } else {
+      tree = constructLayoutTree(rawTree, `${context.scope}.tree`, budget);
+    }
+    const {
+      retained,
+      retainedAttributionPaths,
+      maxRetainedPathLength,
+      ownerIds,
+    } = collectRetained(tree);
+    const publishedOccurrences = isTargetedScope
+      ? retainOccurrenceClosure(
+          occurrences.frames,
+          occurrences.surfaces,
+          ownerIds,
+          rawOwnerCounts,
+        )
+      : {
+          frames: occurrences.frames,
+          surfaces: occurrences.surfaces,
+          spaceIds: occurrenceSpaceIds(occurrences.frames),
+        };
+    // Charged with the tree, before commands and paint, so a later field cannot spend bytes
+    // that belong to the space descriptors.
+    const spaces = publishSpaces(
+      tree,
+      provenance,
+      budget,
+      publishedOccurrences.spaceIds,
+    );
+
+    const keepsCandidate = (candidatePath: string, candidateSpace?: string) => {
+      if (!isTargetedScope) return true;
+      const space = candidateSpace ?? "layout";
+      return retained.get(space)?.has(candidatePath) === true;
+    };
+
+    const rawCommands = list(
+      read(frame, "commands", context.scope),
+      `${context.scope}.commands`,
+    );
+    const commandsCount = size(rawCommands, `${context.scope}.commands`);
+    const commands: InspectionCommand[] = [];
+    for (let index = 0; index < commandsCount; index++) {
+      const rawCmd = reading(() => rawCommands[index]);
+      const cmdPath = reading(() =>
+        typeof rawCmd === "object" && rawCmd !== null
+          ? (rawCmd as Record<string, unknown>).path
+          : undefined,
+      );
+      const cmdSpace = reading(() =>
+        typeof rawCmd === "object" && rawCmd !== null
+          ? (rawCmd as Record<string, unknown>).space
+          : undefined,
+      );
+      if (
+        isTargetedScope &&
+        typeof cmdPath === "string" &&
+        !keepsCandidate(
+          cmdPath,
+          typeof cmdSpace === "string" ? cmdSpace : undefined,
+        )
+      ) {
+        continue;
+      }
+      budget?.charge(1);
+      commands.push(
+        reading(() =>
+          command(rawCmd, `${context.scope}.commands[${index}]`, budget),
+        ),
+      );
+    }
+
+    const rawWarnings = list(
+      read(frame, "warnings", context.scope),
+      `${context.scope}.warnings`,
+    );
+    const warningsCount = size(rawWarnings, `${context.scope}.warnings`);
+    const warnings: string[] = [];
+    for (let index = 0; index < warningsCount; index++) {
+      const rawWarning = reading(() => rawWarnings[index]);
+      if (typeof rawWarning === "string" && isTargetedScope) {
+        if (
+          !checkWarningAttribution(
+            rawWarning,
+            retainedAttributionPaths,
+            maxRetainedPathLength,
+          )
+        ) {
+          continue;
+        }
+      }
+      budget?.charge(1);
+      warnings.push(
+        reading(() =>
+          text(rawWarning, `${context.scope}.warnings[${index}]`, budget),
+        ),
+      );
+    }
+
+    const rawDiagnostics = read(frame, "diagnostics", context.scope);
+    let layerDiagnostics: InspectionDiagnostic[] = [];
+    if (rawDiagnostics !== undefined) {
+      const diagEntries = list(rawDiagnostics, `${context.scope}.diagnostics`);
+      const diagCount = size(diagEntries, `${context.scope}.diagnostics`);
+      for (let index = 0; index < diagCount; index++) {
+        const rawDiag = reading(() => diagEntries[index]);
+        const diagPath = reading(() =>
+          typeof rawDiag === "object" && rawDiag !== null
+            ? (rawDiag as Record<string, unknown>).path
+            : undefined,
+        );
+        const diagSpace = reading(() =>
+          typeof rawDiag === "object" && rawDiag !== null
+            ? (rawDiag as Record<string, unknown>).space
+            : undefined,
+        );
+        if (
+          isTargetedScope &&
+          typeof diagPath === "string" &&
+          !keepsCandidate(
+            diagPath,
+            typeof diagSpace === "string" ? diagSpace : undefined,
+          )
+        ) {
+          continue;
+        }
+        budget?.charge(1);
+        layerDiagnostics.push(
+          ...diagnostics([rawDiag], context.scope, context.clock.time, budget),
+        );
+      }
+    }
+
+    const plan = layerPlan(
+      options?.drawRead ?? { ok: true },
+      context.scope,
+      context.id,
+    );
+    // Charge before paint records so a budget that already includes this field cannot
+    // read the next record with bytes that belong to the projection status.
+    const chargedProjection = finishProjection(
+      plan.status === "available"
+        ? { status: "available", scope: "recorded-leaves" }
+        : { status: "unavailable", reason: plan.reason },
+      budget,
+    );
+    const projecting = plan.status === "available" && paintEntries !== undefined;
+    const pending: FinalPaintRecord[] = [];
+    let overflow = false;
+    let records: InspectionPaintRecord[] | undefined;
+    if (paintEntries !== undefined) {
+      records = readPaintRecords(
+        paintEntries,
+        paintRecordsWhere,
+        paintRecordsCount,
+        budget,
+        isTargetedScope
+          ? (record, recordWhere) =>
+              keepsPaintRecord(record, recordWhere, ownerIds, rawOwnerCounts)
+          : () => true,
+        projecting
+          ? (record) => {
+              if (overflow || plan.status !== "available") return;
+              const projected = projectRecord(record, plan);
+              if (!projected) {
+                overflow = true;
+                return;
+              }
+              pending.push(projected);
+            }
+          : undefined,
+      );
+    }
+    chargeOccurrenceList(
+      budget,
+      FRAME_OCCURRENCES_STRUCTURE,
+      publishedOccurrences.frames,
+      chargeFrameOccurrence,
+    );
+    chargeOccurrenceList(
+      budget,
+      SURFACE_OCCURRENCES_STRUCTURE,
+      publishedOccurrences.surfaces,
+      chargeSurfaceOccurrence,
+    );
+    let finalProjection = chargedProjection;
+    let finalRecords: FinalPaintRecord[] | undefined;
+    if (overflow) {
+      const rejected = {
+        status: "unavailable" as const,
+        reason: FINAL_OVERFLOW,
+      };
+      budget?.charge(
+        new TextEncoder().encode(JSON.stringify(rejected)).length -
+          new TextEncoder().encode(JSON.stringify(chargedProjection)).length,
+      );
+      finalProjection = rejected;
+    } else if (projecting) {
+      budget?.charge(FINAL_PAINT_RECORDS_STRUCTURE);
+      pending.forEach((projected, index) => {
+        if (index > 0) budget?.charge(1);
+        chargeJson(budget, 0, projected);
+      });
+      finalRecords = pending;
+    }
+    const outputLayoutMapping = plan.status === "available" ? {
+      matrix: [plan.scaleX, 0, 0, plan.scaleY, plan.translateX, plan.translateY] as InspectionMatrix6,
+      selection: { x: plan.selection.x0, y: plan.selection.y0, width: plan.selection.x1 - plan.selection.x0, height: plan.selection.y1 - plan.selection.y0 },
+    } : undefined;
+    if (outputLayoutMapping) budget?.charge(new TextEncoder().encode(JSON.stringify({ outputLayoutMapping })).length - 1);
+    return {
+      scene: {
+        scope: context.scope,
+        id: context.id,
+        name: context.name,
+        clock: context.clock,
+        inspection: "available",
+        spaces,
+        tree,
+        commands,
+        ...(records === undefined ? {} : { paintRecords: records }),
+        ...(finalRecords === undefined ? {} : { finalPaintRecords: finalRecords }),
+        ...(publishedOccurrences.frames === undefined
+          ? {}
+          : { frameOccurrences: publishedOccurrences.frames }),
+        ...(publishedOccurrences.surfaces === undefined
+          ? {}
+          : { surfaceOccurrences: publishedOccurrences.surfaces }),
+        ...(outputLayoutMapping ? { outputLayoutMapping } : {}),
+        finalProjection,
+        warnings,
+      },
+      diagnostics: layerDiagnostics,
+      targetMatchInfo,
+    };
+  } catch (error) {
+    if (error instanceof InspectionReadError)
+      return unavailableScene(
+        context,
+        `${context.name} inspection failed: ${error.message}`,
+        budget,
+      );
+    throw error;
+  }
+}
+export function buildInspectionDocument(options: {
+  packageVersion: string;
+  project: {
+    readonly name: string;
+    readonly duration: number;
+    readonly resolution: readonly [number, number];
+  };
+  frame: FrameInspection;
+  target?: InspectionTarget;
+  limit?: number;
+}): InspectionDocument {
+  const budget = new InspectionBudget(options.limit ?? MAX_INSPECTION_BYTES);
+  budget.charge(300);
+  budget.chargeText(options.packageVersion);
+  budget.chargeText(options.project.name);
+
+  const { frame, target } = options;
+  const scenes: InspectionScene[] = [];
+  const all: InspectionDiagnostic[] = [];
+  let targetResult: InspectionTargetResult | undefined;
+  const drawRead = readTransitionDraw(frame);
+
+  frame.scenes.forEach((inspected) => {
+    const built = inspectLayer(
+      inspected,
+      {
+        scope: `scene:${inspected.id}`,
+        id: inspected.id,
+        name: inspected.name,
+        clock: {
+          time: inspected.time,
+          localTime: inspected.localTime,
+          progress: inspected.progress,
+        },
+      },
+      { budget, target, drawRead },
+    );
+    scenes.push(built.scene);
+    all.push(...built.diagnostics);
+    if (built.targetMatchInfo && target) {
+      targetResult = {
+        scope: target.scope,
+        id: target.id,
+        path: built.targetMatchInfo.path,
+        matches: 1,
+      };
+    }
+  });
+  if (frame.overlay) {
+    const built = inspectLayer(
+      frame.overlay,
+      {
+        scope: "overlay",
+        id: "overlay",
+        name: "Project overlay",
+        clock: {
+          time: frame.overlay.time,
+          localTime: frame.overlay.localTime,
+          progress: frame.overlay.progress,
+        },
+      },
+      { budget, target, drawRead },
+    );
+    scenes.push(built.scene);
+    all.push(...built.diagnostics);
+    if (built.targetMatchInfo && target) {
+      targetResult = {
+        scope: target.scope,
+        id: target.id,
+        path: built.targetMatchInfo.path,
+        matches: 1,
+      };
+    }
+  }
+  const targetScene = target
+    ? scenes.find((s) => s.scope === target.scope)
+    : undefined;
+  const published = targetScene ? [targetScene] : scenes;
+  const transitions = transitionCapability(published);
+  if (transitions.projection !== "unavailable")
+    budget.charge(transitions.projection.length - "unavailable".length);
+  if (transitions.reason !== TRANSITION_UNAVAILABLE_REASON)
+    budget.charge(
+      transitions.reason.length - TRANSITION_UNAVAILABLE_REASON.length,
+    );
+  const document: InspectionDocument = {
+    schemaVersion: INSPECTION_SCHEMA_VERSION,
+    packageVersion: options.packageVersion,
+    project: {
+      name: options.project.name,
+      duration: options.project.duration,
+      resolution: options.project.resolution,
+    },
+    time: { requested: frame.requestedTime, effective: frame.effectiveTime },
+    capability: {
+      inspection: "structural-snapshot",
+      geometry: { layout: "exact-rectangle", paint: "partial" },
+      transitions,
+    },
+    scenes: published,
+    diagnostics: all,
+    ...(targetResult ? { target: targetResult } : {}),
+  };
+  return target ? applyInspectionTarget(document, target) : document;
+}
+/** Parse `<scope>#<node id>`; scope is `scene:<entry id>` or `overlay`. */
+export function parseInspectionTarget(source: string): InspectionTarget {
+  const separator = source.lastIndexOf("#");
+  if (separator < 1 || separator === source.length - 1)
+    throw new InspectionTargetError(
+      `Target must be SCOPE#ID, for example scene:main#card or overlay#hud. Received "${source}".`,
+    );
+  const scope = source.slice(0, separator);
+  const id = source.slice(separator + 1);
+  if (!SCOPE_PATTERN.test(scope))
+    throw new InspectionTargetError(
+      `Target scope must be scene:<entry id> or overlay. Received "${scope}".`,
+    );
+  if (/\s/.test(id))
+    throw new InspectionTargetError(
+      `Target ID must not contain whitespace. Received "${id}".`,
+    );
+  return { scope, id };
+}
+const SPACE_KINDS = [
+  "layout",
+  "clip-local",
+  "world",
+  "composition-overlay",
+] as const;
+const LAYOUT_SPACE_ID = "layout";
+const LAYOUT_ROOT_PARENT = "scope layout root";
+const SPACE_MAPPING_REASON =
+  "not a captured GPU uniform; no layout affine is published";
+const SPACE_UNPROVEN =
+  "no evaluation provenance; kind and parent are not inferred from the id";
+const SPACES_KEY = `,"spaces":`.length;
+
+function layoutSpaceDescriptor(): InspectionSpaceDescriptor {
+  return {
+    id: LAYOUT_SPACE_ID,
+    kind: "layout",
+    parent: { status: "unavailable", reason: LAYOUT_ROOT_PARENT },
+    mapping: { status: "unavailable", reason: SPACE_MAPPING_REASON },
+  };
+}
+function unavailableSpaceDescriptor(id: string): InspectionSpaceDescriptor {
+  return {
+    id,
+    kind: "unavailable",
+    reason: SPACE_UNPROVEN,
+    parent: { status: "unavailable", reason: SPACE_UNPROVEN },
+    mapping: { status: "unavailable", reason: SPACE_MAPPING_REASON },
+  };
+}
+interface ProvenanceRecord {
+  readonly id: string;
+  readonly kind: InspectionLayoutSpaceKind;
+  readonly parent: InspectionSpaceParent;
+  readonly owner?: InspectionSpaceOwner;
+  readonly worldToCompositionViewport?:
+    | { readonly status: "mapped"; readonly matrix: InspectionMatrix6 }
+    | { readonly status: "unavailable"; readonly reason: string };
+}
+function readSpaceOwner(
+  value: unknown,
+  where: string,
+): InspectionSpaceOwner | undefined {
+  if (value === undefined) return undefined;
+  const path = text(read(value, "path", where), `${where}.path`);
+  const id = read(value, "id", where);
+  const inspectionId = read(value, "inspectionId", where);
+  return {
+    path,
+    ...(id === undefined ? {} : { id: text(id, `${where}.id`) }),
+    ...(inspectionId === undefined
+      ? {}
+      : { inspectionId: safeId(inspectionId, `${where}.inspectionId`) }),
+  };
+}
+function readSpaceParent(value: unknown, where: string): InspectionSpaceParent {
+  const status = oneOf(
+    read(value, "status", where),
+    ["known", "unavailable"] as const,
+    `${where}.status`,
+  );
+  if (status === "known")
+    return { status, id: text(read(value, "id", where), `${where}.id`) };
+  return {
+    status,
+    reason: text(read(value, "reason", where), `${where}.reason`),
+  };
+}
+function readProvenanceRecord(value: unknown, where: string): ProvenanceRecord {
+  const id = text(read(value, "id", where), `${where}.id`);
+  const kind = oneOf(
+    read(value, "kind", where),
+    SPACE_KINDS,
+    `${where}.kind`,
+  );
+  const parent = readSpaceParent(read(value, "parent", where), `${where}.parent`);
+  const owner = readSpaceOwner(read(value, "owner", where), `${where}.owner`);
+  const worldToCompositionViewport =
+    kind === "world"
+      ? readWorldViewport(
+          read(value, "worldToCompositionViewport", where),
+          `${where}.worldToCompositionViewport`,
+        )
+      : undefined;
+  return {
+    id,
+    kind,
+    parent,
+    ...(owner === undefined ? {} : { owner }),
+    ...(worldToCompositionViewport
+      ? { worldToCompositionViewport }
+      : {}),
+  };
+}
+function readMatrix6(value: unknown, where: string): InspectionMatrix6 {
+  const entries = list(value, where);
+  const count = size(entries, where);
+  if (count !== 6)
+    throw new InspectionSerializationError(
+      `${where} must have 6 entries, received ${count}.`,
+    );
+  return [
+    finite(reading(() => entries[0]), `${where}[0]`),
+    finite(reading(() => entries[1]), `${where}[1]`),
+    finite(reading(() => entries[2]), `${where}[2]`),
+    finite(reading(() => entries[3]), `${where}[3]`),
+    finite(reading(() => entries[4]), `${where}[4]`),
+    finite(reading(() => entries[5]), `${where}[5]`),
+  ];
+}
+function readWorldViewport(
+  value: unknown,
+  where: string,
+): ProvenanceRecord["worldToCompositionViewport"] {
+  if (value === undefined) return undefined;
+  const status = oneOf(
+    read(value, "status", where),
+    ["mapped", "unavailable"] as const,
+    `${where}.status`,
+  );
+  if (text(read(value, "kind", where), `${where}.kind`) !== "world-to-composition-viewport")
+    throw new InspectionSerializationError(
+      `${where}.kind must be "world-to-composition-viewport".`,
+    );
+  if (text(read(value, "source", where), `${where}.source`) !== "evaluateCamera")
+    throw new InspectionSerializationError(
+      `${where}.source must be "evaluateCamera".`,
+    );
+  if (
+    text(read(value, "precision", where), `${where}.precision`) !==
+    "binary64-evaluated"
+  )
+    throw new InspectionSerializationError(
+      `${where}.precision must be "binary64-evaluated".`,
+    );
+  if (status === "unavailable") {
+    if (read(value, "matrix", where) !== undefined)
+      throw new InspectionSerializationError(
+        `${where}.matrix must be absent when the mapping is unavailable.`,
+      );
+    return {
+      status,
+      reason: text(read(value, "reason", where), `${where}.reason`),
+    };
+  }
+  return { status, matrix: readMatrix6(read(value, "matrix", where), `${where}.matrix`) };
+}
+/**
+ * Whitelist boundary provenance. Kind and parent come from the record, never from the id text.
+ * Count is a work cap, checked before any index read, and is not an output-byte admission:
+ * unreferenced records publish nothing. Exact UTF-8 is charged only for the retained tree's
+ * ancestor closure. Cycle checks visit each id once, so they stay inside that cap.
+ */
+function readSpaceProvenance(
+  frame: unknown,
+  where: string,
+): Map<string, ProvenanceRecord> {
+  const raw = read(frame, "spaceProvenance", where);
+  const map = new Map<string, ProvenanceRecord>();
+  if (raw === undefined) return map;
+  const entries = list(raw, `${where}.spaceProvenance`);
+  const count = size(entries, `${where}.spaceProvenance`);
+  // Work cap only. A length over one million must not touch an index getter.
+  if (count > MAX_RAW_TARGET_WORK) throw overProvenanceWork();
+  for (let index = 0; index < count; index++) {
+    const entryWhere = `${where}.spaceProvenance[${index}]`;
+    const record = readProvenanceRecord(
+      reading(() => entries[index]),
+      entryWhere,
+    );
+    if (map.has(record.id))
+      throw new InspectionSerializationError(
+        `${entryWhere}.id duplicates space "${record.id}".`,
+      );
+    map.set(record.id, record);
+  }
+  for (const record of map.values()) {
+    if (record.parent.status !== "known") continue;
+    if (record.parent.id !== LAYOUT_SPACE_ID && !map.has(record.parent.id))
+      throw new InspectionSerializationError(
+        `${where}.spaceProvenance parent "${record.parent.id}" is not a recorded space.`,
+      );
+  }
+  const done = new Set<string>();
+  const onStack = new Set<string>();
+  const trail: string[] = [];
+  for (const start of map.keys()) {
+    if (done.has(start)) continue;
+    let cursor: string | undefined = start;
+    while (cursor !== undefined && map.has(cursor) && !done.has(cursor)) {
+      if (onStack.has(cursor))
+        throw new InspectionSerializationError(
+          `${where}.spaceProvenance contains a parent cycle at "${cursor}".`,
+        );
+      onStack.add(cursor);
+      trail.push(cursor);
+      const parent: InspectionSpaceParent = map.get(cursor)!.parent;
+      cursor = parent.status === "known" ? parent.id : undefined;
+    }
+    for (const id of trail) {
+      onStack.delete(id);
+      done.add(id);
+    }
+    trail.length = 0;
+  }
+  return map;
+}
+/** Space ids the retained tree references, first-seen. Absent `space` is the explicit `layout` contract. */
+function referencedSpaceIds(root: InspectionLayoutNode): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  const stack: { node: InspectionLayoutNode; inherited: string }[] = [
+    { node: root, inherited: LAYOUT_SPACE_ID },
+  ];
+  while (stack.length > 0) {
+    const { node, inherited } = stack.pop()!;
+    const space = node.space ?? inherited;
+    if (!seen.has(space)) {
+      seen.add(space);
+      found.push(space);
+    }
+    for (let i = node.children.length - 1; i >= 0; i--)
+      stack.push({ node: node.children[i], inherited: space });
+  }
+  return found;
+}
+function descriptorFor(
+  id: string,
+  provenance: ReadonlyMap<string, ProvenanceRecord>,
+): InspectionSpaceDescriptor {
+  const record = provenance.get(id);
+  if (record)
+    return {
+      id: record.id,
+      kind: record.kind,
+      parent: record.parent,
+      ...(record.owner ? { owner: record.owner } : {}),
+      mapping: spaceMapping(record),
+    };
+  if (id === LAYOUT_SPACE_ID) return layoutSpaceDescriptor();
+  return unavailableSpaceDescriptor(id);
+}
+function orderedSpaceDescriptors(
+  referenced: readonly string[],
+  resolve: (id: string) => InspectionSpaceDescriptor | undefined,
+): InspectionSpaceDescriptor[] {
+  const kept: InspectionSpaceDescriptor[] = [];
+  const seen = new Set<string>();
+  const addChain = (id: string) => {
+    const chain: InspectionSpaceDescriptor[] = [];
+    const guard = new Set<string>();
+    let cursor: string | undefined = id;
+    while (cursor && !seen.has(cursor)) {
+      if (guard.has(cursor))
+        throw new InspectionSerializationError(
+          `Space "${cursor}" has a parent cycle.`,
+        );
+      guard.add(cursor);
+      const descriptor = resolve(cursor);
+      if (!descriptor)
+        throw new InspectionSerializationError(
+          `Space "${cursor}" is not recorded in this scope.`,
+        );
+      chain.push(descriptor);
+      cursor =
+        descriptor.kind !== "unavailable" && descriptor.parent.status === "known"
+          ? descriptor.parent.id
+          : undefined;
+    }
+    for (let index = chain.length - 1; index >= 0; index--) {
+      if (seen.has(chain[index].id)) continue;
+      seen.add(chain[index].id);
+      kept.push(chain[index]);
+    }
+  };
+  for (const id of referenced) addChain(id);
+  return kept;
+}
+function chargeJsonKey(
+  budget: InspectionBudget,
+  key: string,
+  first: boolean,
+): void {
+  if (!first) budget.charge(1);
+  budget.chargeText(key);
+  budget.charge(1);
+}
+function chargeJsonString(
+  budget: InspectionBudget,
+  key: string,
+  value: string,
+  first: boolean,
+): void {
+  chargeJsonKey(budget, key, first);
+  budget.chargeText(value);
+}
+function chargeSpaceParent(
+  budget: InspectionBudget,
+  parent: InspectionSpaceParent,
+): void {
+  budget.charge(1);
+  chargeJsonString(budget, "status", parent.status, true);
+  if (parent.status === "known") chargeJsonString(budget, "id", parent.id, false);
+  else chargeJsonString(budget, "reason", parent.reason, false);
+  budget.charge(1);
+}
+function chargeSpaceOwner(
+  budget: InspectionBudget,
+  owner: InspectionSpaceOwner,
+): void {
+  budget.charge(1);
+  chargeJsonString(budget, "path", owner.path, true);
+  if (owner.id !== undefined) chargeJsonString(budget, "id", owner.id, false);
+  if (owner.inspectionId !== undefined) {
+    chargeJsonKey(budget, "inspectionId", false);
+    budget.charge(String(owner.inspectionId).length);
+  }
+  budget.charge(1);
+}
+function spaceMapping(record: ProvenanceRecord): InspectionSpaceMapping {
+  const source = record.worldToCompositionViewport;
+  if (record.kind !== "world" || !source)
+    return { status: "unavailable", reason: SPACE_MAPPING_REASON };
+  if (source.status === "unavailable")
+    return {
+      status: "unavailable",
+      reason: source.reason,
+      kind: "world-to-composition-viewport",
+      source: "evaluateCamera",
+      precision: "binary64-evaluated",
+    };
+  return {
+    status: "mapped",
+    kind: "world-to-composition-viewport",
+    source: "evaluateCamera",
+    precision: "binary64-evaluated",
+    matrix: source.matrix,
+  };
+}
+function chargeMatrix(budget: InspectionBudget, matrix: readonly number[]): void {
+  budget.charge(1);
+  for (let index = 0; index < matrix.length; index++) {
+    if (index > 0) budget.charge(1);
+    budget.charge(String(matrix[index]).length);
+  }
+  budget.charge(1);
+}
+function chargeSpaceMapping(
+  budget: InspectionBudget,
+  mapping: InspectionSpaceMapping,
+): void {
+  budget.charge(1);
+  chargeJsonString(budget, "status", mapping.status, true);
+  if (mapping.status === "unavailable") {
+    chargeJsonString(budget, "reason", mapping.reason, false);
+    if ("kind" in mapping) {
+      chargeJsonString(budget, "kind", mapping.kind, false);
+      chargeJsonString(budget, "source", mapping.source, false);
+      chargeJsonString(budget, "precision", mapping.precision, false);
+    }
+  } else {
+    chargeJsonString(budget, "kind", mapping.kind, false);
+    chargeJsonString(budget, "source", mapping.source, false);
+    chargeJsonString(budget, "precision", mapping.precision, false);
+    chargeJsonKey(budget, "matrix", false);
+    chargeMatrix(budget, mapping.matrix);
+  }
+  budget.charge(1);
+}
+/** Exact UTF-8 of one descriptor. Strings go through {@link InspectionBudget.chargeText}; no object stringify. */
+function chargeSpaceDescriptor(
+  budget: InspectionBudget,
+  descriptor: InspectionSpaceDescriptor,
+): void {
+  budget.charge(1);
+  chargeJsonString(budget, "id", descriptor.id, true);
+  chargeJsonString(budget, "kind", descriptor.kind, false);
+  if (descriptor.kind === "unavailable")
+    chargeJsonString(budget, "reason", descriptor.reason, false);
+  chargeJsonKey(budget, "parent", false);
+  chargeSpaceParent(budget, descriptor.parent);
+  if (descriptor.kind !== "unavailable" && descriptor.owner) {
+    chargeJsonKey(budget, "owner", false);
+    chargeSpaceOwner(budget, descriptor.owner);
+  }
+  chargeJsonKey(budget, "mapping", false);
+  chargeSpaceMapping(budget, descriptor.mapping);
+  budget.charge(1);
+}
+function chargePublishedSpaces(
+  budget: InspectionBudget | undefined,
+  spaces: readonly InspectionSpaceDescriptor[],
+): void {
+  if (!budget) return;
+  budget.charge(SPACES_KEY + 1);
+  for (let index = 0; index < spaces.length; index++) {
+    if (index > 0) budget.charge(1);
+    chargeSpaceDescriptor(budget, spaces[index]);
+  }
+  budget.charge(1);
+}
+function publishSpaces(
+  root: InspectionLayoutNode,
+  provenance: ReadonlyMap<string, ProvenanceRecord>,
+  budget?: InspectionBudget,
+  extra: readonly string[] = [],
+): InspectionSpaceDescriptor[] {
+  const spaces = orderedSpaceDescriptors(
+    [...referencedSpaceIds(root), ...extra],
+    (id) => descriptorFor(id, provenance),
+  );
+  chargePublishedSpaces(budget, spaces);
+  return spaces;
+}
+function retainSpaceDescriptors(
+  spaces: readonly InspectionSpaceDescriptor[],
+  referenced: readonly string[],
+): InspectionSpaceDescriptor[] {
+  const byId = new Map(spaces.map((descriptor) => [descriptor.id, descriptor]));
+  return orderedSpaceDescriptors(referenced, (id) => byId.get(id));
+}
+const FRAME_OCCURRENCES_STRUCTURE = `,"frameOccurrences":[]`.length;
+const SURFACE_OCCURRENCES_STRUCTURE = `,"surfaceOccurrences":[]`.length;
+function overCollectionWork(label: string): InspectionSerializationError {
+  return new InspectionSerializationError(
+    `${label} is over its ${MAX_RAW_TARGET_WORK}-unit work limit. The length is rejected before any index is read, so reduce the collection and retry.`,
+  );
+}
+function optionalEntries(
+  value: unknown,
+  where: string,
+): { readonly entries: readonly unknown[]; readonly count: number } | undefined {
+  if (value === undefined) return undefined;
+  const entries = list(value, where);
+  const count = size(entries, where);
+  if (count > MAX_RAW_TARGET_WORK) throw overCollectionWork(where);
+  return { entries, count };
+}
+function integerRect(value: unknown, where: string): InspectionBounds {
+  const raw = bounds(value, where);
+  for (const [key, entry] of Object.entries(raw))
+    if (!Number.isSafeInteger(entry))
+      throw new InspectionSerializationError(
+        `${where}.${key} must be a safe integer, received ${describeValue(entry)}.`,
+      );
+  return raw;
+}
+function numberTuple<N extends number>(
+  value: unknown,
+  where: string,
+  count: N,
+): number[] {
+  const entries = list(value, where);
+  const length = size(entries, where);
+  if (length !== count)
+    throw new InspectionSerializationError(
+      `${where} must have ${count} entries, received ${length}.`,
+    );
+  const out: number[] = [];
+  for (let index = 0; index < count; index++)
+    out.push(finite(reading(() => entries[index]), `${where}[${index}]`));
+  return out;
+}
+function readLayoutSpaceRef(
+  value: unknown,
+  where: string,
+): InspectionLayoutSpaceRef {
+  const status = oneOf(
+    read(value, "status", where),
+    ["known", "unavailable"] as const,
+    `${where}.status`,
+  );
+  if (status === "known")
+    return { status, id: text(read(value, "id", where), `${where}.id`) };
+  return {
+    status,
+    reason: text(read(value, "reason", where), `${where}.reason`),
+  };
+}
+function readOccurrenceRef(
+  value: unknown,
+  where: string,
+): InspectionOccurrenceRef {
+  const status = oneOf(
+    read(value, "status", where),
+    ["known", "unavailable"] as const,
+    `${where}.status`,
+  );
+  if (status === "known")
+    return {
+      status,
+      occurrenceId: safeId(
+        read(value, "occurrenceId", where),
+        `${where}.occurrenceId`,
+      ),
+    };
+  if (read(value, "occurrenceId", where) !== undefined)
+    throw new InspectionSerializationError(
+      `${where}.occurrenceId must be absent when the reference is unavailable.`,
+    );
+  return {
+    status,
+    reason: text(read(value, "reason", where), `${where}.reason`),
+  };
+}
+function readUploadedCamera(
+  value: unknown,
+  where: string,
+): InspectionUploadedCamera {
+  const status = oneOf(
+    read(value, "status", where),
+    ["mapped", "unavailable"] as const,
+    `${where}.status`,
+  );
+  if (status === "unavailable") {
+    if (read(value, "matrix", where) !== undefined)
+      throw new InspectionSerializationError(
+        `${where}.matrix must be absent when the camera is unavailable.`,
+      );
+    return {
+      status,
+      reason: text(read(value, "reason", where), `${where}.reason`),
+    };
+  }
+  if (text(read(value, "source", where), `${where}.source`) !== "uploaded-uniform")
+    throw new InspectionSerializationError(
+      `${where}.source must be "uploaded-uniform".`,
+    );
+  if (text(read(value, "precision", where), `${where}.precision`) !== "float32")
+    throw new InspectionSerializationError(
+      `${where}.precision must be "float32".`,
+    );
+  return {
+    status,
+    source: "uploaded-uniform",
+    precision: "float32",
+    matrix: readMatrix6(read(value, "matrix", where), `${where}.matrix`),
+  };
+}
+function readFrameTransform(
+  value: unknown,
+  where: string,
+): InspectionFrameTransform {
+  const status = oneOf(
+    read(value, "status", where),
+    ["mapped", "unavailable"] as const,
+    `${where}.status`,
+  );
+  if (status === "unavailable") {
+    if (read(value, "matrix", where) !== undefined)
+      throw new InspectionSerializationError(
+        `${where}.matrix must be absent when the transform is unavailable.`,
+      );
+    return {
+      status,
+      reason: text(read(value, "reason", where), `${where}.reason`),
+    };
+  }
+  if (
+    text(read(value, "source", where), `${where}.source`) !==
+    "computeFrameTransform"
+  )
+    throw new InspectionSerializationError(
+      `${where}.source must be "computeFrameTransform".`,
+    );
+  if (text(read(value, "precision", where), `${where}.precision`) !== "binary64")
+    throw new InspectionSerializationError(
+      `${where}.precision must be "binary64".`,
+    );
+  return {
+    status,
+    source: "computeFrameTransform",
+    precision: "binary64",
+    matrix: readMatrix6(read(value, "matrix", where), `${where}.matrix`),
+  };
+}
+function readFrameOccurrence(
+  value: unknown,
+  where: string,
+): InspectionFrameOccurrence {
+  const drawWhere = `${where}.drawCameras`;
+  const draws = list(read(value, "drawCameras", where), drawWhere);
+  const drawCount = size(draws, drawWhere);
+  if (drawCount > MAX_RAW_TARGET_WORK) throw overCollectionWork(drawWhere);
+  const drawCameras: InspectionFrameDrawCamera[] = [];
+  for (let index = 0; index < drawCount; index++) {
+    const cameraWhere = `${drawWhere}[${index}]`;
+    const raw = reading(() => draws[index]);
+    drawCameras.push({
+      commandId: safeId(read(raw, "commandId", cameraWhere), `${cameraWhere}.commandId`),
+      ownerNodeId: safeId(
+        read(raw, "ownerNodeId", cameraWhere),
+        `${cameraWhere}.ownerNodeId`,
+      ),
+      camera: readUploadedCamera(read(raw, "camera", cameraWhere), `${cameraWhere}.camera`),
+    });
+  }
+  return {
+    id: safeId(read(value, "id", where), `${where}.id`),
+    layoutSpace: readLayoutSpaceRef(
+      read(value, "layoutSpace", where),
+      `${where}.layoutSpace`,
+    ),
+    targetResolution: resolutionTuple(
+      read(value, "targetResolution", where),
+      `${where}.targetResolution`,
+    ),
+    designSize: resolutionTuple(read(value, "designSize", where), `${where}.designSize`),
+    scissor: integerRect(read(value, "scissor", where), `${where}.scissor`),
+    parentSurface: readOccurrenceRef(
+      read(value, "parentSurface", where),
+      `${where}.parentSurface`,
+    ),
+    baseFrameTransform: readFrameTransform(
+      read(value, "baseFrameTransform", where),
+      `${where}.baseFrameTransform`,
+    ),
+    drawCameras,
+  };
+}
+function readSurfaceKind(value: unknown, where: string): InspectionSurfaceKind {
+  const kind = oneOf(
+    read(value, "kind", where),
+    ["clip", "group", "composition"] as const,
+    `${where}.kind`,
+  );
+  if (kind === "clip")
+    return {
+      kind,
+      shape: oneOf(read(value, "shape", where), SURFACE_SHAPES, `${where}.shape`),
+    };
+  return { kind };
+}
+function readSurfaceUniform(
+  value: unknown,
+  where: string,
+): InspectionSurfaceUniform {
+  return {
+    rect: numberTuple(read(value, "rect", where), `${where}.rect`, 4) as [
+      number,
+      number,
+      number,
+      number,
+    ],
+    transform: numberTuple(
+      read(value, "transform", where),
+      `${where}.transform`,
+      4,
+    ) as [number, number, number, number],
+    resolution: resolutionTuple(
+      read(value, "resolution", where),
+      `${where}.resolution`,
+    ),
+    opacity: finite(read(value, "opacity", where), `${where}.opacity`),
+    cameraX: numberTuple(read(value, "cameraX", where), `${where}.cameraX`, 3) as [
+      number,
+      number,
+      number,
+    ],
+    cameraY: numberTuple(read(value, "cameraY", where), `${where}.cameraY`, 3) as [
+      number,
+      number,
+      number,
+    ],
+  };
+}
+function readProjection(
+  value: unknown,
+  where: string,
+): InspectionSurfaceProjectionMapping {
+  const status = oneOf(
+    read(value, "status", where),
+    ["mapped", "unavailable"] as const,
+    `${where}.status`,
+  );
+  if (status === "unavailable") {
+    for (const key of ["childPixelsToParent", "parentToScene", "childPixelsToScene"])
+      if (read(value, key, where) !== undefined)
+        throw new InspectionSerializationError(
+          `${where}.${key} must be absent when projection is unavailable.`,
+        );
+    return {
+      status,
+      reason: text(read(value, "reason", where), `${where}.reason`),
+    };
+  }
+  return {
+    status,
+    childPixelsToParent: readMatrix6(
+      read(value, "childPixelsToParent", where),
+      `${where}.childPixelsToParent`,
+    ),
+    parentToScene: readMatrix6(
+      read(value, "parentToScene", where),
+      `${where}.parentToScene`,
+    ),
+    childPixelsToScene: readMatrix6(
+      read(value, "childPixelsToScene", where),
+      `${where}.childPixelsToScene`,
+    ),
+  };
+}
+function readSurfaceOccurrence(
+  value: unknown,
+  where: string,
+): InspectionSurfaceOccurrence {
+  const childScissor = read(value, "childScissor", where);
+  const parentOccurrenceId = read(value, "parentOccurrenceId", where);
+  const worldFrameOccurrenceId = read(value, "worldFrameOccurrenceId", where);
+  const overlayFrameOccurrenceId = read(value, "overlayFrameOccurrenceId", where);
+  if (
+    text(read(value, "occurrenceIdKind", where), `${where}.occurrenceIdKind`) !==
+    "evaluation-command"
+  )
+    throw new InspectionSerializationError(
+      `${where}.occurrenceIdKind must be "evaluation-command".`,
+    );
+  return {
+    occurrenceId: safeId(read(value, "occurrenceId", where), `${where}.occurrenceId`),
+    occurrenceIdKind: "evaluation-command",
+    ownerNodeId: safeId(read(value, "ownerNodeId", where), `${where}.ownerNodeId`),
+    path: text(read(value, "path", where), `${where}.path`),
+    surface: readSurfaceKind(read(value, "surface", where), `${where}.surface`),
+    childResolution: resolutionTuple(
+      read(value, "childResolution", where),
+      `${where}.childResolution`,
+    ),
+    parentResolution: resolutionTuple(
+      read(value, "parentResolution", where),
+      `${where}.parentResolution`,
+    ),
+    uniform: readSurfaceUniform(read(value, "uniform", where), `${where}.uniform`),
+    ...(childScissor === undefined
+      ? {}
+      : { childScissor: integerRect(childScissor, `${where}.childScissor`) }),
+    ...(parentOccurrenceId === undefined
+      ? {}
+      : {
+          parentOccurrenceId: safeId(
+            parentOccurrenceId,
+            `${where}.parentOccurrenceId`,
+          ),
+        }),
+    parentFrameOccurrenceId: safeId(
+      read(value, "parentFrameOccurrenceId", where),
+      `${where}.parentFrameOccurrenceId`,
+    ),
+    ...(worldFrameOccurrenceId === undefined
+      ? {}
+      : {
+          worldFrameOccurrenceId: safeId(
+            worldFrameOccurrenceId,
+            `${where}.worldFrameOccurrenceId`,
+          ),
+        }),
+    ...(overlayFrameOccurrenceId === undefined
+      ? {}
+      : {
+          overlayFrameOccurrenceId: safeId(
+            overlayFrameOccurrenceId,
+            `${where}.overlayFrameOccurrenceId`,
+          ),
+        }),
+    projection: readProjection(read(value, "projection", where), `${where}.projection`),
+  };
+}
+function readOccurrenceCollections(
+  frame: unknown,
+  where: string,
+): {
+  frames?: InspectionFrameOccurrence[];
+  surfaces?: InspectionSurfaceOccurrence[];
+} {
+  const rawFrames = optionalEntries(
+    read(frame, "frameOccurrences", where),
+    `${where}.frameOccurrences`,
+  );
+  const rawSurfaces = optionalEntries(
+    read(frame, "surfaceOccurrences", where),
+    `${where}.surfaceOccurrences`,
+  );
+  const frames = rawFrames
+    ? readUnique(
+        rawFrames.entries,
+        rawFrames.count,
+        `${where}.frameOccurrences`,
+        readFrameOccurrence,
+        (record) => record.id,
+        "frame occurrence",
+      )
+    : undefined;
+  const surfaces = rawSurfaces
+    ? readUnique(
+        rawSurfaces.entries,
+        rawSurfaces.count,
+        `${where}.surfaceOccurrences`,
+        readSurfaceOccurrence,
+        (record) => record.occurrenceId,
+        "surface occurrence",
+      )
+    : undefined;
+  if (frames && surfaces) checkOccurrenceReferences(frames, surfaces, where);
+  else if (frames) checkOccurrenceReferences(frames, [], where);
+  else if (surfaces) checkOccurrenceReferences([], surfaces, where);
+  return { frames, surfaces };
+}
+function readUnique<T>(
+  entries: readonly unknown[],
+  count: number,
+  where: string,
+  readRecord: (value: unknown, where: string) => T,
+  idOf: (record: T) => number,
+  label: string,
+): T[] {
+  const out: T[] = [];
+  const seen = new Set<number>();
+  for (let index = 0; index < count; index++) {
+    const recordWhere = `${where}[${index}]`;
+    const record = readRecord(reading(() => entries[index]), recordWhere);
+    const id = idOf(record);
+    if (seen.has(id))
+      throw new InspectionSerializationError(
+        `${recordWhere} duplicates ${label} ${id}.`,
+      );
+    seen.add(id);
+    out.push(record);
+  }
+  return out;
+}
+function checkOccurrenceReferences(
+  frames: readonly InspectionFrameOccurrence[],
+  surfaces: readonly InspectionSurfaceOccurrence[],
+  where: string,
+) {
+  const frameIds = new Set(frames.map((frame) => frame.id));
+  const surfaceIds = new Set(surfaces.map((surface) => surface.occurrenceId));
+  for (const frame of frames) {
+    if (
+      frame.parentSurface.status === "known" &&
+      !surfaceIds.has(frame.parentSurface.occurrenceId)
+    )
+      throw new InspectionSerializationError(
+        `${where}.frameOccurrences parent surface ${frame.parentSurface.occurrenceId} is not recorded.`,
+      );
+  }
+  for (const surface of surfaces) {
+    if (!frameIds.has(surface.parentFrameOccurrenceId))
+      throw new InspectionSerializationError(
+        `${where}.surfaceOccurrences parent frame ${surface.parentFrameOccurrenceId} is not recorded.`,
+      );
+    for (const frameId of [
+      surface.worldFrameOccurrenceId,
+      surface.overlayFrameOccurrenceId,
+    ])
+      if (frameId !== undefined && !frameIds.has(frameId))
+        throw new InspectionSerializationError(
+          `${where}.surfaceOccurrences frame ${frameId} is not recorded.`,
+        );
+    if (
+      surface.parentOccurrenceId !== undefined &&
+      !surfaceIds.has(surface.parentOccurrenceId)
+    )
+      throw new InspectionSerializationError(
+        `${where}.surfaceOccurrences parent ${surface.parentOccurrenceId} is not recorded.`,
+      );
+  }
+  // Parent edges only: frame→parentSurface, surface→parentFrame, surface→parentOccurrence.
+  // World/overlay ids are child frames the surface owns, not parents; following them would
+  // reject a valid containment. Typed colors keep frame 0 and surface 0 distinct. One visit
+  // per recorded id, so each collection stays inside its existing work cap. Iterative so a
+  // long cycle cannot grow the call stack.
+  const frameParent = new Map<number, number>();
+  for (const frame of frames)
+    if (frame.parentSurface.status === "known")
+      frameParent.set(frame.id, frame.parentSurface.occurrenceId);
+  const surfaceParent = new Map<
+    number,
+    { readonly frame: number; readonly surface?: number }
+  >();
+  for (const surface of surfaces)
+    surfaceParent.set(surface.occurrenceId, {
+      frame: surface.parentFrameOccurrenceId,
+      ...(surface.parentOccurrenceId === undefined
+        ? {}
+        : { surface: surface.parentOccurrenceId }),
+    });
+  const frameColor = new Map<number, number>();
+  const surfaceColor = new Map<number, number>();
+  const steps = { frame: 0, surface: 0 };
+  const stack: { kind: "frame" | "surface"; id: number; next: number }[] = [];
+  const colorOf = (kind: "frame" | "surface", id: number) =>
+    (kind === "frame" ? frameColor : surfaceColor).get(id) ?? 0;
+  const paint = (kind: "frame" | "surface", id: number, color: number) =>
+    (kind === "frame" ? frameColor : surfaceColor).set(id, color);
+  const enter = (kind: "frame" | "surface", id: number) => {
+    const used = kind === "frame" ? ++steps.frame : ++steps.surface;
+    if (used > MAX_RAW_TARGET_WORK)
+      throw overCollectionWork(
+        `${where}.${kind === "frame" ? "frameOccurrences" : "surfaceOccurrences"}`,
+      );
+    paint(kind, id, 1);
+    stack.push({ kind, id, next: 0 });
+  };
+  const edgeCount = (kind: "frame" | "surface", id: number) => {
+    if (kind === "frame") return frameParent.has(id) ? 1 : 0;
+    const parent = surfaceParent.get(id);
+    if (!parent) return 0;
+    return parent.surface === undefined ? 1 : 2;
+  };
+  const edgeAt = (kind: "frame" | "surface", id: number, index: number) => {
+    if (kind === "frame")
+      return { kind: "surface" as const, id: frameParent.get(id)! };
+    const parent = surfaceParent.get(id)!;
+    return index === 0
+      ? { kind: "frame" as const, id: parent.frame }
+      : { kind: "surface" as const, id: parent.surface! };
+  };
+  const walk = (kind: "frame" | "surface", id: number) => {
+    if (colorOf(kind, id) !== 0) return;
+    enter(kind, id);
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1];
+      if (top.next >= edgeCount(top.kind, top.id)) {
+        paint(top.kind, top.id, 2);
+        stack.pop();
+        continue;
+      }
+      const edge = edgeAt(top.kind, top.id, top.next++);
+      const seen = colorOf(edge.kind, edge.id);
+      if (seen === 1)
+        throw new InspectionSerializationError(
+          `${where} contains a parent cycle at ${edge.kind} ${edge.id}.`,
+        );
+      if (seen === 0) enter(edge.kind, edge.id);
+    }
+  };
+  for (const frame of frames) walk("frame", frame.id);
+  for (const surface of surfaces) walk("surface", surface.occurrenceId);
+}
+function occurrenceSpaceIds(
+  frames: readonly InspectionFrameOccurrence[] | undefined,
+): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const frame of frames ?? []) {
+    if (frame.layoutSpace.status !== "known" || seen.has(frame.layoutSpace.id))
+      continue;
+    seen.add(frame.layoutSpace.id);
+    ids.push(frame.layoutSpace.id);
+  }
+  return ids;
+}
+function ownsNode(
+  nodeId: number,
+  ownerIds: ReadonlySet<number>,
+  ownerCounts: ReadonlyMap<number, number>,
+): boolean {
+  return ownerIds.has(nodeId) && ownerCounts.get(nodeId) === 1;
+}
+/**
+ * Keep records owned by the selected node, plus the parent frame/surface/space closure
+ * needed to read their mapping. A retained frame does not keep sibling draw cameras.
+ */
+function retainOccurrenceClosure(
+  frames: readonly InspectionFrameOccurrence[] | undefined,
+  surfaces: readonly InspectionSurfaceOccurrence[] | undefined,
+  ownerIds: ReadonlySet<number>,
+  ownerCounts: ReadonlyMap<number, number>,
+): {
+  frames?: InspectionFrameOccurrence[];
+  surfaces?: InspectionSurfaceOccurrence[];
+  spaceIds: string[];
+} {
+  if (!frames && !surfaces) return { spaceIds: [] };
+  const frameList = frames ?? [];
+  const surfaceList = surfaces ?? [];
+  const frameById = new Map(frameList.map((frame) => [frame.id, frame]));
+  const surfaceById = new Map(
+    surfaceList.map((surface) => [surface.occurrenceId, surface]),
+  );
+  const keepFrames = new Set<number>();
+  const keepSurfaces = new Set<number>();
+  const spaceIds: string[] = [];
+  const seenSpaces = new Set<string>();
+  const addSpace = (id: string) => {
+    if (seenSpaces.has(id)) return;
+    seenSpaces.add(id);
+    spaceIds.push(id);
+  };
+  for (const surface of surfaceList)
+    if (ownsNode(surface.ownerNodeId, ownerIds, ownerCounts))
+      keepSurfaces.add(surface.occurrenceId);
+  for (const frame of frameList)
+    if (
+      frame.drawCameras.some((camera) =>
+        ownsNode(camera.ownerNodeId, ownerIds, ownerCounts),
+      )
+    )
+      keepFrames.add(frame.id);
+  const pendingFrames = [...keepFrames];
+  const pendingSurfaces = [...keepSurfaces];
+  while (pendingFrames.length > 0 || pendingSurfaces.length > 0) {
+    while (pendingSurfaces.length > 0) {
+      const surface = surfaceById.get(pendingSurfaces.pop()!);
+      if (!surface) continue;
+      if (
+        surface.parentOccurrenceId !== undefined &&
+        !keepSurfaces.has(surface.parentOccurrenceId)
+      ) {
+        keepSurfaces.add(surface.parentOccurrenceId);
+        pendingSurfaces.push(surface.parentOccurrenceId);
+      }
+      for (const frameId of [
+        surface.parentFrameOccurrenceId,
+        surface.worldFrameOccurrenceId,
+        surface.overlayFrameOccurrenceId,
+      ]) {
+        if (frameId === undefined || keepFrames.has(frameId)) continue;
+        keepFrames.add(frameId);
+        pendingFrames.push(frameId);
+      }
+    }
+    while (pendingFrames.length > 0) {
+      const frame = frameById.get(pendingFrames.pop()!);
+      if (!frame) continue;
+      if (frame.layoutSpace.status === "known") addSpace(frame.layoutSpace.id);
+      if (frame.parentSurface.status !== "known") continue;
+      const parentId = frame.parentSurface.occurrenceId;
+      if (keepSurfaces.has(parentId)) continue;
+      keepSurfaces.add(parentId);
+      pendingSurfaces.push(parentId);
+    }
+  }
+  return {
+    ...(frames
+      ? {
+          frames: frameList
+            .filter((frame) => keepFrames.has(frame.id))
+            .map((frame) => ({
+              ...frame,
+              drawCameras: frame.drawCameras.filter((camera) =>
+                ownsNode(camera.ownerNodeId, ownerIds, ownerCounts),
+              ),
+            })),
+        }
+      : {}),
+    ...(surfaces
+      ? {
+          surfaces: surfaceList.filter((surface) =>
+            keepSurfaces.has(surface.occurrenceId),
+          ),
+        }
+      : {}),
+    spaceIds,
+  };
+}
+function chargeJsonNumber(budget: InspectionBudget, value: number) {
+  budget.charge(String(value).length);
+}
+function chargeResolution(
+  budget: InspectionBudget,
+  pair: readonly [number, number],
+) {
+  budget.charge(1);
+  chargeJsonNumber(budget, pair[0]);
+  budget.charge(1);
+  chargeJsonNumber(budget, pair[1]);
+  budget.charge(1);
+}
+function chargeRect(budget: InspectionBudget, rect: InspectionBounds) {
+  budget.charge(1);
+  chargeJsonKey(budget, "x", true);
+  chargeJsonNumber(budget, rect.x);
+  chargeJsonKey(budget, "y", false);
+  chargeJsonNumber(budget, rect.y);
+  chargeJsonKey(budget, "width", false);
+  chargeJsonNumber(budget, rect.width);
+  chargeJsonKey(budget, "height", false);
+  chargeJsonNumber(budget, rect.height);
+  budget.charge(1);
+}
+function chargeStatusReason(
+  budget: InspectionBudget,
+  status: string,
+  reason: string,
+) {
+  budget.charge(1);
+  chargeJsonString(budget, "status", status, true);
+  chargeJsonString(budget, "reason", reason, false);
+  budget.charge(1);
+}
+function chargeFrameOccurrence(
+  budget: InspectionBudget,
+  frame: InspectionFrameOccurrence,
+) {
+  budget.charge(1);
+  chargeJsonKey(budget, "id", true);
+  chargeJsonNumber(budget, frame.id);
+  chargeJsonKey(budget, "layoutSpace", false);
+  if (frame.layoutSpace.status === "known") {
+    budget.charge(1);
+    chargeJsonString(budget, "status", "known", true);
+    chargeJsonString(budget, "id", frame.layoutSpace.id, false);
+    budget.charge(1);
+  } else chargeStatusReason(budget, "unavailable", frame.layoutSpace.reason);
+  chargeJsonKey(budget, "targetResolution", false);
+  chargeResolution(budget, frame.targetResolution);
+  chargeJsonKey(budget, "designSize", false);
+  chargeResolution(budget, frame.designSize);
+  chargeJsonKey(budget, "scissor", false);
+  chargeRect(budget, frame.scissor);
+  chargeJsonKey(budget, "parentSurface", false);
+  if (frame.parentSurface.status === "known") {
+    budget.charge(1);
+    chargeJsonString(budget, "status", "known", true);
+    chargeJsonKey(budget, "occurrenceId", false);
+    chargeJsonNumber(budget, frame.parentSurface.occurrenceId);
+    budget.charge(1);
+  } else chargeStatusReason(budget, "unavailable", frame.parentSurface.reason);
+  chargeJsonKey(budget, "baseFrameTransform", false);
+  budget.charge(1);
+  chargeJsonString(budget, "status", frame.baseFrameTransform.status, true);
+  if (frame.baseFrameTransform.status === "mapped") {
+    chargeJsonString(budget, "source", frame.baseFrameTransform.source, false);
+    chargeJsonString(
+      budget,
+      "precision",
+      frame.baseFrameTransform.precision,
+      false,
+    );
+    chargeJsonKey(budget, "matrix", false);
+    chargeMatrix(budget, frame.baseFrameTransform.matrix);
+  } else {
+    chargeJsonString(budget, "reason", frame.baseFrameTransform.reason, false);
+  }
+  budget.charge(1);
+  chargeJsonKey(budget, "drawCameras", false);
+  budget.charge(1);
+  frame.drawCameras.forEach((camera, index) => {
+    if (index > 0) budget.charge(1);
+    budget.charge(1);
+    chargeJsonKey(budget, "commandId", true);
+    chargeJsonNumber(budget, camera.commandId);
+    chargeJsonKey(budget, "ownerNodeId", false);
+    chargeJsonNumber(budget, camera.ownerNodeId);
+    chargeJsonKey(budget, "camera", false);
+    budget.charge(1);
+    chargeJsonString(budget, "status", camera.camera.status, true);
+    if (camera.camera.status === "mapped") {
+      chargeJsonString(budget, "source", camera.camera.source, false);
+      chargeJsonString(budget, "precision", camera.camera.precision, false);
+      chargeJsonKey(budget, "matrix", false);
+      chargeMatrix(budget, camera.camera.matrix);
+    } else chargeJsonString(budget, "reason", camera.camera.reason, false);
+    budget.charge(1);
+    budget.charge(1);
+  });
+  budget.charge(1);
+  budget.charge(1);
+}
+function chargeSurfaceOccurrence(
+  budget: InspectionBudget,
+  surface: InspectionSurfaceOccurrence,
+) {
+  budget.charge(1);
+  chargeJsonKey(budget, "occurrenceId", true);
+  chargeJsonNumber(budget, surface.occurrenceId);
+  chargeJsonString(budget, "occurrenceIdKind", surface.occurrenceIdKind, false);
+  chargeJsonKey(budget, "ownerNodeId", false);
+  chargeJsonNumber(budget, surface.ownerNodeId);
+  chargeJsonString(budget, "path", surface.path, false);
+  chargeJsonKey(budget, "surface", false);
+  budget.charge(1);
+  chargeJsonString(budget, "kind", surface.surface.kind, true);
+  if (surface.surface.kind === "clip")
+    chargeJsonString(budget, "shape", surface.surface.shape, false);
+  budget.charge(1);
+  chargeJsonKey(budget, "childResolution", false);
+  chargeResolution(budget, surface.childResolution);
+  chargeJsonKey(budget, "parentResolution", false);
+  chargeResolution(budget, surface.parentResolution);
+  chargeJsonKey(budget, "uniform", false);
+  budget.charge(1);
+  chargeJsonKey(budget, "rect", true);
+  chargeMatrix(budget, surface.uniform.rect);
+  chargeJsonKey(budget, "transform", false);
+  chargeMatrix(budget, surface.uniform.transform);
+  chargeJsonKey(budget, "resolution", false);
+  chargeResolution(budget, surface.uniform.resolution);
+  chargeJsonKey(budget, "opacity", false);
+  chargeJsonNumber(budget, surface.uniform.opacity);
+  chargeJsonKey(budget, "cameraX", false);
+  chargeMatrix(budget, surface.uniform.cameraX);
+  chargeJsonKey(budget, "cameraY", false);
+  chargeMatrix(budget, surface.uniform.cameraY);
+  budget.charge(1);
+  if (surface.childScissor) {
+    chargeJsonKey(budget, "childScissor", false);
+    chargeRect(budget, surface.childScissor);
+  }
+  if (surface.parentOccurrenceId !== undefined) {
+    chargeJsonKey(budget, "parentOccurrenceId", false);
+    chargeJsonNumber(budget, surface.parentOccurrenceId);
+  }
+  chargeJsonKey(budget, "parentFrameOccurrenceId", false);
+  chargeJsonNumber(budget, surface.parentFrameOccurrenceId);
+  if (surface.worldFrameOccurrenceId !== undefined) {
+    chargeJsonKey(budget, "worldFrameOccurrenceId", false);
+    chargeJsonNumber(budget, surface.worldFrameOccurrenceId);
+  }
+  if (surface.overlayFrameOccurrenceId !== undefined) {
+    chargeJsonKey(budget, "overlayFrameOccurrenceId", false);
+    chargeJsonNumber(budget, surface.overlayFrameOccurrenceId);
+  }
+  chargeJsonKey(budget, "projection", false);
+  budget.charge(1);
+  chargeJsonString(budget, "status", surface.projection.status, true);
+  if (surface.projection.status === "mapped") {
+    chargeJsonKey(budget, "childPixelsToParent", false);
+    chargeMatrix(budget, surface.projection.childPixelsToParent);
+    chargeJsonKey(budget, "parentToScene", false);
+    chargeMatrix(budget, surface.projection.parentToScene);
+    chargeJsonKey(budget, "childPixelsToScene", false);
+    chargeMatrix(budget, surface.projection.childPixelsToScene);
+  } else chargeJsonString(budget, "reason", surface.projection.reason, false);
+  budget.charge(1);
+  budget.charge(1);
+}
+function chargeOccurrenceList<T>(
+  budget: InspectionBudget | undefined,
+  structure: number,
+  records: readonly T[] | undefined,
+  chargeRecord: (budget: InspectionBudget, record: T) => void,
+) {
+  if (!budget || records === undefined) return;
+  budget.charge(structure);
+  records.forEach((record, index) => {
+    if (index > 0) budget.charge(1);
+    chargeRecord(budget, record);
+  });
+}
+/** Nodes carrying this authored ID. Synthetic path segments never match. */
+function matches(
+  root: InspectionLayoutNode,
+  id: string,
+): InspectionLayoutNode[] {
+  const found: InspectionLayoutNode[] = [];
+  const stack: InspectionLayoutNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.id === id) found.push(node);
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push(node.children[i]);
+    }
+  }
+  return found;
+}
+/**
+ * Ancestor chain from the root down to `match`, keeping the matched node's subtree.
+ * Bounded iterative traversal: never overflows call stack.
+ */
+function prune(
+  root: InspectionLayoutNode,
+  match: InspectionLayoutNode,
+): InspectionLayoutNode | undefined {
+  if (root === match) return root;
+
+  const stack: {
+    node: InspectionLayoutNode;
+    ancestors: InspectionLayoutNode[];
+  }[] = [{ node: root, ancestors: [] }];
+  let matchAncestors: InspectionLayoutNode[] | undefined;
+
+  while (stack.length > 0) {
+    const { node, ancestors } = stack.pop()!;
+    if (node === match) {
+      matchAncestors = ancestors;
+      break;
+    }
+    const nextAncestors = [...ancestors, node];
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push({ node: node.children[i], ancestors: nextAncestors });
+    }
+  }
+
+  if (!matchAncestors) return undefined;
+
+  let current: InspectionLayoutNode = match;
+  for (let i = matchAncestors.length - 1; i >= 0; i--) {
+    const ancestor = matchAncestors[i];
+    current = {
+      ...ancestor,
+      children: [current],
+    };
+    const prefix = (ancestor as { warningPrefix?: string }).warningPrefix;
+    if (prefix) {
+      Object.defineProperty(current, "warningPrefix", {
+        value: prefix,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+  }
+  return current;
+}
+/** Whether a path is the target or one of its descendants inside the same space. */
+function within(path: string, target: string, separator = "/"): boolean {
+  return path === target || path.startsWith(`${target}${separator}`);
+}
+/**
+ * Keep the selected scope, the ancestor chain down to the target, the target's own
+ * subtree, and only the commands, warnings and diagnostics that belong to the
+ * retained nodes. Diagnostics inside the target subtree are retained, so
+ * `--fail-on error` cannot miss an error that is still displayed. Each
+ * `(space, path)` is narrowed independently because a nested world reuses its
+ * authored paths under a different space.
+ */
+export function applyInspectionTarget(
+  document: InspectionDocument,
+  target: InspectionTarget | undefined,
+): InspectionDocument {
+  if (!target) return document;
+  if (
+    document.target &&
+    document.target.scope === target.scope &&
+    document.target.id === target.id &&
+    document.scenes.length === 1 &&
+    document.scenes[0].scope === target.scope
+  ) {
+    return document;
+  }
+  const scene = document.scenes.find((entry) => entry.scope === target.scope);
+  if (!scene)
+    throw new InspectionTargetError(
+      `No inspected scope "${target.scope}". Available: ${document.scenes.map((entry) => entry.scope).join(", ") || "none"}.`,
+    );
+  if (!scene.tree)
+    throw new InspectionTargetError(
+      `Scope "${target.scope}" has no layout tree to target: ${scene.unavailable ?? "inspection is unavailable"}`,
+    );
+  const found = matches(scene.tree, target.id);
+  if (!found.length)
+    throw new InspectionTargetError(
+      `No node has ID "${target.id}" in ${target.scope}. Targets match authored ViewNode.id() values; anonymous nodes cannot be targeted.`,
+    );
+  if (found.length > 1)
+    throw new InspectionTargetError(
+      `${found.length} nodes have ID "${target.id}" in ${target.scope}: ${found.map((node) => `${node.space ?? "layout"}:${node.path}`).join(", ")}. IDs must be unique inside one scope.`,
+    );
+  const match = found[0];
+  const tree = prune(scene.tree, match)!;
+
+  const {
+    retained,
+    retainedAttributionPaths,
+    maxRetainedPathLength,
+    ownerIds,
+  } = collectRetained(tree);
+
+  const keepsEntry = (
+    candidate: { space?: string; path: string },
+    defaultSpace = "layout",
+  ) =>
+    retained.get(candidate.space ?? defaultSpace)?.has(candidate.path) === true;
+  const commands = (scene.commands ?? []).filter((entry) =>
+    keepsEntry(entry, "layout"),
+  );
+  const diagnostics = document.diagnostics.filter(
+    (entry) => entry.scope === target.scope && keepsEntry(entry, "layout"),
+  );
+
+  const warnings = (scene.warnings ?? []).filter((warning) =>
+    checkWarningAttribution(
+      warning,
+      retainedAttributionPaths,
+      maxRetainedPathLength,
+    ),
+  );
+  // Uniqueness is decided on the full tree, before `prune` drops the twin branches.
+  const ownerCounts =
+    scene.paintRecords?.length ||
+    scene.finalPaintRecords?.length ||
+    scene.frameOccurrences?.length ||
+    scene.surfaceOccurrences?.length
+      ? countOwnerIds(scene.tree, ownerIds)
+      : undefined;
+  const records = ownedRecords(scene.paintRecords, ownerIds, ownerCounts);
+  const finalRecords = ownedRecords(
+    scene.finalPaintRecords,
+    ownerIds,
+    ownerCounts,
+  );
+  const occurrenceClosure = retainOccurrenceClosure(
+    scene.frameOccurrences,
+    scene.surfaceOccurrences,
+    ownerIds,
+    ownerCounts ?? new Map(),
+  );
+  const retainedScene: InspectionScene = {
+    ...scene,
+    tree,
+    commands,
+    warnings,
+    spaces: retainSpaceDescriptors(scene.spaces, [
+      ...referencedSpaceIds(tree),
+      ...occurrenceClosure.spaceIds,
+    ]),
+    ...(records === undefined ? {} : { paintRecords: records }),
+    ...(finalRecords === undefined
+      ? {}
+      : { finalPaintRecords: finalRecords }),
+    ...(occurrenceClosure.frames === undefined
+      ? {}
+      : { frameOccurrences: occurrenceClosure.frames }),
+    ...(occurrenceClosure.surfaces === undefined
+      ? {}
+      : { surfaceOccurrences: occurrenceClosure.surfaces }),
+  };
+  return {
+    ...document,
+    capability: {
+      ...document.capability,
+      transitions: transitionCapability([retainedScene]),
+    },
+    scenes: [retainedScene],
+    diagnostics,
+    target: {
+      scope: target.scope,
+      id: target.id,
+      path: match.path,
+      matches: 1,
+    },
+  };
+}
+/** Published retained scenes only. A full-report capability must not survive a narrower target. */
+function transitionCapability(
+  scenes: readonly InspectionScene[],
+): InspectionCapability["transitions"] {
+  const available = scenes.some(
+    (scene) => scene.finalProjection.status === "available",
+  );
+  return available
+    ? { projection: "partial", reason: TRANSITION_PARTIAL_REASON }
+    : { projection: "unavailable", reason: TRANSITION_UNAVAILABLE_REASON };
+}
+function overBudget(
+  bytes: number,
+  limit: number,
+): InspectionSerializationError {
+  return new InspectionSerializationError(
+    `Inspection output is ${bytes} bytes of UTF-8, over the ${limit}-byte (${(limit / 2 ** 20).toFixed(2)} MiB) limit. Narrow the output with --target SCOPE#ID and retry.`,
+  );
+}
+/**
+ * Iteratively walk an arbitrary inspection document for exact UTF-8 size measurement
+ * and serialization without call-stack recursion limits. Retains JSON.stringify for
+ * scalar escaping only.
+ */
+function measureAndSerializeInspection(
+  document: InspectionDocument,
+  limit: number,
+  serialize: boolean,
+): { bytes: number; json?: string } {
+  let bytes = 0;
+  const chunks: string[] = serialize ? [] : [];
+
+  const addAscii = (text: string) => {
+    bytes += text.length;
+    if (bytes > limit) throw overBudget(bytes, limit);
+    if (serialize) chunks.push(text);
+  };
+
+  const addScalarString = (text: string) => {
+    // Quick lower-bound check: escaped UTF-8 length is at least text.length + 2.
+    // If text.length + 2 exceeds limit, fail immediately without allocating JSON.stringify(text).
+    if (bytes + text.length + 2 > limit) {
+      throw overBudget(bytes + text.length + 2, limit);
+    }
+    const escaped = JSON.stringify(text);
+    let utf8Length = 0;
+    for (let i = 0; i < escaped.length; i++) {
+      const code = escaped.charCodeAt(i);
+      if (code < 0x80) utf8Length += 1;
+      else if (code < 0x800) utf8Length += 2;
+      else if (code >= 0xd800 && code <= 0xdbff) {
+        utf8Length += 4;
+        i++;
+      } else {
+        utf8Length += 3;
+      }
+    }
+    bytes += utf8Length;
+    if (bytes > limit) throw overBudget(bytes, limit);
+    if (serialize) chunks.push(escaped);
+  };
+
+  type TraversalFrame =
+    | { kind: "arr"; obj: object; items: readonly unknown[]; index: number }
+    | {
+        kind: "obj";
+        obj: object;
+        keys: string[];
+        values: unknown[];
+        index: number;
+      };
+
+  const stack: TraversalFrame[] = [];
+  const activeAncestors = new Set<object>();
+
+  function processValue(value: unknown): void {
+    if (value === null) {
+      addAscii("null");
+      return;
+    }
+    switch (typeof value) {
+      case "boolean":
+        addAscii(value ? "true" : "false");
+        return;
+      case "number":
+        addAscii(Number.isFinite(value) ? String(value) : "null");
+        return;
+      case "string":
+        addScalarString(value);
+        return;
+      case "object": {
+        if (activeAncestors.has(value)) {
+          throw new InspectionSerializationError(
+            "Inspection document contains a cycle.",
+          );
+        }
+        activeAncestors.add(value);
+
+        if (Array.isArray(value)) {
+          addAscii("[");
+          stack.push({ kind: "arr", obj: value, items: value, index: 0 });
+          return;
+        }
+
+        addAscii("{");
+        const keys: string[] = [];
+        const values: unknown[] = [];
+        for (const [k, v] of Object.entries(value)) {
+          if (v !== undefined) {
+            keys.push(k);
+            values.push(v);
+          }
+        }
+        stack.push({ kind: "obj", obj: value, keys, values, index: 0 });
+        return;
+      }
+      default:
+        addAscii("null");
+        return;
+    }
+  }
+
+  processValue(document);
+
+  while (stack.length > 0) {
+    const top = stack[stack.length - 1];
+
+    if (top.kind === "arr") {
+      if (top.index < top.items.length) {
+        if (top.index > 0) addAscii(",");
+        const item = top.items[top.index++];
+        processValue(item);
+      } else {
+        stack.pop();
+        activeAncestors.delete(top.obj);
+        addAscii("]");
+      }
+    } else {
+      if (top.index < top.keys.length) {
+        if (top.index > 0) addAscii(",");
+        const key = top.keys[top.index];
+        const val = top.values[top.index++];
+        addScalarString(key);
+        addAscii(":");
+        processValue(val);
+      } else {
+        stack.pop();
+        activeAncestors.delete(top.obj);
+        addAscii("}");
+      }
+    }
+  }
+
+  return { bytes, json: serialize ? chunks.join("") : undefined };
+}
+
+/**
+ * Measure the document's UTF-8 size without materializing the whole JSON string.
+ *
+ * A hostile or simply huge frame must not be allowed to allocate its full encoding
+ * before the budget is checked, so the walk stops as soon as the running count
+ * passes `limit`. The count is exact only below the limit; above it the function
+ * throws. Escaping matches `JSON.stringify` for the characters JSON escapes.
+ */
+export function measureInspection(
+  document: InspectionDocument,
+  limit = MAX_INSPECTION_BYTES,
+): number {
+  return measureAndSerializeInspection(document, limit, false).bytes;
+}
+
+/**
+ * Serialize the document iteratively, refusing output over `limit` UTF-8 bytes. The size is
+ * measured first, so an oversized frame fails before the full JSON string is emitted.
+ */
+export function serializeInspection(
+  document: InspectionDocument,
+  limit = MAX_INSPECTION_BYTES,
+): string {
+  const { bytes, json } = measureAndSerializeInspection(document, limit, true);
+  if (new TextEncoder().encode(json!).length !== bytes)
+    throw new InspectionSerializationError(
+      `Inspection output size could not be verified (${bytes} measured, encoding differs). This is a serializer defect, not a project problem.`,
+    );
+  return json!;
+}

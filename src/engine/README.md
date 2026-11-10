@@ -25,6 +25,7 @@ render/                    Decoded media + scenes → pixels / mixed audio
   renderer.ts              GPU scene rendering for preview and offline output
   frame-source.ts          Offline canvas lifecycle and GPU completion
   visual.ts                Media textures and footage scenes
+  transition.ts            Two-target compositor for incoming overlap transitions
   audio.ts                 Offline audio rendering and preview audio transport
   live-mix.ts              Shared audio graph scheduling and resource limits
 media/                     Shared asset/project integration, not a decoding layer
@@ -107,6 +108,17 @@ at the engine root.
 
 No dynamic plugin registry is needed for one implemented format. Introduce a
 registry when runtime format discovery becomes an actual requirement.
+
+## Timeline overlaps
+
+Scene entries retain sequential cuts by default. Incoming `crossfade`, `wipe`,
+`slide`, and `zoom` transitions declare an exact overlap with the predecessor.
+`evaluateActive` returns both local clocks and overlap progress; the renderer
+prepares both active scenes and preserves both managed video activations. Triple
+overlaps and gaps are rejected. Transition targets are owned by the renderer,
+allocated only for projects using transitions, and released with it. Scene-linked audio (`AudioClip.sceneId`) follows overlap envelopes in preview and
+export; unlinked music remains independent. Custom WGSL is compiled during setup.
+Shared transitions match authoring element IDs in output space before drawing.
 
 ## Resource ownership
 

@@ -5,13 +5,26 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve, basename, join } from "node:path";
 import {
   access,
+  link,
   mkdir,
   copyFile,
   rename,
   rm,
   readFile,
+  writeFile,
 } from "node:fs/promises";
 import { constants } from "node:fs";
+import {
+  parseRules,
+  evaluateRules,
+  RulesInputError,
+  MAX_RULES_BYTES,
+  type RulesFile,
+} from "../src/engine/inspect/rules";
+import {
+  MAX_INSPECTION_BYTES,
+  type InspectionDocument,
+} from "../src/engine/inspect/report";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { parseOptions, help } from "./options.ts";
@@ -29,6 +42,46 @@ async function checkOutput(output: string, force?: boolean) {
     throw Error(`Output exists: ${output}. Pass --force to replace it.`);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+/**
+ * Publish `text` at `output` without ever exposing a partial file.
+ *
+ * The bytes go to a sibling temp file first, so a failed or cancelled write leaves
+ * the target untouched. Publication is a single atomic rename: without `--force`
+ * `link()` refuses an existing target atomically (no TOCTOU window and no copy that
+ * a reader could observe half-written), with `--force` the rename replaces it.
+ * `checkCancelled` runs immediately before the commit, so a timeout or SIGINT that
+ * arrived during the write cannot still produce an output.
+ */
+export async function writeAtomic(
+  output: string,
+  text: string,
+  options: { force?: boolean; checkCancelled?: () => void } = {},
+) {
+  await mkdir(dirname(output), { recursive: true });
+  const temporary = join(
+    dirname(output),
+    `.${basename(output)}.${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(temporary, text, "utf8");
+    // Last chance to abandon the write: the temp file is the only thing on disk.
+    options.checkCancelled?.();
+    if (options.force) await rename(temporary, output);
+    else {
+      try {
+        await link(temporary, output);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST")
+          throw Error(`Output exists: ${output}. Pass --force to replace it.`);
+        throw error;
+      }
+      await rm(temporary);
+    }
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
   }
 }
 
@@ -67,6 +120,37 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (!("command" in parsed)) return;
+    let rules: RulesFile | undefined;
+    if (parsed.rules !== undefined) {
+      try {
+        const handle = await import("node:fs/promises").then((fs) =>
+          fs.open(resolve(parsed.rules!), "r"),
+        );
+        try {
+          const buffer = Buffer.alloc(MAX_RULES_BYTES + 1);
+          let size = 0;
+          while (size < buffer.length) {
+            const read = await handle.read(
+              buffer,
+              size,
+              buffer.length - size,
+              null,
+            );
+            if (!read.bytesRead) break;
+            size += read.bytesRead;
+          }
+          if (size > MAX_RULES_BYTES)
+            throw new RulesInputError("Rules exceed the 1 MiB limit.");
+          rules = parseRules(buffer.subarray(0, size).toString("utf8"));
+        } finally {
+          await handle.close();
+        }
+      } catch (error) {
+        throw new RulesInputError(
+          `Invalid --rules input: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     options = parsed;
     const activeOptions = parsed;
     const project = await resolveProject(
@@ -220,26 +304,106 @@ export async function main(argv = process.argv.slice(2)) {
         );
       if (failures.length) throw Error(failures.join("\n"));
       const metadata = await page.evaluate(() => window.ritween.metadata());
+      // inspect writes to stdout unless --output names a file; frame/export always save a file.
+      const inspectOutput =
+        activeOptions.output === undefined
+          ? undefined
+          : resolve(activeOptions.output);
       const output = resolve(
         activeOptions.output ?? exportFilename(metadata.name),
       );
-      if (activeOptions.output === undefined)
-        await checkOutput(output, activeOptions.force);
       if (
-        activeOptions.command === "frame" &&
+        activeOptions.output === undefined &&
+        activeOptions.command !== "inspect"
+      )
+        await checkOutput(output, activeOptions.force);
+      // The approved decision follows `frame`: reject out-of-range times instead of clamping.
+      if (
+        (activeOptions.command === "frame" ||
+          activeOptions.command === "inspect") &&
         activeOptions.time > metadata.duration
       )
         throw Error(
-          `Frame time ${activeOptions.time}s exceeds composition duration ${metadata.duration}s.`,
+          `${activeOptions.command === "frame" ? "Frame" : "Inspect"} time ${activeOptions.time}s exceeds composition duration ${metadata.duration}s.`,
         );
+      // `inspect --frame` shares the exact frame bound, so the endpoint index cannot differ.
       if (
-        activeOptions.command === "frame" &&
+        (activeOptions.command === "frame" ||
+          activeOptions.command === "inspect") &&
         activeOptions.frame !== undefined &&
         activeOptions.frame >= Math.ceil(metadata.duration * activeOptions.fps)
       )
         throw Error(
           `Frame index must be less than ${Math.ceil(metadata.duration * activeOptions.fps)} for this composition at ${activeOptions.fps} FPS.`,
         );
+      if (activeOptions.command === "inspect") {
+        const inspector = page.evaluate(
+          async ({ time, width, height, packageVersion, target }) =>
+            window.ritween.inspect({
+              time,
+              width,
+              height,
+              packageVersion,
+              target,
+            }),
+          {
+            time: activeOptions.time,
+            width: activeOptions.width,
+            height: activeOptions.height,
+            packageVersion: JSON.parse(
+              await readFile(join(runtimeRoot, "package.json"), "utf8"),
+            ).version as string,
+            target: activeOptions.target,
+          },
+        );
+        // The evaluator prefixes its own name and appends browser stack frames;
+        // report only the message the user can act on.
+        const { json: inspectedJson, summary } = await inspector.catch(
+          (error: unknown) => {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            throw Error(
+              message
+                .replace(/^page\.evaluate: (?:(?:\w*Error): )?/, "")
+                .split(/\n\s+at /)[0],
+            );
+          },
+        );
+        const document = JSON.parse(inspectedJson) as InspectionDocument;
+        const ruleResults = rules ? evaluateRules(document, rules) : undefined;
+        const json = ruleResults
+          ? JSON.stringify({ ...document, ruleResults })
+          : inspectedJson;
+        if (Buffer.byteLength(json, "utf8") > MAX_INSPECTION_BYTES)
+          throw Error("Inspection exceeds 64 MiB; inspect a narrower target.");
+        if (
+          ruleResults?.some(
+            (r) => r.status === "fail" || r.status === "indeterminate",
+          )
+        )
+          process.exitCode = 1;
+        if (failures.length) throw Error(failures.join("\n"));
+        if (cancelled) throw Error("Cancelled.");
+        if (inspectOutput)
+          await writeAtomic(inspectOutput, json, {
+            force: activeOptions.force,
+            checkCancelled: () => {
+              if (cancelled || interrupted) throw Error("Cancelled.");
+            },
+          });
+        else process.stdout.write(`${json}\n`);
+        // JSON owns stdout, so every human-readable line stays on stderr.
+        console.error(
+          `ritween inspect: ${summary.scopes} scope(s), ${summary.diagnostics} diagnostic(s) at ${summary.effectiveTime}s.`,
+        );
+        if (activeOptions.failOn === "error" && summary.errors) {
+          process.exitCode = 1;
+          console.error(
+            `ritween inspect: ${summary.errors} error diagnostic(s); exit 1 because --fail-on error was selected.`,
+          );
+        }
+        return;
+      }
       const [download, details] = await Promise.all([
         page.waitForEvent("download"),
         page.evaluate(
@@ -311,7 +475,14 @@ export async function main(argv = process.argv.slice(2)) {
         ? JSON.stringify({ event: "error", message })
         : `Ritween: ${message}`,
     );
-    process.exitCode = interrupted ? 130 : 1;
+    // Usage and malformed input exit 2; runtime and selected validation failures exit 1.
+    process.exitCode = interrupted
+      ? 130
+      : error instanceof RulesInputError
+        ? 2
+        : options
+          ? 1
+          : 2;
   } finally {
     exportProgress?.stop();
     cancelled = true;

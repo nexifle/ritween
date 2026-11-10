@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    {
+      "id": "settled-gap",
+      "kind": "minimum-gap",
+      "a": {
+        "scope": "scene:layout",
+        "id": "first",
+        "space": "layout",
+        "bounds": "layout-slot"
+      },
+      "b": {
+        "scope": "scene:layout",
+        "id": "second",
+        "space": "layout",
+        "bounds": "layout-slot"
+      },
+      "axis": "x",
+      "minimum": 12,
+      "space": "scene:layout/layout",
+      "temporal": {
+        "start": 1,
+        "end": 3,
+        "samples": [1, 2]
+      }
+    },
+    {
+      "id": "safe-inset",
+      "kind": "containment",
+      "a": {
+        "scope": "scene:layout",
+        "id": "row",
+        "space": "layout",
+        "bounds": "content"
+      },
+      "b": {
+        "scope": "scene:layout",
+        "id": "safe",
+        "space": "layout",
+        "bounds": "safe-rectangle"
+      },
+      "space": "scene:layout/layout",
+      "temporal": {
+        "start": 0,
+        "end": 3,
+        "samples": [0, 1, 2]
+      }
+    }
+  ]
+}

@@ -18,227 +18,234 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(`${url}/__ritween/render`);
   await page.waitForFunction(() => !!window.ritween);
-  const report = await page.evaluate(async (sourceRoot) => {
-    const { project: demo } = await import("/@id/virtual:ritween-project");
-    const { exportMp4: exportVideo } =
-      await import(`${sourceRoot}/engine/export/formats/mp4/export-mp4.ts`);
-    const { Renderer } = await import(`${sourceRoot}/engine/render/renderer.ts`);
-    const { MP4Muxer } =
-      await import(`${sourceRoot}/engine/export/formats/mp4/muxer.ts`);
-    let created = 0,
-      disposed = 0,
-      finalized = 0;
-    const create = Renderer.create,
-      finalize = MP4Muxer.prototype.finalize;
-    Renderer.create = async (...args) => {
-      const renderer = await create.apply(Renderer, args);
-      created++;
-      const dispose = renderer.dispose.bind(renderer);
-      let closed = false;
-      renderer.dispose = () => {
-        if (!closed) {
-          closed = true;
-          disposed++;
+  const report = await page.evaluate(
+    async (sourceRoot) => {
+      const { project: demo } = await import("/@id/virtual:ritween-project");
+      const { exportMp4: exportVideo } = await import(
+        `${sourceRoot}/engine/export/formats/mp4/export-mp4.ts`
+      );
+      const { Renderer } = await import(
+        `${sourceRoot}/engine/render/renderer.ts`
+      );
+      const { MP4Muxer } = await import(
+        `${sourceRoot}/engine/export/formats/mp4/muxer.ts`
+      );
+      let created = 0,
+        disposed = 0,
+        finalized = 0;
+      const create = Renderer.create,
+        finalize = MP4Muxer.prototype.finalize;
+      Renderer.create = async (...args) => {
+        const renderer = await create.apply(Renderer, args);
+        created++;
+        const dispose = renderer.dispose.bind(renderer);
+        let closed = false;
+        renderer.dispose = () => {
+          if (!closed) {
+            closed = true;
+            disposed++;
+          }
+          dispose();
+        };
+        return renderer;
+      };
+      MP4Muxer.prototype.finalize = function () {
+        finalized++;
+        return finalize.call(this);
+      };
+      const options = { width: 640, height: 360, fps: 30 };
+      const compact = {
+        ...demo,
+        duration: 1,
+        scenes: [{ ...demo.scenes[0], start: 0, duration: 1 }],
+        audioTracks: [],
+      };
+      const successful = [];
+      try {
+        for (const pipeline of ["sequential", "parallel"]) {
+          const output = await exportVideo(compact, { ...options, pipeline });
+          successful.push({
+            pipeline,
+            frames: output.frames,
+            duration: output.duration,
+          });
         }
-        dispose();
-      };
-      return renderer;
-    };
-    MP4Muxer.prototype.finalize = function () {
-      finalized++;
-      return finalize.call(this);
-    };
-    const options = { width: 640, height: 360, fps: 30 };
-    const compact = {
-      ...demo,
-      duration: 1,
-      scenes: [{ ...demo.scenes[0], start: 0, duration: 1 }],
-      audioTracks: [],
-    };
-    const successful = [];
-    try {
-      for (const pipeline of ["sequential", "parallel"]) {
-        const output = await exportVideo(compact, { ...options, pipeline });
-        successful.push({
-          pipeline,
-          frames: output.frames,
-          duration: output.duration,
-        });
-      }
-      const failures = [];
-      const before = finalized;
-      const audioError = new Error("audio pipeline failed");
-      const badAudio = {
-        ...compact,
-        audioTracks: [
-          {
-            id: "a",
-            name: "a",
-            clips: [
-              {
-                id: "bad",
-                name: "bad",
-                start: 0,
-                duration: 1,
-                create: () => ({
-                  async schedule() {
-                    await new Promise((r) => setTimeout(r, 30));
-                    throw audioError;
-                  },
-                }),
-              },
-            ],
-          },
-        ],
-      };
-      try {
-        await exportVideo(badAudio, { ...options, pipeline: "parallel" });
-        throw Error("audio error was lost");
-      } catch (error) {
-        if (!error.message.includes("audio pipeline failed")) throw error;
-        failures.push("audio");
-      }
-      const delayedAudio = {
-        id: "a",
-        name: "a",
-        clips: [
-          {
-            id: "waiting",
-            name: "waiting",
-            start: 0,
-            duration: 1,
-            create: () => ({
-              async schedule(host) {
-                await new Promise((r) => setTimeout(r, 100));
-                const osc = new OscillatorNode(host.context);
-                osc.connect(host.destination);
-                osc.start(0);
-                osc.stop(1);
-              },
-            }),
-          },
-        ],
-      };
-      const videoError = new Error("video pipeline failed");
-      const badVideo = {
-        ...compact,
-        audioTracks: [delayedAudio],
-        scenes: [
-          {
-            ...compact.scenes[0],
-            create: () => {
-              const scene = demo.scenes[0].create();
-              let frames = 0;
-              const render = scene.render.bind(scene);
-              return {
-                ...scene,
-                render(ctx) {
-                  if (++frames === 2) throw videoError;
-                  render(ctx);
+        const failures = [];
+        const before = finalized;
+        const audioError = new Error("audio pipeline failed");
+        const badAudio = {
+          ...compact,
+          audioTracks: [
+            {
+              id: "a",
+              name: "a",
+              clips: [
+                {
+                  id: "bad",
+                  name: "bad",
+                  start: 0,
+                  duration: 1,
+                  create: () => ({
+                    async schedule() {
+                      await new Promise((r) => setTimeout(r, 30));
+                      throw audioError;
+                    },
+                  }),
                 },
-              };
+              ],
             },
-          },
-        ],
-      };
-      try {
-        await exportVideo(badVideo, { ...options, pipeline: "parallel" });
-        throw Error("video error was lost");
-      } catch (error) {
-        if (error !== videoError) throw error;
-        failures.push("video");
-      }
-      const controller = new AbortController();
-      try {
-        await exportVideo(
-          { ...compact, audioTracks: [delayedAudio] },
-          {
-            ...options,
-            pipeline: "parallel",
-            signal: controller.signal,
-            onProgress(done) {
-              if (done === 1) controller.abort();
+          ],
+        };
+        try {
+          await exportVideo(badAudio, { ...options, pipeline: "parallel" });
+          throw Error("audio error was lost");
+        } catch (error) {
+          if (!error.message.includes("audio pipeline failed")) throw error;
+          failures.push("audio");
+        }
+        const delayedAudio = {
+          id: "a",
+          name: "a",
+          clips: [
+            {
+              id: "waiting",
+              name: "waiting",
+              start: 0,
+              duration: 1,
+              create: () => ({
+                async schedule(host) {
+                  await new Promise((r) => setTimeout(r, 100));
+                  const osc = new OscillatorNode(host.context);
+                  osc.connect(host.destination);
+                  osc.start(0);
+                  osc.stop(1);
+                },
+              }),
             },
-          },
-        );
-        throw Error("cancellation was lost");
-      } catch (error) {
-        if (error.name !== "AbortError") throw error;
-        failures.push("cancel");
-      }
-      let setupStarted,
-        sceneDisposed = false,
-        hungDevice;
-      const started = new Promise((resolve) => {
-        setupStarted = resolve;
-      });
-      const hungSetup = {
-        ...compact,
-        scenes: [
-          {
-            ...compact.scenes[0],
-            create: () => ({
-              async setup({ device }) {
-                hungDevice = device;
-                setupStarted();
-                await new Promise(() => {});
-              },
-              render() {},
-              dispose() {
-                sceneDisposed = true;
-                throw Error("author dispose failed");
-              },
-            }),
-          },
-        ],
-        audioTracks: [
-          {
-            id: "a",
-            name: "a",
-            clips: [
-              {
-                id: "setup-failure",
-                name: "setup-failure",
-                start: 0,
-                duration: 1,
-                create: () => ({
-                  async schedule() {
-                    await started;
-                    throw Error("cancel hung setup");
+          ],
+        };
+        const videoError = new Error("video pipeline failed");
+        const badVideo = {
+          ...compact,
+          audioTracks: [delayedAudio],
+          scenes: [
+            {
+              ...compact.scenes[0],
+              create: () => {
+                const scene = demo.scenes[0].create();
+                let frames = 0;
+                const render = scene.render.bind(scene);
+                return {
+                  ...scene,
+                  render(ctx) {
+                    if (++frames === 2) throw videoError;
+                    render(ctx);
                   },
-                }),
+                };
               },
-            ],
-          },
-        ],
-      };
-      try {
-        await exportVideo(hungSetup, { ...options, pipeline: "parallel" });
-        throw Error("hung setup was accepted");
-      } catch (error) {
-        if (!error.message.includes("cancel hung setup")) throw error;
-        failures.push("setup-cancel");
+            },
+          ],
+        };
+        try {
+          await exportVideo(badVideo, { ...options, pipeline: "parallel" });
+          throw Error("video error was lost");
+        } catch (error) {
+          if (error !== videoError) throw error;
+          failures.push("video");
+        }
+        const controller = new AbortController();
+        try {
+          await exportVideo(
+            { ...compact, audioTracks: [delayedAudio] },
+            {
+              ...options,
+              pipeline: "parallel",
+              signal: controller.signal,
+              onProgress(done) {
+                if (done === 1) controller.abort();
+              },
+            },
+          );
+          throw Error("cancellation was lost");
+        } catch (error) {
+          if (error.name !== "AbortError") throw error;
+          failures.push("cancel");
+        }
+        let setupStarted,
+          sceneDisposed = false,
+          hungDevice;
+        const started = new Promise((resolve) => {
+          setupStarted = resolve;
+        });
+        const hungSetup = {
+          ...compact,
+          scenes: [
+            {
+              ...compact.scenes[0],
+              create: () => ({
+                async setup({ device }) {
+                  hungDevice = device;
+                  setupStarted();
+                  await new Promise(() => {});
+                },
+                render() {},
+                dispose() {
+                  sceneDisposed = true;
+                  throw Error("author dispose failed");
+                },
+              }),
+            },
+          ],
+          audioTracks: [
+            {
+              id: "a",
+              name: "a",
+              clips: [
+                {
+                  id: "setup-failure",
+                  name: "setup-failure",
+                  start: 0,
+                  duration: 1,
+                  create: () => ({
+                    async schedule() {
+                      await started;
+                      throw Error("cancel hung setup");
+                    },
+                  }),
+                },
+              ],
+            },
+          ],
+        };
+        try {
+          await exportVideo(hungSetup, { ...options, pipeline: "parallel" });
+          throw Error("hung setup was accepted");
+        } catch (error) {
+          if (!error.message.includes("cancel hung setup")) throw error;
+          failures.push("setup-cancel");
+        }
+        const hungDeviceReason = (await hungDevice.lost).reason;
+        if (!sceneDisposed || hungDeviceReason !== "destroyed")
+          throw Error("Cancelled setup retained GPU resources");
+        // Let abandoned author continuations settle: expired facades must not leak native nodes or unhandled errors.
+        await new Promise((r) => setTimeout(r, 150));
+        return {
+          successful,
+          failures,
+          created,
+          disposed,
+          finalized,
+          failedExportsMuxed: finalized - before,
+          hungSetupDisposed: sceneDisposed,
+          hungDeviceReason,
+        };
+      } finally {
+        Renderer.create = create;
+        MP4Muxer.prototype.finalize = finalize;
       }
-      const hungDeviceReason = (await hungDevice.lost).reason;
-      if (!sceneDisposed || hungDeviceReason !== "destroyed")
-        throw Error("Cancelled setup retained GPU resources");
-      // Let abandoned author continuations settle: expired facades must not leak native nodes or unhandled errors.
-      await new Promise((r) => setTimeout(r, 150));
-      return {
-        successful,
-        failures,
-        created,
-        disposed,
-        finalized,
-        failedExportsMuxed: finalized - before,
-        hungSetupDisposed: sceneDisposed,
-        hungDeviceReason,
-      };
-    } finally {
-      Renderer.create = create;
-      MP4Muxer.prototype.finalize = finalize;
-    }
-  }, `/@fs${normalizePath(runtimeRoot)}/src`);
+    },
+    `/@fs${normalizePath(runtimeRoot)}/src`,
+  );
   for (const output of report.successful) {
     assert.equal(output.frames, 30);
     assert.equal(output.duration, 1);

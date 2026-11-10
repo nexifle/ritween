@@ -1,8 +1,10 @@
 import { useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { Icon } from "./icon";
 
-export interface SidebarPanelProps
-  extends Omit<ComponentPropsWithoutRef<"section">, "title"> {
+export interface SidebarPanelProps extends Omit<
+  ComponentPropsWithoutRef<"section">,
+  "title"
+> {
   icon?: string;
   title: ReactNode;
   subtitle?: ReactNode;

@@ -116,7 +116,71 @@ test("packed package supports strict TypeScript consumers without allowJs", () =
     writeFileSync(
       join(consumer, "consumer.ts"),
       `import { parseProjectSettings, mergeProjectSettings, validateProject, videoClip, imageScene, audioFile, videoResource, loadVideoTexture, loadImageTexture } from "ritween";
-import type { Project, ProjectSettings } from "ritween";
+import { Stage, StageEntry, Overlay, Text, Box, HStack, VStack, ZStack, Spacer, motion, evaluateView, Camera, evaluateCamera, fitCamera, keyframes, worldToView, viewToWorld, World, Shot, Composition, evaluateActive, Circle, Line, Group, ForEach, Image, Video, Motion, ViewNode } from "ritween";
+import type { Project, ProjectSettings, StageScene, EvaluatedFrame } from "ritween";
+import { INSPECTION_SCHEMA_VERSION, buildInspectionDocument, measureInspection, parseInspectionTarget, serializeInspection, FrameSource } from "ritween";
+import type { InspectionDocument, InspectionDiagnostic, LayoutDiagnostic, LayoutNode, LayoutSize, Bounds, FrameInspection, SceneInspection, PaddingInsets, FrameOptions, BackgroundStyle } from "ritween";
+const reusable: ViewNode = Text("Declarative", { size: 32, maxWidth: 400, tracking: 1 });
+const flexibleNode: ViewNode = reusable.flex(2);
+void flexibleNode;
+// @ts-expect-error flex weight must be a number.
+const badFlex: ViewNode = reusable.flex("large");
+void badFlex;
+const stage: StageScene = Stage(({ theme }) => VStack([
+  reusable.opacity({ from: 0, to: 1, duration: 0.8 }), Spacer(),
+  HStack([Box({ width: 100, height: 40, fill: theme.colors.accent }), reusable.flex(1)]),
+  ZStack([]),
+]).padding(24).frame({ width: "fill", height: "fill" }));
+const evaluated: EvaluatedFrame = evaluateView(reusable, { time: 0, width: 400, height: 300, measureText: (text) => text.length * 10 });
+type PublicViewOption = keyof Parameters<typeof evaluateView>[1];
+const viewOptionsStayPublic: "inspectionCounter" extends PublicViewOption ? never : true = true;
+void viewOptionsStayPublic;
+const layoutDiagnostic: LayoutDiagnostic = {
+  code: "unused-flex",
+  severity: "warning",
+  path: "root",
+  localTime: 0,
+  space: "layout",
+  message: "flex has no effect outside HStack or VStack",
+};
+// @ts-expect-error Diagnostic codes are a closed set of stable strings.
+const badCode: LayoutDiagnostic = { ...layoutDiagnostic, code: "made-up" };
+// @ts-expect-error Severity is warning or error only.
+const badSeverity: LayoutDiagnostic = { ...layoutDiagnostic, severity: "info" };
+const frameForInspection: SceneInspection = { tree: evaluated.tree, commands: evaluated.commands, warnings: evaluated.warnings };
+// Additive identity/space metadata is optional, so legacy code keeps compiling.
+const identifiedNode: LayoutNode = evaluated.tree;
+const optionalId: string | undefined = identifiedNode.id;
+const optionalSpace: string | undefined = identifiedNode.space;
+const optionalOffered: LayoutSize | undefined = identifiedNode.offeredSize;
+const optionalSlot: Bounds | undefined = identifiedNode.allocatedSlot;
+// @ts-expect-error A tree node cannot carry a numeric authored ID.
+const badId: LayoutNode = { ...evaluated.tree, id: 7 };
+void [optionalId, optionalSpace, optionalOffered, optionalSlot, badId];
+const inspectionDocument: InspectionDocument = buildInspectionDocument({
+  packageVersion: "0.0.0",
+  project: { name: "Consumer", duration: 1, resolution: [320, 180] },
+  frame: { requestedTime: 0, effectiveTime: 0, scenes: [{ id: "main", name: "Main", time: 0, localTime: 0, progress: 0, frame: frameForInspection }] } satisfies FrameInspection,
+  target: parseInspectionTarget("scene:main#card"),
+});
+const inspectionJson: string = serializeInspection(inspectionDocument);
+const measuredBytes: number = measureInspection(inspectionDocument);
+void measuredBytes;
+const inspectionDiagnostic: InspectionDiagnostic | undefined = inspectionDocument.diagnostics[0];
+const schemaVersion: number = INSPECTION_SCHEMA_VERSION;
+void [layoutDiagnostic, badCode, badSeverity, inspectionJson, inspectionDiagnostic, schemaVersion, FrameSource];
+const value: number = motion({ from: 0, to: 1, duration: 1 }, 0.5);
+// @ts-expect-error Unsupported easing must not silently become linear.
+reusable.opacity({ from: 0, to: 1, duration: 1, ease: "unknown" });
+const camera = Camera({ x: 100, zoom: keyframes([{ at: 0, value: 1 }, { at: 2, value: 0.5 }]), rotation: 0 });
+const cameraStage: StageScene = Stage(() => reusable, { camera, textResolution: 2 });
+const proceduralStage = Stage(() => reusable, { camera: ({ localTime, designSize }) => ({ x: designSize[0] / 2 + Math.sin(localTime) * 20 }) });
+const cameraState = evaluateCamera(fitCamera({ x: 0, y: 0, width: 100, height: 100 }, [1920, 1080]), 0, [1920, 1080]);
+const point = worldToView(cameraState, viewToWorld(cameraState, [0, 0]));
+const world = World(() => reusable, { size: [1920, 1080] });
+const nested = Composition(world, { size: [640, 360], camera, overlay: () => reusable, rate: 1, offset: 2 });
+const shot = Shot({ id: "shot", source: "manifest.ts", start: 1, duration: 2, world, camera, transition: { type: "crossfade", duration: 0.5 } });
+void [stage, evaluated, value, cameraStage, proceduralStage, point, nested, shot, evaluateActive];
 const settings: ProjectSettings = mergeProjectSettings(undefined, parseProjectSettings({ version: 1 }));
 const version: 1 = settings.version;
 // @ts-expect-error The parser result must retain its declared version type.
@@ -129,9 +193,44 @@ const project: Project = {
     duration: 1, transition: { type: "cut" },
     create: () => ({ setup() {}, render() {}, dispose() {} }) }],
 };
+project.overlay = () => Overlay(({ localTime, progress }) => Text(String(localTime + progress)).padding(20), { designSize: [320, 180], textResolution: 2 });
+// @ts-expect-error Global overlay has no camera; move content inside a Composition instead.
+Overlay(() => reusable, { camera });
+// @ts-expect-error Global overlay cannot clear the scene with a background.
+Overlay(() => reusable, { background: "#FFFFFF" });
 validateProject(project);
 const footage = videoResource({ id: "footage", name: "Footage", url: "/shot.mp4", start: 0, duration: 1 });
 project.mediaClips = [footage];
+const mediaWorld = World(() => Group([
+  Video(footage, { width: 320, height: 180, fit: "cover" }),
+  Image({ url: "/logo.png", width: 40, height: 40 }),
+  Circle({ radius: 10, stroke: "#FFFFFF", strokeWidth: 2, trim: [0, Motion.fade()] }),
+  Line({ from: [0, 0], to: [20, 20], progress: Motion.fade() }),
+  HStack(ForEach([{ id: "one" }], (item) => item.id, (_item, index) => reusable.offset(0, Motion.stagger(index, 0.1, Motion.slide())))),
+]), { size: [320, 180] });
+const mediaShot = Shot({ id: "media", source: "manifest.ts", start: 0, duration: 1, world: mediaWorld, mediaClips: [footage], images: ["/later.png"] });
+const stageEntry = StageEntry({ id: "direct", source: "manifest.ts", start: 0, duration: 1, mediaClips: [footage], view: () => Video(footage, { width: 320, height: 180 }) });
+const clipped = Video(footage, { width: 100, height: 100, crop: { x: 0.7, zoom: Motion.scale({ from: 1, to: 2 }) } }).clip({ shape: "rect", radius: 20 });
+// G2a primitives: directional padding, per-axis frame alignment, content background.
+const directionalInsets: PaddingInsets = { top: 8, right: 12, bottom: 8, left: 12 };
+const axisFrame: FrameOptions = { width: "fill", height: 40, alignX: "end", alignY: "start" };
+const cardStyle: BackgroundStyle = { fill: "#FFFFFF", radius: 8, stroke: "#202B38", strokeWidth: 1 };
+const card = reusable.padding(directionalInsets).frame(axisFrame).background(cardStyle);
+const symmetricCard = reusable.padding(24, 8).background({ fill: "#FFFFFF" });
+// @ts-expect-error A background sets no size; width must not become a layout dimension.
+reusable.background({ fill: "#FFFFFF", width: 10 });
+// @ts-expect-error Frame axis values are the existing Alignment union.
+reusable.frame({ alignX: "middle" });
+// The background wrapper's declared ID keeps one semantic shared-element target.
+const identifiedCard = reusable.background({ fill: "#FFFFFF" }).id("card");
+const leafIdentifiedCard = reusable.id("card").background({ fill: "#FFFFFF" });
+// @ts-expect-error Padding no longer accepts the unpublished x/y spec shape.
+new ViewNode({ kind: "padding", x: 12, y: 6, child: reusable });
+void [card, symmetricCard, identifiedCard, leafIdentifiedCard];
+const circleClip = clipped.clip({ shape: "circle" });
+const pathClip = clipped.clip({ shape: "path", outline: [["M", 0, 0], ["L", 100, 0], ["L", 0, 100], ["Z"]], fillRule: "evenodd" });
+const imageClip = clipped.clip({ shape: "image", url: "/mask.png", mode: "luminance" });
+void [mediaShot, stageEntry, circleClip, pathClip, imageClip];
 project.scenes = [videoClip({ id: "video", name: "Video", source: "manifest.ts", url: "/shot.mp4", start: 0,
   trim: { in: 0, out: 1 }, audio: { muted: false } })];
 const still = imageScene({ id: "image", name: "Image", source: "manifest.ts", url: "/logo.png", start: 0, duration: 1,

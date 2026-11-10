@@ -32,15 +32,15 @@ Adapt the subject-led approach of frontend design, not its page structure or int
 
 Make a compact direction before coding:
 
-| Decision | Specify |
-|---|---|
-| Thesis | One sentence connecting the visual treatment to the subject and message |
-| Palette | A small set of named colors with exact values and roles: background, foreground, accent, supporting tones |
-| Typography | Display and supporting roles, hierarchy, weights, and spacing; one family can serve both roles when appropriate |
-| Composition | Focal point, alignment, negative space, safe area, and relationships between elements |
-| Signature | One memorable visual idea rooted in the brief |
-| Motion language | How elements arrive, develop, settle, and leave; how energetic or restrained the piece feels |
-| Emotional intent | What the audience should feel, and which timing, path, and amplitude choices support it |
+| Decision         | Specify                                                                                                         |
+| ---------------- | --------------------------------------------------------------------------------------------------------------- |
+| Thesis           | One sentence connecting the visual treatment to the subject and message                                         |
+| Palette          | A small set of named colors with exact values and roles: background, foreground, accent, supporting tones       |
+| Typography       | Display and supporting roles, hierarchy, weights, and spacing; one family can serve both roles when appropriate |
+| Composition      | Focal point, alignment, negative space, safe area, and relationships between elements                           |
+| Signature        | One memorable visual idea rooted in the brief                                                                   |
+| Motion language  | How elements arrive, develop, settle, and leave; how energetic or restrained the piece feels                    |
+| Emotional intent | What the audience should feel, and which timing, path, and amplitude choices support it                         |
 
 Use real copy while composing, not placeholder text that hides wrapping and reading-time problems. Confirm that intended fonts and assets are available and usable; do not download assets or send content to external generation services without authorization. Choose a deliberate fallback when an asset is unavailable and state meaningful substitutions.
 
@@ -57,7 +57,7 @@ Describe the order in which the viewer understands the idea. Do not force every 
 Use a short beat sheet:
 
 | Time range | Viewer learns | Visual focus | Motion and handoff | Reading/settling time | Audio cue |
-|---|---|---|---|---|---|
+| ---------- | ------------- | ------------ | ------------------ | --------------------- | --------- |
 
 Populate it with actual content, not labels such as "cool intro." Use absolute composition times, ensure ranges fit the requested duration, and reserve time for reading and recognition after entrances. If content does not fit, shorten the copy or reduce beats before accelerating everything.
 
@@ -69,11 +69,11 @@ For each beat, specify the initial state, the evolving relationship, the stable 
 
 Brief: a six-second silent social clip for a bicycle repair workshop, showing how a bent rim returns to alignment. Proposed direction: workshop precision, pale metal surfaces, dark graphite labels, and one spoke-orange accent. Signature: an off-center wheel outline settles into a true circle.
 
-| Time range | Viewer learns | Visual focus | Motion and handoff | Reading/settling time | Audio cue |
-|---|---|---|---|---|---|
-| 0–1.2 s | The wheel is out of alignment | Offset rim and the short line "A wobble?" | A restrained wobble establishes the problem, then settles for inspection | Keep the phrase visible beyond its entrance | None required |
-| 1.2–4 s | The workshop corrects the alignment | Rim converging on a stationary guide | One controlled correction transfers focus to the centered form; avoid competing text entrances | Allow the corrected shape to register | Optional subtle mechanical accent |
-| 4–6 s | Where to act | The corrected wheel and "Book a wheel check" | Hold the wheel still; reveal the closing line without restarting the whole composition | Keep the final message readable through the ending | Optional soft resolution |
+| Time range | Viewer learns                       | Visual focus                                 | Motion and handoff                                                                             | Reading/settling time                              | Audio cue                         |
+| ---------- | ----------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------- | --------------------------------- |
+| 0–1.2 s    | The wheel is out of alignment       | Offset rim and the short line "A wobble?"    | A restrained wobble establishes the problem, then settles for inspection                       | Keep the phrase visible beyond its entrance        | None required                     |
+| 1.2–4 s    | The workshop corrects the alignment | Rim converging on a stationary guide         | One controlled correction transfers focus to the centered form; avoid competing text entrances | Allow the corrected shape to register              | Optional subtle mechanical accent |
+| 4–6 s      | Where to act                        | The corrected wheel and "Book a wheel check" | Hold the wheel still; reveal the closing line without restarting the whole composition         | Keep the final message readable through the ending | Optional soft resolution          |
 
 These timings and motifs belong to this example. Adapt the structure to each brief rather than reproducing its look or sequence. A silent-first brief must remain understandable with no soundtrack.
 
@@ -117,16 +117,16 @@ Use easing when it expresses the action; constant-speed movement is appropriate 
 
 These are techniques to implement, not built-in Ritween APIs or an effects checklist. Select only what serves the brief.
 
-| Mechanism | Useful meaning | Readability guardrail |
-|---|---|---|
-| Continuous shape transformation | Change of state, simplification, evolution | Keep the silhouette and correspondence between states understandable |
-| Coordinated paths | Journey, flow, sequence, shared direction | Keep paths away from essential text and establish a clear destination |
-| Assembly / disassembly | Components, structure, cause and result | Preserve part identity and avoid every part arriving at once without hierarchy |
-| Fields or particles | Distribution, aggregation, collective behavior | Prefer meaningful grouping over decorative density |
-| Depth and parallax | Spatial relationships, layers, scale | Move layers coherently; avoid gratuitous camera travel |
-| Material or light evolution | Surface qualities, changing conditions | Keep luminance changes behind text controlled |
-| Kinetic typography | Emphasis, rhythm, relationships between words | Let words become fully readable; use distortion only when the brief supports it |
-| Persistent anchors and handoffs | Continuity between ideas | Retain a recognizable element while its role or surroundings change |
+| Mechanism                       | Useful meaning                                 | Readability guardrail                                                           |
+| ------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------- |
+| Continuous shape transformation | Change of state, simplification, evolution     | Keep the silhouette and correspondence between states understandable            |
+| Coordinated paths               | Journey, flow, sequence, shared direction      | Keep paths away from essential text and establish a clear destination           |
+| Assembly / disassembly          | Components, structure, cause and result        | Preserve part identity and avoid every part arriving at once without hierarchy  |
+| Fields or particles             | Distribution, aggregation, collective behavior | Prefer meaningful grouping over decorative density                              |
+| Depth and parallax              | Spatial relationships, layers, scale           | Move layers coherently; avoid gratuitous camera travel                          |
+| Material or light evolution     | Surface qualities, changing conditions         | Keep luminance changes behind text controlled                                   |
+| Kinetic typography              | Emphasis, rhythm, relationships between words  | Let words become fully readable; use distortion only when the brief supports it |
+| Persistent anchors and handoffs | Continuity between ideas                       | Retain a recognizable element while its role or surroundings change             |
 
 Do not maximize the number of techniques, shaders, particles, or moving elements. Simple WebGPU geometry with precise timing can outperform elaborate effects. Fade and slide remain useful supporting devices; a film made only of entrances and long pauses usually needs a stronger motion thesis.
 

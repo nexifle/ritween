@@ -1,20 +1,27 @@
 import { waitForEncoderCapacity } from "../encoder-queue";
-import { AAC_FRAME_SAMPLES, AAC_BITRATE, AAC_CODEC } from "../../codecs/aac";
+import {
+  AAC_FRAME_SAMPLES,
+  AAC_BITRATE,
+  AAC_CODEC,
+  AAC_PRIMING_SAMPLES,
+} from "../../codecs/aac";
 
 export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
-  if (typeof AudioEncoder === "undefined" || typeof AudioData === "undefined")
-    throw Error(
-      "WebCodecs audio encoding is unavailable. Use a current Chrome or Edge browser.",
-    );
+  signal?.throwIfAborted();
   const config: AudioEncoderConfig = {
     codec: AAC_CODEC,
     sampleRate: buffer.sampleRate,
     numberOfChannels: buffer.numberOfChannels,
     bitrate: AAC_BITRATE,
   };
-  const support = await AudioEncoder.isConfigSupported(config);
-  if (!support.supported)
-    throw Error("AAC encoding is not supported in this browser.");
+  const support =
+    typeof AudioEncoder !== "undefined" && typeof AudioData !== "undefined"
+      ? await AudioEncoder.isConfigSupported(config)
+      : null;
+  if (!support?.supported) {
+    const { encodeAacSoftware } = await import("./aac-software");
+    return encodeAacSoftware(buffer, signal);
+  }
   signal?.throwIfAborted();
   const chunks: Uint8Array[] = [];
   let description: Uint8Array | undefined;
@@ -83,7 +90,12 @@ export async function encodeAac(buffer: AudioBuffer, signal?: AbortSignal) {
     if (!chunks.length) throw Error("AAC encoder returned no samples.");
     // AAC-LC, 48 kHz, stereo. Used when the encoder omits a description.
     description ??= new Uint8Array([0x11, 0x90]);
-    return { chunks, description, sampleRate: buffer.sampleRate };
+    return {
+      chunks,
+      description,
+      sampleRate: buffer.sampleRate,
+      primingSamples: AAC_PRIMING_SAMPLES,
+    };
   } finally {
     if (encoder.state !== "closed") encoder.close();
   }

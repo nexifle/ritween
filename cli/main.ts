@@ -1,3 +1,4 @@
+import { browserArgs } from "./browser";
 import type { Browser } from "playwright-core";
 import type { ViteDevServer } from "vite";
 import type {} from "../src/cli-browser";
@@ -236,7 +237,7 @@ export async function main(argv = process.argv.slice(2)) {
           ...(activeOptions.browser
             ? { executablePath: resolve(activeOptions.browser) }
             : { channel: activeOptions.channel ?? "chrome" }),
-          args: ["--enable-unsafe-webgpu"],
+          args: browserArgs(),
           timeout: activeOptions.timeout,
         });
       } catch (error) {

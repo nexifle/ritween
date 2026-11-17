@@ -23,6 +23,8 @@ node bin/ritween.mjs frame --frame 156 --fps 30 -o artifacts/frame.png --force
 node bin/ritween.mjs export -o artifacts/video.mp4 --resolution 1080p --fps 60
 ```
 
+On Ubuntu/Linux, AAC audio export automatically uses the bundled WebAssembly encoder when Chrome lacks native AAC encoding. There is no need to install FFmpeg or an AAC system package. Linux headless rendering uses Vulkan for WebGPU canvas interoperability and snapshots each canvas frame into an owned bitmap before video encoding to avoid black output. WebGPU and H.264 encoding still require a compatible browser and GPU driver.
+
 `npm run cli -- <arguments>` is equivalent. No command automatically installs a browser.
 
 ## Install the command
@@ -151,7 +153,7 @@ bytes or a guarantee that every asset used incremental loading.
 - Interactive exports update two lines on stderr: an adaptive progress bar with its percentage, followed by readable active stages, frame counts, elapsed time, and encoding speed/ETA when space permits. Narrow terminals shorten the bar and reduce the detail line rather than hiding the bar. The terminal cursor is hidden while progress is active; both lines are cleared and the cursor is restored on completion, failure, or cancellation. Audio and video stages can overlap. ETA estimates the remaining video frames, not audio completion, muxing, or file saving; 100% frames still requires finalization. The successful summary appears on stdout only after the output file is saved. Redirected output uses plain stage lines and ten-percent frame milestones without terminal control sequences.
 - `--json` emits one successful result object on stdout. Export progress is JSON Lines on stderr, followed by a result including output path, dimensions, FPS, frames, duration, bytes and elapsed seconds. Errors emit an `event: "error"` object on stderr and exit nonzero. Web preview emits its URL and remains running.
 - Exit codes: 0 success, 1 error/timeout, 130 cancelled frame/export. Ctrl+C on an idle web preview exits 0. `--timeout 120` bounds headless startup/render/export; browser resources are closed on timeout or interruption. Elapsed CLI time includes server/browser startup, rendering and file saving, unlike the earlier export-only benchmark.
-- `--channel chrome` is the default. Use `--channel msedge`, `--channel chromium` with an installed Playwright Chromium, or `--browser /absolute/path/to/chrome`. Native WebGPU and H.264 capability errors are surfaced; no alternative multimedia renderer is substituted.
+- `--channel chrome` is the default. Use `--channel msedge`, `--channel chromium` with an installed Playwright Chromium, or `--browser /absolute/path/to/chrome`. Native WebGPU and H.264 capability errors are surfaced; no alternative multimedia renderer is substituted. Custom browser wrappers must forward all supplied arguments, including `--headless` and the Linux Vulkan flags. A wrapper that removes `--headless` changes the graphics path and can cause `A valid external Instance reference no longer exists` during rendering. Prefer the default launch when troubleshooting.
 
 ## Layout inspection
 

@@ -9,11 +9,7 @@ import type { Project } from "../../../types";
 import type { ExportOptions } from "../../types";
 import { exportStage } from "../../stage";
 import { encodeVideoTrack } from "../../encoders/h264";
-import {
-  AAC_PRIMING_SAMPLES,
-  AAC_FRAME_SAMPLES,
-  AAC_BITRATE,
-} from "../../../codecs/aac";
+import { AAC_FRAME_SAMPLES, AAC_BITRATE } from "../../../codecs/aac";
 import { encodeAac } from "../../encoders/aac";
 import { H264_CODEC } from "../../../codecs/h264";
 
@@ -78,7 +74,7 @@ export async function exportMp4(project: Project, options: ExportOptions) {
   );
   signal?.throwIfAborted();
   if (aac) {
-    muxer.setAudioPriming(AAC_PRIMING_SAMPLES);
+    muxer.setAudioPriming(aac.primingSamples);
     for (const chunk of aac.chunks)
       muxer.addAudio(
         chunk,

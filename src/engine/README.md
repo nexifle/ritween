@@ -68,8 +68,10 @@ Input container parsing lives in `decode/formats/`; output muxing lives in
 its input codec; actual availability is checked through WebCodecs on the current
 browser/device. AV1 samples carry their sequence headers; its container `av1C`
 record is validated but is not passed as AVC/HEVC decoder extradata. Export
-remains H.264/AVC with optional AAC-LC; no new encoders or runtime dependencies
-are added.
+remains H.264/AVC with optional AAC-LC. AAC export prefers native WebCodecs
+encoding and lazily loads Mediabunny’s WebAssembly AAC encoder when native
+encoding is unavailable (including Linux). Each encoder reports its own priming
+delay to the MP4 muxer.
 
 Input remains non-fragmented, unencrypted, and limited to two media tracks with
 one description each. Both full and metadata-only parsing accept `stsz` or

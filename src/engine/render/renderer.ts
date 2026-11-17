@@ -171,7 +171,14 @@ export class Renderer {
       throw Error(
         "WebGPU is unavailable. Open localhost in a current Chrome or Edge with GPU acceleration enabled.",
       );
-    const adapter = await navigator.gpu.requestAdapter();
+    let adapter = await navigator.gpu.requestAdapter();
+    // Chrome on Linux can return null while its Vulkan GPU process starts.
+    // Retry once before reporting permanent adapter unavailability.
+    if (!adapter) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      signal?.throwIfAborted();
+      adapter = await navigator.gpu.requestAdapter();
+    }
     if (!adapter)
       throw Error(
         "No WebGPU adapter found. Enable GPU acceleration and reload.",

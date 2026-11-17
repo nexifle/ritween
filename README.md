@@ -41,7 +41,7 @@ Built for developers and workflows where external AI coding agents author scene 
 ### Requirements
 
 - Node.js **22.18.0+**.
-- A current Chrome or Edge with **WebGPU**, **WebCodecs H.264 encoding**, and GPU acceleration. Audio export also requires AAC encoding support.
+- A current Chrome or Edge with **WebGPU**, **WebCodecs H.264 encoding**, and GPU acceleration. AAC audio uses native encoding when available and a bundled WebAssembly fallback on Linux/Ubuntu. No system FFmpeg installation is needed.
 - **HTTPS or localhost** for WebGPU. The CLI requires a separately installed compatible browser; it does not download one.
 
 ### Install
@@ -264,6 +264,8 @@ After building, use `npm run preview` to open the built studio with the bundled 
 Additional validation is available for the studio and native browser pipeline:
 
 ```sh
+npm run test:linux-export # Build first; checks CLI MP4 audio/video and PNG rendering.
+npm run test:linux-aac # Starts Chrome; checks AAC fallback, audio timing, and cancellation.
 npm run test:preview
 npm run test:project-settings
 npm run test:studio-preferences

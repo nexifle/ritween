@@ -1,3 +1,4 @@
+import { browserArgs } from "./browser";
 import { build } from "vite";
 import { chromium, type Browser } from "playwright-core";
 import { createServer } from "node:http";
@@ -186,7 +187,7 @@ export function headlessExportRunner(
               ? { executablePath: resolve(options.browser) }
               : { channel: options.channel ?? "chrome" }),
             downloadsPath: join(directory, "downloads"),
-            args: ["--enable-unsafe-webgpu"],
+            args: browserArgs(),
             timeout: 120_000,
           });
         } catch (error) {

@@ -264,7 +264,7 @@ After building, use `npm run preview` to open the built studio with the bundled 
 Additional validation is available for the studio and native browser pipeline:
 
 ```sh
-npm run test:linux-export # Build first; checks CLI MP4 audio/video and PNG rendering.
+npm run test:linux-export # Build first; requires FFmpeg to compare decoded MP4 pixels with PNG rendering.
 npm run test:linux-aac # Starts Chrome; checks AAC fallback, audio timing, and cancellation.
 npm run test:preview
 npm run test:project-settings

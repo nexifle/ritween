@@ -73,8 +73,48 @@ try {
   assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
   assert.equal(png.readUInt32BE(16), 640);
   assert.equal(png.readUInt32BE(20), 360);
+  // Decode the actual encoded pixels: a valid MP4 can still contain black frames.
+  const decode = async (file, seek = []) =>
+    (
+      await run(
+        "ffmpeg",
+        [
+          "-v",
+          "error",
+          ...seek,
+          "-i",
+          file,
+          "-frames:v",
+          "1",
+          "-f",
+          "rawvideo",
+          "-pix_fmt",
+          "rgb24",
+          "pipe:1",
+        ],
+        { encoding: "buffer", maxBuffer: 4 * 1024 * 1024 },
+      )
+    ).stdout;
+  const reference = await decode(image);
+  for (const time of [0, 0.5, 23 / 24]) {
+    const pixels = await decode(video, ["-ss", String(time)]);
+    assert.equal(pixels.length, 640 * 360 * 3);
+    const mean = pixels.reduce((sum, value) => sum + value, 0) / pixels.length;
+    assert.ok(mean > 20, `Encoded frame at ${time}s is black (mean ${mean}).`);
+    if (time === 0.5) {
+      const difference =
+        pixels.reduce(
+          (sum, value, i) => sum + Math.abs(value - reference[i]),
+          0,
+        ) / pixels.length;
+      assert.ok(
+        difference < 8,
+        `Encoded frame differs from PNG render: mean RGB error ${difference}.`,
+      );
+    }
+  }
   console.log(
-    "Linux CLI validation passed: H.264/AAC MP4 and PNG frame rendering.",
+    "Linux CLI validation passed: H.264/AAC MP4, decoded frame pixels, and PNG rendering.",
   );
 } finally {
   await rm(directory, { recursive: true, force: true });

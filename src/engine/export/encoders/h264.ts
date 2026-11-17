@@ -76,13 +76,27 @@ export async function encodeVideoTrack(
     );
     let lastKeyRequest = -intervalFrames;
     const activeSource = source;
+    // Linux Vulkan canvas-to-VideoFrame interop can silently produce black frames.
+    // Snapshot the canvas into an owned bitmap before handing it to WebCodecs.
+    const snapshotCanvas =
+      typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent);
     await exportStage(options, "video-encode", async () => {
       for (let i = 0; i < total; i++) {
         signal?.throwIfAborted();
         if (failure) throw failure;
         const canvas = await activeSource.render(i / fps);
         if (failure) throw failure;
-        const frame = new VideoFrame(canvas, frameTiming(i, fps));
+        let frame: VideoFrame;
+        if (snapshotCanvas) {
+          const bitmap = canvas.transferToImageBitmap();
+          try {
+            frame = new VideoFrame(bitmap, frameTiming(i, fps));
+          } finally {
+            bitmap.close();
+          }
+        } else {
+          frame = new VideoFrame(canvas, frameTiming(i, fps));
+        }
         try {
           const keyFrame = i - lastKeyRequest >= intervalFrames || cuts.has(i);
           if (keyFrame) lastKeyRequest = i;

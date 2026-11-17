@@ -23,7 +23,7 @@ node bin/ritween.mjs frame --frame 156 --fps 30 -o artifacts/frame.png --force
 node bin/ritween.mjs export -o artifacts/video.mp4 --resolution 1080p --fps 60
 ```
 
-On Ubuntu/Linux, AAC audio export automatically uses the bundled WebAssembly encoder when Chrome lacks native AAC encoding. There is no need to install FFmpeg or an AAC system package. Linux headless rendering uses Vulkan for WebGPU canvas interoperability. WebGPU and H.264 encoding still require a compatible browser and GPU driver.
+On Ubuntu/Linux, AAC audio export automatically uses the bundled WebAssembly encoder when Chrome lacks native AAC encoding. There is no need to install FFmpeg or an AAC system package. Linux headless rendering uses Vulkan for WebGPU canvas interoperability and snapshots each canvas frame into an owned bitmap before video encoding to avoid black output. WebGPU and H.264 encoding still require a compatible browser and GPU driver.
 
 `npm run cli -- <arguments>` is equivalent. No command automatically installs a browser.
 
